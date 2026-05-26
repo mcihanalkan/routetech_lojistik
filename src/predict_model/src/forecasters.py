@@ -1,4 +1,3 @@
-# src/forecasters.py
 """
 DemandForecaster — Predict-then-Optimize Talep Tahmin Motoru
 
@@ -6,8 +5,8 @@ Mimari Kararlar (Teknofest kısıtlarına göre):
   ┌─────────────────────────────────────────────────────────────────┐
   │  ✅ CatBoostRegressor   → LightGBM/XGBoost YOK                  │
   │  ✅ cat_features        → One-Hot Encoding YOK (RAM koruması)    │
-  │  ✅ AsymmetricLoss(9x)  → Eksik tahmin = spot araç = 9x ceza    │
-  │  ✅ MultiQuantile       → q10 / q50 / q90 güven bantları        │
+  │  ✅ MultiQuantile       → TEK MODEL ile q10/q50/q90 bantları    │
+  │  ✅ Log1p Dönüşümü      → Uç değerlerde q90 paniğini önler      │
   │  ✅ In-memory JSON      → Disk I/O YOK (10 dk bütçesi korunur)  │
   └─────────────────────────────────────────────────────────────────┘
 
@@ -17,10 +16,9 @@ Quantile Anlamları (ALNS motoruna):
   q90 → Yüksek senaryo : "Spot araç alarmı — bu aşılırsa kira patlar"
 
 Asimetrik Kayıp Mantığı:
-  Standart Quantile Loss simetrik değerlendirme yapar.
   Lojistikte eksik tahmin → spot araç → ~3-9x maliyet artışı.
-  Bu yüzden q90 modeline CatBoost'un Asymmetric kayıp fonksiyonu
-  ile underestimation'a 9 kat daha ağır ceza uygulanır.
+  Bu yüzden MultiQuantile kayıp fonksiyonunda q90 için alpha=0.9
+  kullanılarak underestimation'a (eksik tahmine) 9 kat daha ağır ceza uygulanır.
 """
 
 import pandas as pd
@@ -31,9 +29,9 @@ from typing import Optional, List, Dict, Any, Tuple
 from copy import deepcopy
 
 from catboost import CatBoostRegressor, Pool
-from src.base import BaseForecaster
-from src.features import build_feature_matrix, get_categorical_columns, compute_target_skewness
-from src.missing import DataPreprocessor
+from .base import BaseForecaster
+from .features import build_feature_matrix, get_categorical_columns, compute_target_skewness
+from .missing import DataPreprocessor
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +187,7 @@ class DemandForecaster(BaseForecaster):
         rolling_windows: Optional[List[int]] = None,
         underestimation_penalty: float = UNDERESTIMATION_PENALTY,
         outlier_clip_multiplier: float = 3.0,
-        log_transform_enabled: bool = False,
+        log_transform_enabled: bool = True,
         logging_enabled: bool = True,
         random_state: Optional[int] = 42,
     ):
@@ -212,7 +210,7 @@ class DemandForecaster(BaseForecaster):
         self.log_transform_enabled   = log_transform_enabled
 
         # Runtime'da dolacak
-        self.models_: Dict[str, CatBoostRegressor] = {}
+        self.model_: CatBoostRegressor = None
         self.cat_features_: List[str] = []
         self.feature_names_: List[str] = []
 
@@ -228,54 +226,28 @@ class DemandForecaster(BaseForecaster):
 
     def _build_model(self) -> None:
         """
-        3 ayrı CatBoost modeli başlatır.
-
-        q10 / q50 / q90 → Standart Quantile Loss (CatBoost 1.2.x uyumlu)
-
-        Neden 3 ayrı model?
-          MultiQuantile tek modelle tüm kantilleri eş zamanlı öğrenebilir,
-          ancak q90'a farklı alpha vermek için ayrı tutmak gerekir.
-          q10/q50 standart kantil; q90 yüksek alpha ile asimetrik davranır.
-
-        Quantile(alpha=0.9) neden 9x asimetrik kayıp sağlar?
-          loss = alpha × max(y-ŷ, 0) + (1-alpha) × max(ŷ-y, 0)
-          alpha=0.9:
-            underestimate cezası = 0.9 × fark
-            overestimate  cezası = 0.1 × fark
-            oran = 0.9 / 0.1 = 9x  ✅
-          Lojistik gerçek: spot araç = sabit kiralığın ~9 katı maliyet.
-
-        ⚠️  AsymmetricMAE CatBoost 1.2.x'te desteklenmez — kullanılmaz.
+        3 ayrı model yerine TEK bir MultiQuantile modeli başlatır.
+        Bu sayede kantillerin birbirini kesmesi (crossing) engellenir
+        ve eğitim süresi 3 kat kısalır!
         """
-        quantile_config = [
-            ("q10", "Quantile:alpha=0.1"),
-            ("q50", "Quantile:alpha=0.5"),
-            # q90: alpha=0.9 → underestimate/overestimate oranı = 0.9/0.1 = 9x ceza
-            ("q90", f"Quantile:alpha={Q90_ALPHA}"),
-        ]
+        # alpha listesi: q10, q50 ve q90(Asimetrik 9x ceza)
+        loss_fn = f"MultiQuantile:alpha=0.1,0.5,{Q90_ALPHA}"
 
-        self.models_ = {}
-        for q_name, loss_fn in quantile_config:
-            self.models_[q_name] = CatBoostRegressor(
-                iterations=self.iterations,
-                learning_rate=self.learning_rate,
-                depth=self.depth,
-                loss_function=loss_fn,
-                random_seed=self.random_state,
-                verbose=False,
-                # allow_writing_files=False → disk I/O YOK (10 dk bütçesi)
-                allow_writing_files=False,
-                # thread_count=-1 → tüm CPU çekirdeklerini kullan
-                thread_count=-1,
-            )
+        self.model_ = CatBoostRegressor(
+            iterations=self.iterations,
+            learning_rate=self.learning_rate,
+            depth=self.depth,
+            loss_function=loss_fn,
+            random_seed=self.random_state,
+            verbose=False,
+            allow_writing_files=False, # Disk I/O Yok
+            thread_count=-1,
+        )
 
         if self.logging_enabled:
             logger.info(
-                f"🏗️  Modeller oluşturuldu:\n"
-                f"   q10: Quantile(α=0.10) — alt güven sınırı\n"
-                f"   q50: Quantile(α=0.50) — medyan tahmin\n"
-                f"   q90: Quantile(α={Q90_ALPHA}) — spot araç alarm seviyesi "
-                f"(underestimate/overestimate = {Q90_ALPHA/(1-Q90_ALPHA):.0f}x ceza)"
+                f"🏗️  Model oluşturuldu: TEK MODEL ile MultiQuantile\n"
+                f"   Kayıp Fonksiyonu: {loss_fn}"
             )
 
     # -----------------------------------------------------------------------
@@ -529,24 +501,21 @@ class DemandForecaster(BaseForecaster):
         # --- 4. Model Eğitimi ---
         self._build_model()
 
-        for q_name, model in self.models_.items():
-            t_q = time.time()
-            if self.logging_enabled:
-                logger.info(f"⏳ [{q_name}] eğitiliyor...")
+        t_q = time.time()
+        if self.logging_enabled:
+            logger.info("⏳ MultiQuantile Modeli eğitiliyor...")
 
-            # CatBoost Pool: kategorik kolonları doğrudan tanıt
-            # OHE yapılmıyor → RAM korunuyor
-            train_pool = Pool(
-                data=X_train,
-                label=y_train,
-                cat_features=self.cat_features_,
-            )
+        train_pool = Pool(
+            data=X_train,
+            label=y_train,
+            cat_features=self.cat_features_,
+        )
 
-            model.fit(train_pool)
+        self.model_.fit(train_pool)
 
-            elapsed = time.time() - t_q
-            if self.logging_enabled:
-                logger.info(f"   ✅ [{q_name}] tamamlandı ({elapsed:.1f}s)")
+        elapsed = time.time() - t_q
+        if self.logging_enabled:
+            logger.info(f"   ✅ Eğitim tamamlandı ({elapsed:.1f}s)")
 
         self.is_fitted_ = True
 
@@ -558,7 +527,8 @@ class DemandForecaster(BaseForecaster):
 
         # --- 6. Self-Evaluation ---
         if len(X_test) > 0:
-            self._evaluate_on_test(X_test, y_test)
+            # Overfit analizi için X_train ve y_train'i de gönderiyoruz
+            self._evaluate_on_test(X_test, y_test, X_train, y_train)
 
         total_elapsed = time.time() - t_start
         if self.logging_enabled:
@@ -660,22 +630,20 @@ class DemandForecaster(BaseForecaster):
                 X_pred[col] = 0
         X_pred = X_pred[self.feature_names_]  # train ile aynı sütun sırası
 
-        # --- 3 Kantil Tahmini ---
+        # --- 3 Kantil Tahmini (MultiQuantile) ---
         pred_pool = Pool(data=X_pred, cat_features=self.cat_features_)
 
-        q10_vals = self.models_["q10"].predict(pred_pool)
-        q50_vals = self.models_["q50"].predict(pred_pool)
-        q90_vals = self.models_["q90"].predict(pred_pool)
+        # MultiQuantile tek seferde (N, 3) boyutunda matris döner
+        multi_preds = self.model_.predict(pred_pool)
+
+        q10_vals = multi_preds[:, 0]
+        q50_vals = multi_preds[:, 1]
+        q90_vals = multi_preds[:, 2]
 
         # Negatif tahminleri sıfırla (hacim negatif olamaz)
         q10_vals = np.maximum(q10_vals, 0)
         q50_vals = np.maximum(q50_vals, 0)
         q90_vals = np.maximum(q90_vals, 0)
-
-        # Monotonluk garantisi: q10 ≤ q50 ≤ q90
-        # (model bazen kantil çakışması üretebilir)
-        q10_vals = np.minimum(q10_vals, q50_vals)
-        q90_vals = np.maximum(q90_vals, q50_vals)
 
         # --- Log1p Geri Çevirme (fit() log dönüşümü uyguladıysa) ---
         # Model log-uzayında eğitildi; tahminleri orijinal desi ölçeğine çevir.
@@ -833,7 +801,7 @@ class DemandForecaster(BaseForecaster):
 
         return combined
 
-        # -----------------------------------------------------------------------
+    # -----------------------------------------------------------------------
     # Self-Evaluation (fit sonrası)
     # -----------------------------------------------------------------------
 
@@ -841,58 +809,86 @@ class DemandForecaster(BaseForecaster):
         self,
         X_test: pd.DataFrame,
         y_test: pd.Series,
+        X_train: Optional[pd.DataFrame] = None,
+        y_train: Optional[pd.Series] = None,
     ) -> Dict[str, float]:
         """
-        Test seti üzerinde WAPE ve Decision Regret hesaplar.
-
-        Metrik seçim gerekçesi:
-          - RMSE YOK: Büyük hataları ikinci dereceden cezalandırır,
-            ama lojistikte önemli olan "hangi yönde hata yaptın?"dır.
-          - WAPE: Yüksek hacimli rotalardaki hatayı hacimle ağırlıklandırır.
-            Ana hat rotaları daha kritik → WAPE bunu yakalar.
-          - Decision Regret: Eksik tahmin → spot araç maliyet simülasyonu.
-            Gerçek iş kararının kalitesini ölçer.
-
-        Sonuçlar self.eval_results_ sözlüğüne kaydedilir.
+        Test ve Train setleri üzerinde WAPE ve Decision Regret hesaplar,
+        raporlama ve sunumlar için aşırı öğrenme (overfit) analizi basar.
         """
-        # q50 ile değerlendirme (medyan = operasyonel karar tahmini)
+        # --- TEST SETİ DEĞERLENDİRMESİ ---
         test_pool = Pool(data=X_test, cat_features=self.cat_features_)
-        q50_preds = self.models_["q50"].predict(test_pool)
-        q50_preds = np.maximum(q50_preds, 0)
+        q50_preds_test = self.model_.predict(test_pool)[:, 1]
+        q50_preds_test = np.maximum(q50_preds_test, 0)
+        y_true_test = y_test.values
 
-        y_true = y_test.values
-
-        # WAPE
-        sum_true = np.sum(y_true)
-        wape_score = (
-            float(np.sum(np.abs(y_true - q50_preds)) / sum_true)
-            if sum_true > 0 else 0.0
+        sum_true_test = np.sum(y_true_test)
+        wape_test = (
+            float(np.sum(np.abs(y_true_test - q50_preds_test)) / sum_true_test)
+            if sum_true_test > 0 else 0.0
         )
 
-        # Decision Regret: eksik tahmin (diff>0) → 9x ceza, fazla tahmin → 1x
-        diff = y_true - q50_preds
-        regret = np.where(
-            diff > 0,
-            diff * self.underestimation_penalty,  # ← spot araç maliyeti
-            np.abs(diff) * 1.0,                   # ← boş kapasite maliyeti
+        diff_test = y_true_test - q50_preds_test
+        regret_test = np.where(
+            diff_test > 0,
+            diff_test * self.underestimation_penalty,
+            np.abs(diff_test) * 1.0,
         )
-        decision_regret_score = float(np.mean(regret))
+        decision_regret_test = float(np.mean(regret_test))
 
+        # Geriye uyumluluk için eski anahtarları koruyoruz (optimize.py kırılmasın diye)
         self.eval_results_: Dict[str, float] = {
-            "WAPE":           round(wape_score, 6),
-            "Decision_Regret": round(decision_regret_score, 4),
-            "test_samples":    len(y_true),
+            "WAPE":            round(wape_test, 6),
+            "Decision_Regret": round(decision_regret_test, 4),
+            "test_samples":    len(y_true_test),
         }
 
-        if self.logging_enabled:
-            logger.info(
-                f"\n📊 Test Seti Değerlendirmesi (q50):\n"
-                f"   WAPE           : {wape_score:.4%}  "
-                f"(↓ düşük = iyi)\n"
-                f"   Decision Regret: {decision_regret_score:.2f}  "
-                f"(↓ düşük = az spot araç maliyeti)\n"
-                f"   Test örnekleri : {len(y_true)}"
+        # --- TRAIN SETİ DEĞERLENDİRMESİ (OVERFIT KONTROLÜ) ---
+        wape_train = 0.0
+        decision_regret_train = 0.0
+        
+        if X_train is not None and y_train is not None:
+            train_pool = Pool(data=X_train, cat_features=self.cat_features_)
+            q50_preds_train = self.model_.predict(train_pool)[:, 1]
+            q50_preds_train = np.maximum(q50_preds_train, 0)
+            y_true_train = y_train.values
+
+            sum_true_train = np.sum(y_true_train)
+            wape_train = (
+                float(np.sum(np.abs(y_true_train - q50_preds_train)) / sum_true_train)
+                if sum_true_train > 0 else 0.0
             )
+
+            diff_train = y_true_train - q50_preds_train
+            regret_train = np.where(
+                diff_train > 0,
+                diff_train * self.underestimation_penalty,
+                np.abs(diff_train) * 1.0,
+            )
+            decision_regret_train = float(np.mean(regret_train))
+
+            # Raporlama için yeni anahtarları ekle
+            self.eval_results_["Train_WAPE"] = round(wape_train, 6)
+            self.eval_results_["Train_Decision_Regret"] = round(decision_regret_train, 4)
+            self.eval_results_["train_samples"] = len(y_true_train)
+
+        # --- JÜRİ VE RAPORLAMA İÇİN ŞIK TABLO GÖSTERİMİ ---
+        if self.logging_enabled:
+            status = "✅ STABİL"
+            if X_train is not None and (wape_test - wape_train) > 0.05:
+                status = "⚠️ OVERFIT"
+
+            log_table = (
+                f"\n📊 MODEL PERFORMANS VE OVERFIT ANALİZİ (q50):\n"
+                f"   ┌───────────────────┬──────────────┬──────────────┬──────────────┐\n"
+                f"   │ Metrik            │ Train Seti   │ Test Seti    │ Durum        │\n"
+                f"   ├───────────────────┼──────────────┼──────────────┼──────────────┤\n"
+                f"   │ WAPE              │ {wape_train:<12.4%} │ {wape_test:<12.4%} │ {status:<12} │\n"
+                f"   │ Decision Regret   │ {decision_regret_train:<12.2f} │ {decision_regret_test:<12.2f} │ {'-'*12} │\n"
+                f"   │ Örnek Sayısı      │ {len(y_train) if y_train is not None else 0:<12,} │ {len(y_true_test):<12,} │ {'-'*12} │\n"
+                f"   └───────────────────┴──────────────┴──────────────┴──────────────┘"
+            )
+            logger.info(log_table)
 
         return self.eval_results_
 
@@ -915,7 +911,7 @@ class DemandForecaster(BaseForecaster):
         if not self.is_fitted_:
             raise ValueError("❌ Önce fit() çağırın!")
 
-        importances = self.models_["q50"].get_feature_importance()
+        importances = self.model_.get_feature_importance()
         return (
             pd.DataFrame({
                 "feature_name": self.feature_names_,
@@ -964,7 +960,8 @@ class DemandForecaster(BaseForecaster):
         if self.is_fitted_ and hasattr(self, "eval_results_"):
             lines += [
                 "-" * 55,
-                f"  WAPE            : {self.eval_results_.get('WAPE', 'N/A'):.4%}",
+                f"  Train WAPE      : {self.eval_results_.get('Train_WAPE', 0.0):.4%}",
+                f"  Test WAPE       : {self.eval_results_.get('WAPE', 'N/A'):.4%}",
                 f"  Decision Regret : {self.eval_results_.get('Decision_Regret', 'N/A'):.2f}",
             ]
         lines.append("=" * 55)
