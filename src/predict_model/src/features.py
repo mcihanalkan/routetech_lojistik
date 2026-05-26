@@ -683,7 +683,7 @@ def compute_target_skewness(
             f"\n   Çarpıklık (log1p)    : {result['skewness_log1p']:+.4f}"
             f"  (iyileşme: {result['skewness_raw'] - result['skewness_log1p']:+.4f})"
         )
-    if result["recommend_log"]:
+    if result["recommend_log"] and not log_transform:
         log_line += "\n   💡 Öneri: log_transform_enabled=True ile modeli yeniden eğitin"
     logger.info(log_line)
 
