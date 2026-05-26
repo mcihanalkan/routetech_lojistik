@@ -6,10 +6,10 @@ Kullanım:
 
 Giriş  : Desi_talep.xlsx
 Çıkış  : ALNS motoruna in-memory JSON (List[Dict])
-          İsteğe bağlı: alns_payload.json (debug için)
+         İsteğe bağlı: alns_payload.json (debug için)
 
 Mimari:
-    DemandForecaster.fit()   → 3 ayrı CatBoost (q10/q50/q90)
+    DemandForecaster.fit()   → Tek CatBoost Modeli (MultiQuantile: q10/q50/q90)
     DemandForecaster.predict() → List[Dict] (tarih, kaynak_tm, varis_tm, q10, q50, q90)
     UncertaintyBand.to_alns_payload() → ALNS formatı (risk_class, safety_buffer, ...)
 """
