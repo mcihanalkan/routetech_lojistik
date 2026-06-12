@@ -3,50 +3,51 @@ from ortools.sat.python import cp_model
 # 1. Modeli Başlatma
 model = cp_model.CpModel()
 
-# --- INPUT VERİLERİ (Arkadaşlarından ve Şartnameden Gelecek Kısımlar) ---
-
-# Örnek İndeks Setleri (11-17 Mayıs haftası için günleri güncelledik)
+# --- INPUT VERİLERİ ---
 hatlar = ["TM1-TM2", "TM2-TM3", "TM1-TM4"]
 gunler = ["11_Mayis", "12_Mayis", "13_Mayis", "14_Mayis", "15_Mayis", "16_Mayis", "17_Mayis"]
 arac_turleri = ["Tir", "Kamyon"]
 
-# Eray'ın Haversine ile hesaplayacağı mesafe verisi (Örnek km'ler)
+# STOK BİLGİSİ: Her hatta her araç türünden GÜNLÜK kaç tane kiralık araç kullanabiliriz?
+# Örnek: TM1-TM2 hattında günde max 1 Kamyon, TM1-TM4 hattında günde max 2 TIR + 1 Kamyon
+kiralik_stok_gunluk = {
+    ("TM1-TM2", "Kamyon"): 1,
+    ("TM1-TM4", "Tir"): 2,
+    ("TM1-TM4", "Kamyon"): 1,
+}
+# Stok günlük yenileniyor. Her gün bu kadar kiralık araç kullanabiliriz.
+
 mesafe_verisi = {
     "TM1-TM2": 450,
     "TM2-TM3": 320,
     "TM1-TM4": 150
 }
 
-# Ebubekir'in ML ile tahmin edeceği 11-17 Mayıs haftası günlük desi talepleri
-# Format: talep_verisi[(hat, gun)]
 talep_verisi = {
-    (h, g): 15000 for h in hatlar for g in gunler  # Test için her hatta günlük 15k desi varsayalım
+    (h, g): 15000 for h in hatlar for g in gunler
 }
 
-# Şartnamede belirtilen araç özellikleri ve maliyet parametreleri
 arac_parametreleri = {
     "Tir": {
-        "sabit_kira": 6000,
-        "kiralik_km_maliyet": 15,
-        "spot_sabit_maliyet": 9000,
-        "spot_km_maliyet": 22,
-        "kapasite_desi": 24000  # Bir tırın taşıyabileceği max desi
+        "sabit_kira": 7000,      # Düzeltildi: sizin tablonuzda 7000
+        "kiralik_km_maliyet": 13,
+        "spot_sabit_maliyet": 11700,
+        "spot_km_maliyet": 25,
+        "kapasite_desi": 22400   # Düzeltildi
     },
     "Kamyon": {
-        "sabit_kira": 3500,
+        "sabit_kira": 5000,
         "kiralik_km_maliyet": 10,
-        "spot_sabit_maliyet": 5500,
-        "spot_km_maliyet": 15,
-        "kapasite_desi": 12000  # Bir kamyonun taşıyabileceği max desi
+        "spot_sabit_maliyet": 7638,
+        "spot_km_maliyet": 21,
+        "kapasite_desi": 12000
     }
 }
 
-# --- OPTİMİZASYON MOTORUNUN KURULMASI ---
-
-# 2. Karar Değişkenlerinin Tanımlanması
+# --- KARAR DEĞİŞKENLERİ ---
 kiralik_x = {}
 spot_y = {}
-max_arac = 50 # Çözüm hızını optimize etmek için makul bir üst sınır
+max_arac = 50
 
 for h in hatlar:
     for g in gunler:
@@ -54,60 +55,62 @@ for h in hatlar:
             kiralik_x[(h, g, a)] = model.NewIntVar(0, max_arac, f'kiralik_{h}_{g}_{a}')
             spot_y[(h, g, a)] = model.NewIntVar(0, max_arac, f'spot_{h}_{g}_{a}')
 
-# 3. Döngüyle Maliyet Denkleminin (Amaç Fonksiyonu) İnşası
+# --- KISIT 1: Kiralık Araç Stok Limiti (GÜNLÜK) ---
+for h in hatlar:
+    for g in gunler:
+        for a in arac_turleri:
+            if (h, a) in kiralik_stok_gunluk:
+                limit = kiralik_stok_gunluk[(h, a)]
+                model.Add(kiralik_x[(h, g, a)] <= limit)
+
+# --- AMAÇ FONKSİYONU: Toplam Maliyet ---
 maliyet_kalemleri = []
 
 for h in hatlar:
     dist = mesafe_verisi[h]
     for g in gunler:
         for a in arac_turleri:
-            # Araç türüne özgü parametreleri çekiyoruz
             p = arac_parametreleri[a]
             
-            # Kiralık Araç Sefer Maliyeti = Sabit Kira + (Gidilen Mesafe * KM Maliyeti)
-            kiralik_sefer_fiyati = p["sabit_kira"] + (dist * p["kiralik_km_maliyet"])
-            maliyet_kalemleri.append(kiralik_x[(h, g, a)] * kiralik_sefer_fiyati)
+            # Kiralık maliyet (HER ZAMAN EKLE - solver karar versin)
+            kiralik_sefer_maliyeti = p["sabit_kira"] + (dist * p["kiralik_km_maliyet"])
+            maliyet_kalemleri.append(kiralik_x[(h, g, a)] * kiralik_sefer_maliyeti)
             
-            # Spot Araç Sefer Maliyeti = Spot Sabit + (Gidilen Mesafe * Spot KM Maliyeti)
-            spot_sefer_fiyati = p["spot_sabit_maliyet"] + (dist * p["spot_km_maliyet"])
-            maliyet_kalemleri.append(spot_y[(h, g, a)] * spot_sefer_fiyati)
+            # Spot maliyet (HER ZAMAN EKLE)
+            spot_sefer_maliyeti = p["spot_sabit_maliyet"] + (dist * p["spot_km_maliyet"])
+            maliyet_kalemleri.append(spot_y[(h, g, a)] * spot_sefer_maliyeti)
 
 model.Minimize(sum(maliyet_kalemleri))
 
-# 4. Kısıtların Eklenmesi (Talebi Karşılama Kısıtı)
-# Her hat ve her gün için: Çıkan araçların toplam kapasitesi, tahmini talepten büyük olmalı.
+# --- KISIT 2: Talebi Karşılama ---
 for h in hatlar:
     for g in gunler:
-        toplam_tasima_kapasitesi = []
+        toplam_kapasite = []
         for a in arac_turleri:
-            kapasite = arac_parametreleri[a]["kapasite_desi"]
-            
-            # Kiralık ve spot araçların getirdiği toplam desi kapasitesi
-            toplam_tasima_kapasitesi.append(kiralik_x[(h, g, a)] * kapasite)
-            toplam_tasima_kapasitesi.append(spot_y[(h, g, a)] * kapasite)
-        
-        # Matematiksel Kısıt: Kapasite >= Ebubekir'in Tahmini Talebi
-        model.Add(sum(toplam_tasima_kapasitesi) >= talep_verisi[(h, g)])
+            kap = arac_parametreleri[a]["kapasite_desi"]
+            toplam_kapasite.append(kiralik_x[(h, g, a)] * kap)
+            toplam_kapasite.append(spot_y[(h, g, a)] * kap)
+        model.Add(sum(toplam_kapasite) >= talep_verisi[(h, g)])
 
-# 5. Çözüm Aşaması
+# --- ÇÖZÜM ---
 solver = cp_model.CpSolver()
-# Yarışmadaki 10 dakika (600 saniye) kısıtını aşmamak için emniyet sınırı koyuyoruz
-solver.parameters.max_time_in_seconds = 60.0 
-
+solver.parameters.max_time_in_seconds = 60.0
 status = solver.Solve(model)
 
-# 6. Sonuçların Alınması ve Excel Hazırlık Yapısı
+# --- SONUÇLARI YAZDIR ---
 if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
-    print(f"--- OPTİMİZASYON BAŞARILI ---")
-    print(f"README'ye Yazılacak Toplam Maliyet: {solver.ObjectiveValue()} TL\n")
+    print(f"OPTIMIZASYON BASARILI")
+    print(f"Toplam Maliyet: {solver.ObjectiveValue():,.0f} TL\n")
     
-    # Test için ilk birkaç kararı ekrana yazdıralım
     for h in hatlar:
         for g in gunler:
             for a in arac_turleri:
                 k_adet = solver.Value(kiralik_x[(h, g, a)])
                 s_adet = solver.Value(spot_y[(h, g, a)])
                 if k_adet > 0 or s_adet > 0:
-                    print(f"{g} günü {h} hattı için -> Kiralık {a}: {k_adet} adet | Spot {a}: {s_adet} adet")
+                    kap = arac_parametreleri[a]["kapasite_desi"]
+                    k_kap = k_adet * kap
+                    s_kap = s_adet * kap
+                    print(f"{g} | {h} | {a}: Kiralık={k_adet} ({k_kap} desi), Spot={s_adet} ({s_kap} desi)")
 else:
-    print("Geçerli bir çözüm bulunamadı! Kısıtları veya verileri kontrol edin.")
+    print("Çözüm bulunamadı! Talepler çok yüksek veya stok yetersiz.")
