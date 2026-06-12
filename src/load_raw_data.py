@@ -10,7 +10,7 @@ def load_raw_data(data_folder=os.path.join("data", "raw")):
     
     # Tam dosya yollarını tam olarak belirttiğin isimlere göre eşliyoruz
     talep_path = os.path.join(data_folder, "Desi_talep.xlsx")
-    koordinat_path = os.path.join(data_folder, "Koordinatlar.xlsx")
+    koordinat_path = os.path.join(data_folder, "Koordinatlar v2.xlsx")
     kiralik_path = os.path.join(data_folder, "Kiralık_Araçlar.xlsx")
     maliyet_path = os.path.join(data_folder, "Araç_Kapasite_Maliyet.xlsx")
     
