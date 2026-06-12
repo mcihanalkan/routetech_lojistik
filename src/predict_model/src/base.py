@@ -78,10 +78,31 @@ class BaseForecaster(ABC, BaseEstimator):
         return df
 
     def _train_test_split(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        """Zaman bazlı (Walk-Forward) split"""
-        split_idx = int(len(df) * self.train_test_split)
-        train = df.iloc[:split_idx].copy()
-        test = df.iloc[split_idx:].copy()
+        """Zaman bazlı (Walk-Forward) split - TM_ID bağımsız, kesin tarih ayrımı.
+        
+        Veriyi satır sayısına göre DEĞİL benzersiz tarihlerin sıralı dağılımına
+        göre böler. Böylece train seti her zaman geçmiş, test seti gelecek
+        tarihlerden oluşur; hiçbir şubenin (TM_ID) gelecek verisi train'e sızmaz.
+        """
+        unique_dates = df[self.date_column].sort_values().unique()
+        split_idx = int(len(unique_dates) * self.train_test_split)
+        # Test setinin boş kalmaması için sınır koruması
+        split_idx = min(split_idx, len(unique_dates) - 1)
+        split_date = unique_dates[split_idx]
+        
+        train = df[df[self.date_column] < split_date].copy()
+        test = df[df[self.date_column] >= split_date].copy()
+        
+        if self.logging_enabled:
+            logger.info(
+                f"✅ Walk-Forward split tamamlandı:\n"
+                f"   Split tarihi : {split_date}\n"
+                f"   Train        : {len(train):,} satır "
+                f"({df[self.date_column].min()} → train sonu)\n"
+                f"   Test         : {len(test):,} satır "
+                f"(split_date → {df[self.date_column].max()})"
+            )
+        
         return train, test
     
     def backtest(
@@ -90,60 +111,96 @@ class BaseForecaster(ABC, BaseEstimator):
         num_backtests: int = 3,
         stride: Optional[int] = None
     ) -> Dict[str, Any]:
-        """Saf Pandas ile Time Series Cross Validation (Walk-Forward)"""
+        """Saf Pandas ile Time Series Cross Validation (Walk-Forward).
+
+        Pencere sınırları satır sayısına göre DEĞİL, benzersiz tarih listesi
+        üzerinden kaydırılır. Böylece _train_test_split ile tutarlı şekilde
+        her pencerede de günün tüm şubeleri (TM_ID) birlikte train veya
+        test tarafına düşer; günün ortasında kesim yapılmaz.
+        """
         if not self.is_fitted_ or self.model_ is None:
             raise ValueError("❌ Önce fit() çağrılmalı ve model kurulmalı!")
-            
+
         df = self._prepare_dataframe(df)
+
+        # Tüm pencere hesaplamaları unique date ekseninde yapılır
+        unique_dates = df[self.date_column].sort_values().unique()
+        n_dates = len(unique_dates)
+
         if stride is None:
-            stride = max(len(df) // (num_backtests + 2), self.forecast_horizon)
-            
+            stride = max(n_dates // (num_backtests + 2), self.forecast_horizon)
+
         results = {
             'num_backtests': num_backtests,
-            'stride': stride,
+            'stride': stride,          # gün cinsinden stride
             'errors': [],
             'successful_splits': 0
         }
-        
+
         if self.logging_enabled:
-            logger.info(f"🔄 Backtesting başlıyor ({num_backtests} split)...\n   Stride: {stride}")
-            
+            logger.info(
+                f"🔄 Backtesting başlıyor ({num_backtests} split)...\n"
+                f"   Stride: {stride} gün | Toplam benzersiz tarih: {n_dates}"
+            )
+
         for i in range(num_backtests):
-            window_start = i * stride
-            train_end_idx = window_start + stride
-            test_end_idx = min(train_end_idx + self.forecast_horizon, len(df))
-            
-            if train_end_idx >= len(df) or test_end_idx <= train_end_idx:
+            # Pencere sınırları tarih dizisi üzerinden belirlenir
+            train_end_date_idx = (i + 1) * stride
+            test_end_date_idx  = min(train_end_date_idx + self.forecast_horizon, n_dates)
+
+            if train_end_date_idx >= n_dates or test_end_date_idx <= train_end_date_idx:
                 continue
-                
-            train_backtest = df.iloc[:train_end_idx]
-            test_backtest = df.iloc[train_end_idx:test_end_idx]
-            
+
+            train_cutoff = unique_dates[train_end_date_idx]
+            test_cutoff  = unique_dates[test_end_date_idx - 1]
+
+            # Tarih bazlı filtreleme → günün tüm TM_ID'leri birlikte geçer
+            train_backtest = df[df[self.date_column] < train_cutoff]
+            test_backtest  = df[
+                (df[self.date_column] >= train_cutoff) &
+                (df[self.date_column] <= test_cutoff)
+            ]
+
+            if train_backtest.empty or test_backtest.empty:
+                continue
+
             try:
                 model_copy = deepcopy(self.model_)
                 # Gelecekteki CatBoost yapısına uygun X, y ayırma mantığı
                 X_train = train_backtest.drop(columns=[self.target_column, self.date_column])
                 y_train = train_backtest[self.target_column]
-                X_test = test_backtest.drop(columns=[self.target_column, self.date_column])
-                y_test = test_backtest[self.target_column]
-                
+                X_test  = test_backtest.drop(columns=[self.target_column, self.date_column])
+                y_test  = test_backtest[self.target_column]
+
                 model_copy.fit(X_train, y_train)
                 preds = model_copy.predict(X_test)
-                
-                mae = np.mean(np.abs(y_test.values - preds))
+
+                mae  = np.mean(np.abs(y_test.values - preds))
                 rmse = np.sqrt(np.mean((y_test.values - preds) ** 2))
-                
-                results['errors'].append({'mae': mae, 'rmse': rmse})
+
+                results['errors'].append({
+                    'mae': mae,
+                    'rmse': rmse,
+                    'train_cutoff': str(train_cutoff),
+                    'test_cutoff':  str(test_cutoff),
+                })
                 results['successful_splits'] += 1
-                
+
+                if self.logging_enabled:
+                    logger.info(
+                        f"   Backtest {i+1}: train < {train_cutoff} | "
+                        f"test [{train_cutoff} → {test_cutoff}] | "
+                        f"MAE={mae:.4f} RMSE={rmse:.4f}"
+                    )
+
             except Exception as e:
                 logger.error(f"❌ Backtest {i+1} hatası: {str(e)}")
                 results['errors'].append({'error': str(e)})
                 continue
-                
+
         if results['successful_splits'] == 0:
             raise ValueError("❌ Backtest başarısız! Hiçbir split çalışmadı")
-            
+
         self.backtest_results_ = results
         return results
 
