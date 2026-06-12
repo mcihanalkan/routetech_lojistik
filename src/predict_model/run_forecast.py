@@ -213,29 +213,29 @@ def run(save_json: bool = True) -> Dict[str, Any]:
         f"{full_df[GROUP_COL].nunique()} rota × 7 gün)"
     )
 
-    # --- 4. ALNS Payload ---
+    # --- 4. OR-Tools Payload (DataFrame Dönüşümü) ---
     band = UncertaintyBand(buffer_ratio=0.5, logging_enabled=True)
-    payload = band.to_alns_payload(
+
+    df_ortools = band.to_ortools_dataframe(
         predictions = raw_preds,
         date_key    = DATE_COL,
         group_key   = GROUP_COL,
     )
-
-    # --- 5. JSON kaydet (debug / arşiv) ---
-    if save_json:
-        with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2, default=str)
-        logger.info(f"💾 ALNS payload kaydedildi: {OUTPUT_JSON}")
-
+    # --- 5. CSV Kaydet (OR-Tools doğrudan bu dosyayı okuyacak) ---
+    OUTPUT_CSV = "ortools_payload.csv"
+    df_ortools.to_csv(OUTPUT_CSV, index=False)
+    logger.info(f"💾 OR-Tools payload kaydedildi: {OUTPUT_CSV}")
     logger.info(
         f"\n{'='*60}\n"
         f"✅ Tamamlandı!\n"
-        f"   Tahmin sayısı  : {payload['metadata']['n_records']}\n"
+        f"   Tahmin sayısı  : {len(df_ortools)}\n"
         f"   Tarih aralığı  : {PREDICT_START} → {PREDICT_END}\n"
-        f"   Risk dağılımı  : {payload['risk_summary']}\n"
-        f"{'='*60}"
+        f"============================================================"
     )
-    return payload
+    print("\n📋 OR-Tools Payload Örnek (İlk 5 Satır):")
+    print(df_ortools.head().to_string(index=False))
+
+    return df_ortools
 
 
 # ---------------------------------------------------------------------------
@@ -243,8 +243,4 @@ def run(save_json: bool = True) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    payload = run(save_json=True)
-
-    print("\n📋 ALNS Payload örnek (ilk 3 kayıt):")
-    for rec in payload["demands"][:3]:
-        print(json.dumps(rec, ensure_ascii=False, indent=2))
+    run(save_json=True)
