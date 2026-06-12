@@ -1,0 +1,5 @@
+﻿vehicle_type,capacity,rental_fixed,rental_km,spot_fixed,spot_km
+Tır,22400,7000,13,11700,25
+Kamyon,12000,5000,10,7638,21
+Hafif Kamyon,7200,5000,10,8750,20
+Kamyonet,5600,3750,6,4750,18

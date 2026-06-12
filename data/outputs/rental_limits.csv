@@ -1,0 +1,13 @@
+﻿source,destination,vehicle_count,vehicle_type
+İstanbul,Yalova,2,Tır
+İstanbul,Eskişehir,2,Tır
+Kocaeli,Yalova,1,Tır
+İstanbul,Manisa,1,Tır
+İstanbul,Balıkesir,1,Tır
+İstanbul,Tekirdağ,1,Tır
+Kocaeli,İstanbul,1,Tır
+Kocaeli,Tekirdağ,1,Tır
+Yalova,Eskişehir,1,Kamyon
+Kocaeli,Balıkesir,1,Kamyon
+Kocaeli,Eskişehir,1,Kamyon
+Yalova,Tekirdağ,1,Kamyon

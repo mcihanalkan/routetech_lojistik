@@ -2,8 +2,6 @@ import pandas as pd
 import numpy as np
 from typing import Optional, List, Dict, Any
 import logging
-from sklearn.impute import KNNImputer
-from sklearn.preprocessing import StandardScaler
 from sklearn.base import BaseEstimator, TransformerMixin
 
 logger = logging.getLogger(__name__)
@@ -176,6 +174,15 @@ class DataPreprocessor(BaseEstimator, TransformerMixin):
     
     def _fit_knn(self, X: pd.DataFrame, columns: list) -> None:
         """KNN fit"""
+        try:
+            from sklearn.impute import KNNImputer
+            from sklearn.preprocessing import StandardScaler
+        except ImportError as exc:
+            raise ImportError(
+                "KNN missing-value strategy requires a working scikit-learn installation. "
+                "Use strategy='mean' or strategy='median', or fix the scikit-learn runtime."
+            ) from exc
+
         numeric_cols = list(X[columns].select_dtypes(include=[np.number]).columns)
         
         if not numeric_cols:

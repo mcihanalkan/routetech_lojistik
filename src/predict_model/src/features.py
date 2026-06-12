@@ -81,11 +81,13 @@ def _to_polars(df: pd.DataFrame) -> pl.DataFrame:
         for col in df.columns:
             s = df[col]
             if pd.api.types.is_datetime64_any_dtype(s):
-                data[col] = pl.Series(col, s.astype("int64").values).cast(
-                    pl.Datetime("ns")
-                )
+                data[col] = pl.Series(col, list(pd.to_datetime(s).dt.to_pydatetime()))
+            elif pd.api.types.is_numeric_dtype(s):
+                data[col] = pl.Series(col, s.to_numpy(dtype="float64", na_value=np.nan))
+            elif pd.api.types.is_bool_dtype(s):
+                data[col] = pl.Series(col, s.fillna(False).astype(bool).to_numpy())
             else:
-                data[col] = pl.Series(col, s.values)
+                data[col] = pl.Series(col, s.fillna("").astype(str).to_numpy())
         return pl.DataFrame(data)
 
 
@@ -628,7 +630,12 @@ def build_feature_matrix(
             )
 
     # --- Adım 8: Polars → Pandas (CatBoost / sklearn uyumluluğu için) ---
-    result: pd.DataFrame = pl_df.to_pandas()
+    try:
+        result: pd.DataFrame = pl_df.to_pandas()
+    except ModuleNotFoundError as exc:
+        if exc.name != "pyarrow":
+            raise
+        result = pd.DataFrame(pl_df.to_dicts())
 
     logger.info(
         f"✅ Feature matrix hazır (Polars backend): "

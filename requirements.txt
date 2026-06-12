@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 pandas>=2.0
 numpy>=1.26
 openpyxl>=3.1
@@ -10,10 +9,4 @@ scipy>=1.12
 holidays>=0.45
 optuna>=3.6
 polars>=0.20
-=======
-ortools>=9.8
-pandas>=2.0
-numpy>=1.24
-openpyxl>=3.1
 haversine>=2.8
->>>>>>> a65d440fd46c1a88e358f2113b6dbf28e4956207
