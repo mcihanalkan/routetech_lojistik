@@ -58,22 +58,23 @@ def _search_space(n_rows: int) -> dict:
     Veri boyutuna göre Optuna arama uzayı.
     Küçük veri → sığ/regularize, büyük veri → derin/kapasiteli.
 
-    small bucket değişiklikleri (overfit düzeltmesi v2):
-      - depth  : (3,6) → (3,4)    — derinlik daha da kısıtlandı, ezber azalır
-      - iter   : (400,1200) → (300,600) — daha düşük üst sınır, early_stopping
-                                          ile birlikte kapasiteyi sınırlar
-      - lr     : (0.02,0.12) → (0.02,0.08) — düşük depth ile dengeyi korur
-      - l2     : (5.0,20.0) → (10.0,30.0)  — regularizasyon tabanı yükseltildi
+    small bucket değişiklikleri (v3 — derinleşme + yeni feature'lar):
+      - depth  : (3,4) → (4,8)     — yeni calendar/backlog feature'larını
+                                      öğrenebilmesi için ağaçlar serbest
+      - l2     : (10.0,30.0) → (10.0,40.0) — derinleşmeye karşı ceza üst
+                                      sınırı artırıldı, ezber dengelendi
+    Diğer bucket'larda da depth alt/üst sınırları ve l2 üst sınırı
+    aynı mantıkla genişletildi (max l2=40.0).
     """
     if n_rows < 5_000:
-        return dict(iter=(200, 600, 100), depth=(3, 5), lr=(0.02, 0.15), l2=(5.0, 15.0), bag=(0.1, 0.5))
+        return dict(iter=(200, 600, 100), depth=(3, 6), lr=(0.02, 0.15), l2=(5.0, 25.0), bag=(0.1, 0.5))
     if n_rows < 30_000:
-        return dict(iter=(300, 600, 50), depth=(3, 4), lr=(0.02, 0.08), l2=(10.0, 30.0), bag=(0.2, 0.6))
+        return dict(iter=(300, 600, 50), depth=(4, 8), lr=(0.02, 0.08), l2=(10.0, 40.0), bag=(0.2, 0.6))
     if n_rows < 100_000:
-        return dict(iter=(600, 1500, 100), depth=(5, 7), lr=(0.005, 0.08), l2=(2.0, 10.0), bag=(0.1, 0.6))
+        return dict(iter=(600, 1500, 100), depth=(5, 8), lr=(0.005, 0.08), l2=(2.0, 40.0),  bag=(0.1, 0.6))
     if n_rows < 500_000:
-        return dict(iter=(800, 2000, 100), depth=(6, 8), lr=(0.003, 0.05), l2=(0.5, 6.0),  bag=(0.1, 0.7))
-    return dict(iter=(1000, 3000, 200), depth=(7, 9), lr=(0.001, 0.03), l2=(0.1, 4.0),  bag=(0.1, 0.8))
+        return dict(iter=(800, 2000, 100), depth=(6, 8), lr=(0.003, 0.05), l2=(0.5, 40.0),  bag=(0.1, 0.7))
+    return dict(iter=(1000, 3000, 200), depth=(7, 9), lr=(0.001, 0.03), l2=(0.1, 40.0),  bag=(0.1, 0.8))
 
 
 def _bucket_name(n_rows: int) -> str:
