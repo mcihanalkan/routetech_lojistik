@@ -180,15 +180,22 @@ def run(save_json: bool = True) -> Dict[str, Any]:
     forecaster = DemandForecaster(
         target_column    = TARGET_COL,
         date_column      = DATE_COL,
-        group_column     = GROUP_COL,      # "rota" sütunu
-        train_test_split = 0.85,           # Son ~%15 internal test
+        group_column     = GROUP_COL,
+        train_test_split = 0.85,
         forecast_horizon = 7,
-        lags             = [1, 2, 3, 7, 14, 21, 30],
+        lags             = [1, 7, 14, 21, 30],  # lag_30 geri eklendi: aylık sezonsallık
         rolling_windows  = [7, 14],
         logging_enabled  = True,
         random_state     = 42,
+        outlier_clip_multiplier = 2.5,   # 1.5→2.5: gerçek talep zirveleri artık kırpılmıyor
+        log_transform_enabled   = False,
     )
     forecaster.fit(full_df)
+
+    # --- Feature Importance ---
+    importances = forecaster.get_feature_importances()
+    print("\n\U0001f525 En Önemli 10 Feature:")
+    print(importances.head(10))
 
     # --- 3. Predict grid ---
     predict_grid = build_predict_grid(full_df)
