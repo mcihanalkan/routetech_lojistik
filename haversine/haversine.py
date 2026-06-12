@@ -182,6 +182,31 @@ def build_distance_lookup(route_distances: pd.DataFrame) -> dict[tuple[str, str]
         for row in route_distances.itertuples(index=False)
     }
 
+def GetDistanceMatrixAsList():
+    """
+    Transfer merkezi mesafelerini 2D Python list halinde döndürür.
+    
+    Optimization.py'de direkt kullanım için tasarlanmıştır.
+    
+    Returns:
+        tuple: (centers_list, distance_matrix_2d_list)
+            - centers_list: Transfer merkezi adlarının sıralanmış listesi
+            - distance_matrix_2d_list: 2D list halinde mesafe matrisi (km cinsinden)
+    
+    Örnek:
+        centers, distances = GetDistanceMatrixAsList()
+        istanbul_idx = centers.index("İstanbul")
+        yalova_idx = centers.index("Yalova")
+        mesafe = distances[istanbul_idx][yalova_idx]
+    """
+    project_root = Path(__file__).resolve().parents[1]
+    coordinates = _load_coordinates_for_script(project_root)
+    matrix = build_center_distance_matrix(coordinates)
+    
+    centers = matrix.index.tolist()
+    distances_2d = matrix.values.tolist()
+    
+    return centers, distances_2d
 
 def _load_coordinates_for_script(project_root: Path) -> pd.DataFrame:
     path = project_root / "data" / "raw" / "Koordinatlar v2.xlsx"
