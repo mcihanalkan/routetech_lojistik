@@ -289,6 +289,80 @@ class UncertaintyBand:
 
         return payload
 
+    def to_ortools_dataframe(
+        self,
+        predictions: List[Dict[str, Any]],
+        date_key: str = "tarih",
+        group_key: str = "TM_ID",
+    ) -> "pd.DataFrame":
+        """
+        Tahminleri OR-Tools Optimizasyon motorunun kullanabileceği
+        düz (flat) DataFrame formatına çevirir.
+
+        TM_ID'yi "Kaynak" ve "Varış" düğümlerine böler; OR-Tools'un
+        kenar tabanlı araç atama algoritması bu ayrımı zorunlu kılar.
+
+        Çıktı sütunlar
+        --------------
+        date                : Tahmin tarihi
+        source              : Kaynak Transfer Merkezi
+        destination         : Varış Transfer Merkezi
+        q10                 : Düşük senaryo
+        q50                 : Medyan tahmin
+        q90                 : Yüksek senaryo (spot araç alarm seviyesi)
+        recommended_demand  : q50 + safety_buffer (OR-Tools kapasite girdisi)
+
+        Parameters
+        ----------
+        predictions : DemandForecaster.predict() çıktısı (List[Dict])
+        date_key    : Tarih anahtarı (varsayılan: "tarih")
+        group_key   : Grup anahtarı (varsayılan: "TM_ID")
+
+        Returns
+        -------
+        pd.DataFrame
+        """
+        import pandas as pd
+
+        # 1. Tahminleri içeri al ve belirsizlik bantlarını/tamponları hesapla
+        self.from_json(predictions, date_key=date_key, group_key=group_key)
+
+        # 2. OR-Tools formatında listeyi hazırla
+        records = []
+        for b in self.bands_:
+            # TM_ID'yi "Kaynak" ve "Varış" olarak ikiye böl (OR-Tools node'ları)
+            # DemandBand'deki alan adları: b.tm_id ve b.tarih
+            group_id = b.tm_id or "Bilinmiyor"
+            source, dest = group_id, "Bilinmiyor"
+            if " → " in group_id:
+                source, dest = group_id.split(" → ", 1)
+            elif " -> " in group_id:
+                source, dest = group_id.split(" -> ", 1)
+            elif "-" in group_id:
+                source, dest = group_id.split("-", 1)
+
+            # OR-Tools için net talep = Medyan Tahmin + Risk Tamponu
+            recommended_demand = b.q50 + b.safety_buffer
+            records.append({
+                "date":               b.tarih,
+                "source":             source.strip(),
+                "destination":        dest.strip(),
+                "q10":                round(b.q10, 2),
+                "q50":                round(b.q50, 2),
+                "q90":                round(b.q90, 2),
+                "recommended_demand": round(recommended_demand, 2),
+            })
+
+        df_ortools = pd.DataFrame(records)
+
+        if self.logging_enabled:
+            logger.info(
+                f"⚙️  OR-Tools payload'u hazırlandı: {len(df_ortools)} satır, "
+                f"7 sütun (date, source, destination, q10, q50, q90, recommended_demand)."
+            )
+
+        return df_ortools
+
     def get_high_risk_records(self) -> List[Dict[str, Any]]:
         """
         Yalnızca HIGH riskli kayıtları döndürür.
