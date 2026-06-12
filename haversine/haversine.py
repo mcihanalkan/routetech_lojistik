@@ -84,13 +84,15 @@ def is_city_between(
     destination: str,
     candidate: str,
     center_matrix: pd.DataFrame,
-    tolerance: float = 0.15,
+    tolerance: float = 0.12,
+    base_km: float = 40.0,
 ) -> bool:
     """
     Check whether candidate can be a reasonable stopover on source -> destination.
 
-    This is only a geometric stopover rule:
-    source->candidate + candidate->destination <= source->destination * (1 + tolerance)
+    Dynamic extra-road rule:
+    extra_km = source->candidate + candidate->destination - source->destination
+    allowed_extra_km = max(base_km, source->destination * tolerance)
 
     It must not be interpreted as consolidation permission.
     """
@@ -107,13 +109,16 @@ def is_city_between(
 
     direct_distance = float(center_matrix.loc[source, destination])
     via_distance = float(center_matrix.loc[source, candidate] + center_matrix.loc[candidate, destination])
-    return via_distance <= direct_distance * (1 + tolerance)
+    extra_distance = via_distance - direct_distance
+    max_allowed_extra_distance = max(base_km, direct_distance * tolerance)
+    return extra_distance <= max_allowed_extra_distance
 
 
 def build_stopover_candidate_table(
     coordinates: pd.DataFrame,
     routes: pd.DataFrame,
-    tolerance: float = 0.15,
+    tolerance: float = 0.12,
+    base_km: float = 40.0,
 ) -> pd.DataFrame:
     """
     Build allowed source -> stopover -> destination triples for OR-Tools.
@@ -137,6 +142,7 @@ def build_stopover_candidate_table(
                 candidate,
                 center_matrix,
                 tolerance=tolerance,
+                base_km=base_km,
             ):
                 continue
 
@@ -151,6 +157,7 @@ def build_stopover_candidate_table(
                     "destination": route.destination,
                     "direct_distance_km": direct_distance,
                     "via_distance_km": via_distance,
+                    "extra_distance_km": via_distance - direct_distance,
                     "detour_ratio": via_distance / direct_distance - 1,
                 }
             )
@@ -163,6 +170,7 @@ def build_stopover_candidate_table(
             "destination",
             "direct_distance_km",
             "via_distance_km",
+            "extra_distance_km",
             "detour_ratio",
         ],
     )

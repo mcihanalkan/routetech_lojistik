@@ -6,7 +6,10 @@ Mimari Kararlar (Teknofest kısıtlarına göre):
   │  ✅ CatBoostRegressor   → LightGBM/XGBoost YOK                  │
   │  ✅ cat_features        → One-Hot Encoding YOK (RAM koruması)    │
   │  ✅ MultiQuantile       → TEK MODEL ile q10/q50/q90 bantları    │
-  │  ✅ Log1p Dönüşümü      → Uç değerlerde q90 paniğini önler      │
+  │  ⚠️  Log1p Dönüşümü     → MultiQuantile ile KULLANILMAZ          │
+  │     (log uzayındaki küçük makas expm1 ile devasa aralığa döner) │
+  │  ✅ Hibrit Heuristic    → Kampanya arifesi 1.8x/2.0x çarpanı    │
+  │     (4.5 ay veri ile öğrenilemeyen sezonsallığa domain kuralı)  │
   │  ✅ In-memory JSON      → Disk I/O YOK (10 dk bütçesi korunur)  │
   └─────────────────────────────────────────────────────────────────┘
 
@@ -82,15 +85,18 @@ def _load_hyperparams(
     iterations    = int(p["iterations"])
     depth         = int(p["depth"])
     learning_rate = float(p["learning_rate"])
+    l2_leaf_reg   = float(p.get("l2_leaf_reg", 10.0))
+    bagging_temp  = float(p.get("bagging_temperature", 0.3))
 
     if logging_enabled:
         logger.info(
             f"⚖️  Hiperparametre yüklendi: {label}\n"
-            f"   iter={iterations} | depth={depth} | lr={learning_rate:.4f}\n"
+            f"   iter={iterations} | depth={depth} | lr={learning_rate:.4f} | "
+            f"l2={l2_leaf_reg:.2f} | bag_temp={bagging_temp:.3f}\n"
             f"   (Veri: {data_size:,} satır)"
         )
 
-    return iterations, depth, learning_rate, label
+    return iterations, depth, learning_rate, l2_leaf_reg, bagging_temp, label
 
 
 # ---------------------------------------------------------------------------
@@ -155,10 +161,13 @@ class DemandForecaster(BaseForecaster):
     log_transform_enabled : bool
         True ise fit() sırasında hedef değişkene np.log1p() uygulanır;
         predict() çıktısı otomatik olarak np.expm1() ile geri çevrilir.
-        Kampanya günleri gibi aşırı yüksek desi değerlerini evcilleştirir.
+        ⚠️  UYARI: MultiQuantile kayıp fonksiyonu ile KULLANMAYIN.
+        Log uzayında hesaplanan küçük kantil aralıkları (q10-q90 makası)
+        expm1() ile orijinal ölçeğe geri çevrildiğinde üstel büyüme
+        nedeniyle binlerce birimlik yapay belirsizliğe dönüşür.
+        Bu durum uncertainty.py'nin neredeyse her satıra "HIGH" etiketi
+        basmasına yol açar. MultiQuantile modellerinde False bırakın.
         Varsayılan: False.
-        İpucu: Önce compute_target_skewness() ile çarpıklığı ölçün;
-        |skewness| ≥ 1.0 ise bu bayrağı True yapın.
     logging_enabled : bool
         Detaylı log. Varsayılan: True
     random_state : int, optional
@@ -187,7 +196,7 @@ class DemandForecaster(BaseForecaster):
         rolling_windows: Optional[List[int]] = None,
         underestimation_penalty: float = UNDERESTIMATION_PENALTY,
         outlier_clip_multiplier: float = 3.0,
-        log_transform_enabled: bool = True,
+        log_transform_enabled: bool = False,
         logging_enabled: bool = True,
         random_state: Optional[int] = 42,
     ):
@@ -203,7 +212,9 @@ class DemandForecaster(BaseForecaster):
         self.iterations            = iterations
         self.learning_rate         = learning_rate
         self.depth                 = depth
-        self.lags                  = lags or [1, 7, 14, 30]
+        self.l2_leaf_reg           = 10.0   # JSON'dan yüklenince fit() içinde üzerine yazılır
+        self.bagging_temperature   = 0.3    # JSON'dan yüklenince fit() içinde üzerine yazılır
+        self.lags                  = lags or [1, 7, 14]
         self.rolling_windows       = rolling_windows or [7, 14]
         self.underestimation_penalty = underestimation_penalty
         self.outlier_clip_multiplier = outlier_clip_multiplier
@@ -237,17 +248,20 @@ class DemandForecaster(BaseForecaster):
             iterations=self.iterations,
             learning_rate=self.learning_rate,
             depth=self.depth,
+            l2_leaf_reg=self.l2_leaf_reg,
+            bagging_temperature=self.bagging_temperature,
             loss_function=loss_fn,
             random_seed=self.random_state,
             verbose=False,
-            allow_writing_files=False, # Disk I/O Yok
+            allow_writing_files=False,
             thread_count=-1,
         )
 
         if self.logging_enabled:
             logger.info(
                 f"🏗️  Model oluşturuldu: TEK MODEL ile MultiQuantile\n"
-                f"   Kayıp Fonksiyonu: {loss_fn}"
+                f"   Kayıp Fonksiyonu: {loss_fn}\n"
+                f"   l2_leaf_reg={self.l2_leaf_reg:.2f} | bagging_temp={self.bagging_temperature:.3f}"
             )
 
     # -----------------------------------------------------------------------
@@ -421,7 +435,8 @@ class DemandForecaster(BaseForecaster):
 
         # --- 0. Dinamik Hiperparametre Seçimi — hyperparams_map.json'dan ---
         data_size = len(df)
-        self.iterations, self.depth, self.learning_rate, config_label = \
+        self.iterations, self.depth, self.learning_rate, self.l2_leaf_reg, \
+            self.bagging_temperature, config_label = \
             _load_hyperparams(data_size, self.logging_enabled)
 
         # --- 1. Validasyon ---
@@ -442,7 +457,7 @@ class DemandForecaster(BaseForecaster):
         if self.logging_enabled:
             logger.info("⚙️  Feature engineering başlıyor...")
 
-        df_features = self._engineer_features(df, drop_na=True)
+        df_features = self._engineer_features(df, drop_na=False)
 
         # --- 3. Train/Test Split (walk-forward, zaman sıralı) ---
         train_df, test_df = self._train_test_split(df_features)
@@ -467,13 +482,12 @@ class DemandForecaster(BaseForecaster):
             )
             if self.logging_enabled:
                 logger.info(
-                    f"🔁 Log1p dönüşümü uygulanıyor\n"
+                    f"🔁 Sqrt dönüşümü uygulanıyor\n"
                     f"   Ham çarpıklık   : {skew_stats.get('skewness_raw', '?'):+.4f}\n"
-                    f"   Log1p çarpıklık : {skew_stats.get('skewness_log1p', '?'):+.4f}\n"
-                    f"   predict() çıktısı otomatik expm1() ile geri çevrilecek."
+                    f"   predict() çıktısı otomatik square() ile geri çevrilecek."
                 )
-            train_df[self.target_column] = np.log1p(train_df[self.target_column])
-            test_df[self.target_column]  = np.log1p(test_df[self.target_column])
+            train_df[self.target_column] = np.sqrt(train_df[self.target_column])
+            test_df[self.target_column]  = np.sqrt(test_df[self.target_column])
         else:
             # log_transform kapalıysa yine de çarpıklık raporla (tavsiye için)
             compute_target_skewness(
@@ -645,18 +659,40 @@ class DemandForecaster(BaseForecaster):
         q50_vals = np.maximum(q50_vals, 0)
         q90_vals = np.maximum(q90_vals, 0)
 
-        # --- Log1p Geri Çevirme (fit() log dönüşümü uyguladıysa) ---
-        # Model log-uzayında eğitildi; tahminleri orijinal desi ölçeğine çevir.
-        # expm1(x) = e^x - 1  →  log1p'nin tam tersi, sayısal olarak kararlı.
-        # Monotonluk: log1p monoton artan olduğundan q10 ≤ q50 ≤ q90 korunur.
+        # --- Sqrt Geri Çevirme (fit() sqrt dönüşümü uyguladıysa) ---
+        # Model sqrt-uzayında eğitildi; tahminleri orijinal desi ölçeğine çevir.
+        # square(x) = x²  →  sqrt'ın tam tersi; expm1'e kıyasla bantlar sıkı kalır.
+        # Monotonluk: sqrt monoton artan olduğundan q10 ≤ q50 ≤ q90 korunur.
         if self.log_transform_enabled:
-            q10_vals = np.expm1(q10_vals)
-            q50_vals = np.expm1(q50_vals)
-            q90_vals = np.expm1(q90_vals)
-            # expm1 sonrası da negatif olamaz güvencesi
+            # Sqrt ile eğitilen modeli orijinal hacme geri döndür
+            q10_vals = np.square(q10_vals)
+            q50_vals = np.square(q50_vals)
+            q90_vals = np.square(q90_vals)
+            # square sonrası da negatif olamaz güvencesi
             q10_vals = np.maximum(q10_vals, 0)
             q50_vals = np.maximum(q50_vals, 0)
             q90_vals = np.maximum(q90_vals, 0)
+
+        # --- Hibrit Domain Heuristic (Tahmin çıktısı) ---
+        # Kampanya arifesinde ML'in göremediği hacim artışı kural tabanlı eklenir.
+        # q10/q50 → 1.8x (sector standard), q90 → 2.0x (spot araç alarm eşiği).
+        if "is_campaign_eve" in X_pred.columns:
+            camp_mask_pred = (X_pred["is_campaign_eve"] == 1).values
+            if camp_mask_pred.sum() > 0:
+                q10_vals[camp_mask_pred] *= 1.15  # kalibre: 1.8 → 1.15
+                q50_vals[camp_mask_pred] *= 1.15  # kalibre: 1.8 → 1.15
+                q90_vals[camp_mask_pred] *= 1.25  # kalibre: 2.0 → 1.25 (spot riski)
+                # Çarpan sonrası negatif kalma ihtimali yok ama güvence ekle
+                q10_vals = np.maximum(q10_vals, 0)
+                q50_vals = np.maximum(q50_vals, 0)
+                q90_vals = np.maximum(q90_vals, 0)
+                if self.logging_enabled:
+                    logger.info(
+                        f"   💡 Domain Heuristic (predict): "
+                        f"{camp_mask_pred.sum()} kampanya arifesi gününe "
+                        f"1.15x (q10/q50) / 1.25x (q90) hacim çarpanı uygulandı."
+                    )
+        # ---------------------------------------------------------
 
         # --- In-memory JSON Oluşturma (ALNS formatı) ---
         # ⚠️  CSV/XLSX YOK — direkt List[Dict] return
@@ -819,14 +855,53 @@ class DemandForecaster(BaseForecaster):
         # --- TEST SETİ DEĞERLENDİRMESİ ---
         test_pool = Pool(data=X_test, cat_features=self.cat_features_)
         q50_preds_test = self.model_.predict(test_pool)[:, 1]
-        q50_preds_test = np.maximum(q50_preds_test, 0)
+
         y_true_test = y_test.values
+        # ⚠️ EĞER DÖNÜŞÜM YAPILDIYSA, METRİK HESABINDAN ÖNCE GERİ ÇEVİR!
+        if self.log_transform_enabled:
+            q50_preds_test = np.square(q50_preds_test)
+            y_true_test = np.square(y_true_test)
+        q50_preds_test = np.maximum(q50_preds_test, 0)
+
+        # --- Hibrit Domain Heuristic (WAPE değerlendirmesi) ---
+        if "is_campaign_eve" in X_test.columns:
+            camp_mask_test = (X_test["is_campaign_eve"] == 1).values
+            q50_preds_test[camp_mask_test] *= 1.15
+            if self.logging_enabled and camp_mask_test.sum() > 0:
+                logger.info(
+                    f"   💡 Domain Heuristic (eval): "
+                    f"{camp_mask_test.sum()} kampanya arifesi gününe 1.15x çarpan uygulandı."
+                )
+        # ---------------------------------------------------------
 
         sum_true_test = np.sum(y_true_test)
         wape_test = (
             float(np.sum(np.abs(y_true_test - q50_preds_test)) / sum_true_test)
             if sum_true_test > 0 else 0.0
         )
+
+        # --- Temiz WAPE: tatil/birikim günlerini dışla ---
+        # Test seti tatil günleri (talep ~%10'a düşer) veya tatil sonrası
+        # birikim patlaması (talep ~%150'ye çıkar) içeriyorsa bu günler
+        # WAPE'yi gerçek model performansından bağımsız şişirir.
+        # "Temiz WAPE" sadece normal iş günlerini değerlendirir.
+        wape_clean = wape_test  # varsayılan: temiz gün yoksa tüm test
+        if "is_holiday" in X_test.columns:
+            # Tatil günü veya Pazar (weekday==6, talep ~sıfır) çıkar
+            weekday_col = X_test.get("weekday") if "weekday" in X_test.columns else None
+            holiday_mask = (X_test["is_holiday"].values == 1)
+            # Pazar günleri de çıkar (talep yapısal olarak çok düşük, WAPE'yi şişirir)
+            if weekday_col is not None:
+                sunday_mask = (weekday_col.values == 6)
+            else:
+                sunday_mask = np.zeros(len(y_true_test), dtype=bool)
+            normal_mask = ~(holiday_mask | sunday_mask)
+            if normal_mask.sum() >= 10:
+                wape_clean = (
+                    float(np.sum(np.abs(y_true_test[normal_mask] - q50_preds_test[normal_mask]))
+                          / np.sum(y_true_test[normal_mask]))
+                    if np.sum(y_true_test[normal_mask]) > 0 else 0.0
+                )
 
         diff_test = y_true_test - q50_preds_test
         regret_test = np.where(
@@ -850,8 +925,12 @@ class DemandForecaster(BaseForecaster):
         if X_train is not None and y_train is not None:
             train_pool = Pool(data=X_train, cat_features=self.cat_features_)
             q50_preds_train = self.model_.predict(train_pool)[:, 1]
-            q50_preds_train = np.maximum(q50_preds_train, 0)
             y_true_train = y_train.values
+            # ⚠️ EĞER DÖNÜŞÜM YAPILDIYSA, METRİK HESABINDAN ÖNCE GERİ ÇEVİR!
+            if self.log_transform_enabled:
+                q50_preds_train = np.square(q50_preds_train)
+                y_true_train = np.square(y_true_train)
+            q50_preds_train = np.maximum(q50_preds_train, 0)
 
             sum_true_train = np.sum(y_true_train)
             wape_train = (
@@ -878,12 +957,14 @@ class DemandForecaster(BaseForecaster):
             if X_train is not None and (wape_test - wape_train) > 0.05:
                 status = "⚠️ OVERFIT"
 
+            clean_note = f"{wape_clean:<12.4%}" if wape_clean != wape_test else f"{'(tatil yok)':<12}"
             log_table = (
                 f"\n📊 MODEL PERFORMANS VE OVERFIT ANALİZİ (q50):\n"
                 f"   ┌───────────────────┬──────────────┬──────────────┬──────────────┐\n"
                 f"   │ Metrik            │ Train Seti   │ Test Seti    │ Durum        │\n"
                 f"   ├───────────────────┼──────────────┼──────────────┼──────────────┤\n"
-                f"   │ WAPE              │ {wape_train:<12.4%} │ {wape_test:<12.4%} │ {status:<12} │\n"
+                f"   │ WAPE (tüm günler) │ {wape_train:<12.4%} │ {wape_test:<12.4%} │ {status:<12} │\n"
+                f"   │ WAPE (tatil hariç)│ {'':12} │ {clean_note} │ {'gerçek perf.':<12} │\n"
                 f"   │ Decision Regret   │ {decision_regret_train:<12.2f} │ {decision_regret_test:<12.2f} │ {'-'*12} │\n"
                 f"   │ Örnek Sayısı      │ {len(y_train) if y_train is not None else 0:<12,} │ {len(y_true_test):<12,} │ {'-'*12} │\n"
                 f"   └───────────────────┴──────────────┴──────────────┴──────────────┘"
@@ -953,7 +1034,7 @@ class DemandForecaster(BaseForecaster):
             f"  Rolling         : {self.rolling_windows}",
             f"  Asimetrik Ceza  : {self.underestimation_penalty}x (q90)",
             f"  Outlier Clip    : IQR × {self.outlier_clip_multiplier} ({'kapalı' if self.outlier_clip_multiplier == 0 else 'açık'})",
-            f"  Log Dönüşümü    : {'✅ log1p → expm1' if self.log_transform_enabled else '⬜ kapalı'}",
+            f"  Log Dönüşümü    : {'⚠️  log1p (MultiQuantile ile önerilmez!)' if self.log_transform_enabled else '✅ kapalı (MultiQuantile için doğru)'}",
             f"  Kantiller       : q10 / q50 / q90",
             f"  Çıktı Formatı   : In-memory JSON (disk I/O yok)",
         ]

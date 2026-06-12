@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 # Sabitler
 # ---------------------------------------------------------------------------
 
-DEFAULT_LAGS: List[int] = [1, 7, 14, 30]
+DEFAULT_LAGS: List[int] = [1, 7, 14]
 DEFAULT_ROLLING_WINDOWS: List[int] = [7, 14]
 HOLIDAY_LEAD_DAYS: int = 2
 
@@ -105,6 +105,108 @@ def _build_holiday_set(years: List[int]) -> set:
         tr_holidays = holidays_lib.country_holidays("TR", years=year)
         holiday_set.update(tr_holidays.keys())
     return holiday_set
+
+
+# ---------------------------------------------------------------------------
+# Yardımcı: Kampanya (E-Ticaret) Seti
+# ---------------------------------------------------------------------------
+
+def _build_campaign_set(years: List[int]) -> set:
+    """
+    Türkiye e-ticaret ve lojistik hacmini patlatan majör kampanya günlerini hesaplar.
+
+    Hareketsiz özel günler (Dünya Su Günü, Kızılay Haftası vb.) dahil edilmez.
+    Yalnızca online alışveriş zirvesi yaratan, kargo şubelerini kilitleyen günler:
+
+      1. Sevgililer Günü   -> 14 Şubat (sabit)
+      2. 11.11 İndirimleri -> 11 Kasım  (sabit)
+      3. Anneler Günü      -> Mayıs'ın 2. Pazarı (hareketli)
+      4. Babalar Günü      -> Haziran'ın 3. Pazarı (hareketli)
+      5. Efsane Cuma       -> Kasım'ın son Cuması (hareketli)
+
+    Not: Asıl kargo patlaması kampanya günü değil, önceki 3-5 gündür
+    (herkes hediyesini hafta içinde sipariş eder). Bu pencere
+    add_campaign_features() içinde lead_days ile modellenir.
+    """
+    campaign_set = set()
+    for y in years:
+        # 1. Sevgililer Günü (Sabit)
+        campaign_set.add(pd.Timestamp(year=y, month=2, day=14).date())
+
+        # 2. 11.11 İndirimleri (Sabit)
+        campaign_set.add(pd.Timestamp(year=y, month=11, day=11).date())
+
+        # 3. Anneler Günü (Mayıs'ın 2. Pazarı)
+        may_sundays = pd.date_range(start=f"{y}-05-01", end=f"{y}-05-31", freq="D")
+        may_sundays = may_sundays[may_sundays.weekday == 6]  # 6 = Pazar
+        campaign_set.add(may_sundays[1].date())              # index 1 = 2. Pazar
+
+        # 4. Babalar Günü (Haziran'ın 3. Pazarı)
+        jun_sundays = pd.date_range(start=f"{y}-06-01", end=f"{y}-06-30", freq="D")
+        jun_sundays = jun_sundays[jun_sundays.weekday == 6]  # 6 = Pazar
+        campaign_set.add(jun_sundays[2].date())              # index 2 = 3. Pazar
+
+        # 5. Efsane Cuma / Black Friday (Kasım'ın son Cuması)
+        nov_fridays = pd.date_range(start=f"{y}-11-01", end=f"{y}-11-30", freq="D")
+        nov_fridays = nov_fridays[nov_fridays.weekday == 4]  # 4 = Cuma
+        campaign_set.add(nov_fridays[-1].date())             # index -1 = Son Cuma
+
+    return campaign_set
+
+
+# ---------------------------------------------------------------------------
+# 2.5 Kampanya (E-Ticaret) Özellikleri
+# ---------------------------------------------------------------------------
+
+def add_campaign_features(
+    df: pl.DataFrame,
+    date_column: str,
+    lead_days: int = 5,
+) -> pl.DataFrame:
+    """
+    E-Ticaret kampanya günlerini ve kampanya öncesi sipariş dönemini ekler.
+
+    Lojistik gerçeği: Kargo patlaması kampanya gününde değil, kampanyadan
+    önceki 3-5 gün yaşanır — müşteriler hediyelerini hafta içi sipariş eder,
+    teslimat çoğunlukla kampanya günü veya haftasında olur. Bu nedenle:
+      - is_campaign_day : Asıl kampanya günü (Anneler Günü, Black Friday vb.)
+      - is_campaign_eve : Kampanyadan lead_days gün öncesine kadar olan dönem
+                          (kargo hacminin gerçekten arttığı sipariş penceresi)
+
+    Polars native pl.Date karşılaştırması kullanılır.
+    Eski epoch-bölme yaklaşımı Polars'ın yeni mikrosaniye Datetime'ında
+    sıfır ürettiğinden kaldırıldı.
+
+    Çıktı sütunlar
+    --------------
+    is_campaign_day : O gün ana kampanya günü mü?       (Int8, 0/1)
+    is_campaign_eve : Kampanya öncesi sipariş dönemi mi? (Int8, 0/1)
+    """
+    years = df.select(pl.col(date_column).dt.year()).to_series().unique().to_list()
+    campaign_set = _build_campaign_set(years)
+
+    # Python date objeleri — epoch matematiği yok, Polars versiyonundan bağımsız
+    camp_days = [pd.Timestamp(d).date() for d in campaign_set]
+    camp_eve_days = []
+    for d in campaign_set:
+        for offset in range(1, lead_days + 1):
+            eve = pd.Timestamp(d) - pd.Timedelta(days=offset)
+            camp_eve_days.append(eve.date())
+
+    # cast(pl.Date).is_in() — native Polars Date karşılaştırması
+    df = df.with_columns([
+        pl.col(date_column).cast(pl.Date).is_in(camp_days)
+          .cast(pl.Int8).alias("is_campaign_day"),
+        pl.col(date_column).cast(pl.Date).is_in(camp_eve_days)
+          .cast(pl.Int8).alias("is_campaign_eve"),
+    ])
+
+    logger.debug(
+        f"✅ Kampanya özellikleri eklendi "
+        f"({len(campaign_set)} ana gün, {lead_days} gün arife penceresi, Polars native)."
+    )
+    return df
+
 
 
 # ---------------------------------------------------------------------------
@@ -176,10 +278,11 @@ def add_holiday_features(
     """
     Türkiye resmi tatil ve dini bayram bayraklarını ekler.
 
-    Polars'ta set membership kontrolü için tatil tarihleri Int32 epoch
-    listesine dönüştürülür ve .is_in() ile vektörize sorgulanır.
-    Python döngüsü yalnızca tatil listesi oluşturma aşamasında kullanılır
-    (bu sabit boyutlu ve bir kez çalışır).
+    Polars native pl.Date karşılaştırması kullanılır.
+    Eski epoch-bölme yaklaşımı (cast(Int64) // 86_400 * 1_000_000_000)
+    Polars'ın yeni sürümlerinde mikrosaniye birimli Datetime ile sıfır
+    ürettiğinden kaldırıldı. cast(pl.Date).is_in() tüm versiyonlarda
+    doğru çalışır ve daha okunabilirdir.
 
     Çıktı sütunlar
     --------------
@@ -202,37 +305,26 @@ def add_holiday_features(
             pl.lit(0).cast(pl.Int8).alias("is_holiday_eve"),
         ])
 
-    # Yıl listesini Polars'tan çek
     years = df.select(pl.col(date_column).dt.year()).to_series().unique().to_list()
     holiday_set = _build_holiday_set(years)
 
-    # Tatil tarihlerini Unix epoch gün sayısına çevir (Int32, set lookup için)
-    _epoch = pd.Timestamp("1970-01-01")
-    holiday_days_epoch = [
-        int((pd.Timestamp(d) - _epoch).days) for d in holiday_set
-    ]
-    holiday_eve_days_epoch = []
+    # Python date objeleri — epoch matematiği yok, Polars versiyonundan bağımsız
+    holiday_days = [pd.Timestamp(d).date() for d in holiday_set]
+    holiday_eve_days = []
     for d in holiday_set:
         for offset in range(1, lead_days + 1):
             eve = pd.Timestamp(d) - pd.Timedelta(days=offset)
-            holiday_eve_days_epoch.append(int((eve - _epoch).days))
+            holiday_eve_days.append(eve.date())
 
-    # Polars: tarihi gün epoch'una çevir, is_in ile karşılaştır
-    df = df.with_columns(
-        # Datetime → epoch day (nanosaniye → gün)
-        (pl.col(date_column).cast(pl.Int64) // (86_400 * 1_000_000_000))
-        .cast(pl.Int32)
-        .alias("_epoch_day")
-    )
-
+    # cast(pl.Date).is_in() — native Polars Date karşılaştırması
     df = df.with_columns([
-        pl.col("_epoch_day").is_in(holiday_days_epoch)
+        pl.col(date_column).cast(pl.Date).is_in(holiday_days)
           .cast(pl.Int8).alias("is_holiday"),
-        pl.col("_epoch_day").is_in(holiday_eve_days_epoch)
+        pl.col(date_column).cast(pl.Date).is_in(holiday_eve_days)
           .cast(pl.Int8).alias("is_holiday_eve"),
-    ]).drop("_epoch_day")
+    ])
 
-    logger.debug(f"✅ Tatil özellikleri eklendi ({len(holiday_set)} tatil günü, Polars).")
+    logger.debug(f"✅ Tatil özellikleri eklendi ({len(holiday_set)} tatil günü, Polars native).")
     return df
 
 
@@ -352,6 +444,14 @@ def add_rolling_features(
 
         roll_exprs += [mean_expr, std_expr]
 
+        # --- YENİ: Volatilite (Oynaklık) İndeksi ---
+        # Sıfıra bölme hatasını önlemek için paydaya küçük bir epsilon (1e-5) ekliyoruz.
+        cov_expr = (
+            (std_expr / (mean_expr + 1e-5))
+            .alias(f"rolling_cov_{w}")
+        )
+        roll_exprs.append(cov_expr)
+
     df = df.with_columns(roll_exprs)
     logger.debug(f"✅ Rolling özellikler eklendi (Polars): pencereler={windows}")
     return df
@@ -439,6 +539,7 @@ def build_feature_matrix(
       1. Pandas → Polars dönüşümü + tarih sıralaması
       2. Zaman özellikleri     (mevcut satırdan, leakage yok)
       3. Tatil özellikleri     (mevcut tarihten, leakage yok)
+      3.5 Kampanya özellikleri  (e-ticaret zirveleri + arife, leakage yok)
       4. Spatio-temporal       (grup × zaman etkileşimi)
       5. Lag özellikleri       (shift() ile, leakage yok)
       6. Rolling istatistikler (shift(1) + rolling, leakage yok)
@@ -494,6 +595,12 @@ def build_feature_matrix(
     # --- Adım 3: Tatil özellikleri ---
     pl_df = add_holiday_features(pl_df, date_column, lead_days=holiday_lead_days)
 
+    # --- Adım 3.5: Kampanya (E-ticaret) özellikleri ---
+    # lead_days=3: Anneler Günü gibi kampanyalarda 5 günlük arife
+    # Nisan/Mayıs tatil birikim dönemleriyle çakışıyor.
+    # 3 gün, gerçek e-ticaret sipariş penceresini daha temiz modelliyor.
+    pl_df = add_campaign_features(pl_df, date_column, lead_days=3)
+
     # --- Adım 4: Spatio-temporal ---
     if group_column and group_column in pl_df.columns:
         pl_df = add_spatio_temporal_features(pl_df, group_column, date_column)
@@ -505,6 +612,9 @@ def build_feature_matrix(
     pl_df = add_rolling_features(
         pl_df, target_column, group_column, windows=rolling_windows
     )
+
+    # --- Adım 6.5: Hub Özellikleri ---
+    pl_df = add_hub_features(pl_df, target_column, date_column)
 
     # --- Adım 7: NaN temizliği ---
     rows_before = pl_df.height
@@ -525,6 +635,31 @@ def build_feature_matrix(
         f"{result.shape[0]} satır × {result.shape[1]} sütun"
     )
     return result
+
+
+# ---------------------------------------------------------------------------
+# 5.5 Hub (Merkez) Geçişkenlik Özellikleri
+# ---------------------------------------------------------------------------
+
+def add_hub_features(df: pl.DataFrame, target_column: str, date_column: str) -> pl.DataFrame:
+    """
+    Kaynak merkezinin (hub) toplam hacmini hesaplar ve 1 gün gecikmeli olarak modele verir.
+    Lojistik ağındaki yığılmaları yakalayan en güçlü özelliktir.
+    """
+    if "kaynak_tm" not in df.columns:
+        return df
+    # 1. Aynı gün, aynı kaynak merkezinden çıkan TOPLAM kargoyu bul
+    df = df.with_columns(
+        pl.col(target_column).sum().over([date_column, "kaynak_tm"]).alias("hub_daily_total")
+    )
+    # 2. Bu toplamı, kaynak merkezi bazında 1 gün kaydır (Geleceği görme / Leakage önlemi!)
+    df = df.with_columns(
+        pl.col("hub_daily_total").shift(1).over("kaynak_tm").alias("hub_lag_1")
+    )
+    # 3. Sızıntı yapmaması için bugünün toplam bilgisini sil
+    df = df.drop("hub_daily_total")
+    logger.debug("✅ Hub (Kaynak) geçişkenlik özellikleri eklendi (Polars).")
+    return df
 
 
 # ---------------------------------------------------------------------------

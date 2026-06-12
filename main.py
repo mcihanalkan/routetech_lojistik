@@ -18,7 +18,6 @@ def run(forecast_start: str = FORECAST_START, forecast_end: str = FORECAST_END) 
     stopover_candidates = build_stopover_candidate_table(
         raw.coordinates,
         routes,
-        tolerance=0.15,
     )
 
     paths = write_forecast_outputs(
