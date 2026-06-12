@@ -1,14 +1,14 @@
 {
     "small": {
         "row_count": 10770,
-        "best_wape": 0.256885,
-        "optimization_time_minutes": 15.27,
+        "best_wape": 0.260553,
+        "optimization_time_minutes": 15.04,
         "params": {
-            "iterations": 600,
-            "depth": 4,
-            "learning_rate": 0.035,
-            "l2_leaf_reg": 35.0,
-            "bagging_temperature": 0.4
+            "iterations": 498,
+            "depth": 5,
+            "learning_rate": 0.0784339662253313,
+            "l2_leaf_reg": 23.032654434596758,
+            "bagging_temperature": 0.5975548906437792
         }
     }
 }
