@@ -48,9 +48,9 @@ logger = logging.getLogger(__name__)
 
 # Belirsizlik oranı = uncertainty_range / q50
 # Bu oran yüksekse tahmin güvenilmez → daha fazla güvenlik tamponu gerekir
-RISK_THRESHOLD_LOW:    float = 0.20   # < %20 belirsizlik → LOW
-RISK_THRESHOLD_MEDIUM: float = 0.50   # %20–%50          → MEDIUM
-                                       # > %50            → HIGH
+RISK_THRESHOLD_LOW:    float = 0.40   # < %30 belirsizlik → LOW   (eskisi: 0.20)
+RISK_THRESHOLD_MEDIUM: float = 1.00   # %30–%80          → MEDIUM (eskisi: 0.50)
+                                       # > %80            → HIGH
 
 # Güvenlik tamponu: q90 ile q50 arasındaki farkın kaçı eklenir?
 # ALNS bunu "kapasite rezervasyonu" olarak kullanır
