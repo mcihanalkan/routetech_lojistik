@@ -13,8 +13,9 @@ iyilestirdikten sonra ana pipeline'a optimizasyon adimi baglanacaktir.
 1. `data/raw` altindaki Excel dosyalarini kolon semasina gore bulur.
 2. Talep, koordinat, kiralik arac ve arac maliyet tablolarini standart kolonlara cevirir.
 3. `haversine/haversine.py` ile rota mesafelerini hesaplar.
-4. Baseline rota-gun talep tahmini uretir.
-5. `data/outputs` altina tahmin ve rota mesafesi CSV'lerini yazar.
+4. Ugrama icin izinli source-stopover-destination adaylarini uretir.
+5. Baseline rota-gun talep tahmini uretir.
+6. `data/outputs` altina tahmin, rota mesafesi ve ugrama aday CSV'lerini yazar.
 
 Su anda arac optimizasyonu ana akista kapali.
 
@@ -49,6 +50,15 @@ Ciktilar:
 
 - `data/outputs/forecast_baseline.csv`
 - `data/outputs/route_distances.csv`
+- `data/outputs/stopover_candidates.csv`
+
+## Ugrama ve Konsolidasyon Ayrimi
+
+`stopover_candidates.csv` sadece geometrik olarak makul ugrama adaylarini verir.
+Bir satir `source -> stopover -> destination` rotasinin direkt rotaya gore tolerans
+icinde kaldigini gosterir. Bu, farkli araclarin yuklerini stopover noktasinda
+birlestirme izni degildir. OR-Tools tarafinda bu tablo yalnizca ayni aracin
+multi-stop guzergah secenegi olarak kullanilmalidir.
 - `data/outputs/route_distances.csv`
 
 Yardimci kontrol scriptleri:
