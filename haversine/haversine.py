@@ -46,7 +46,7 @@ def calculate_haversine_matrix(latitudes, longitudes):
 
 # 1. DOSYA YOLU DÜZENLEMESİ (haversine/ klasöründen data/raw/ klasörüne geçiş)
 current_dir = Path(__file__).resolve().parent
-dosya_yolu = current_dir.parent / "data" / "raw" / "Koordinatlar.xlsx"
+dosya_yolu = current_dir.parent / "data" / "raw" / "Koordinatlar v2.xlsx"
 
 # Veriyi oku
 df_koordinat = pd.read_excel(dosya_yolu, sheet_name="Sheet1")
