@@ -81,13 +81,11 @@ def _to_polars(df: pd.DataFrame) -> pl.DataFrame:
         for col in df.columns:
             s = df[col]
             if pd.api.types.is_datetime64_any_dtype(s):
-                data[col] = pl.Series(col, list(pd.to_datetime(s).dt.to_pydatetime()))
-            elif pd.api.types.is_numeric_dtype(s):
-                data[col] = pl.Series(col, s.to_numpy(dtype="float64", na_value=np.nan))
-            elif pd.api.types.is_bool_dtype(s):
-                data[col] = pl.Series(col, s.fillna(False).astype(bool).to_numpy())
+                data[col] = pl.Series(col, s.astype("int64").values).cast(
+                    pl.Datetime("ns")
+                )
             else:
-                data[col] = pl.Series(col, s.fillna("").astype(str).to_numpy())
+                data[col] = pl.Series(col, s.values)
         return pl.DataFrame(data)
 
 
@@ -265,6 +263,40 @@ def add_time_features(df: pl.DataFrame, date_column: str) -> pl.DataFrame:
     ])
 
     logger.debug("✅ Zaman özellikleri eklendi (Polars).")
+    return df
+
+
+# ---------------------------------------------------------------------------
+# 1.5 Kaggle Takvim + Spatio-Temporal (Rota-Gün) Özellikleri
+# ---------------------------------------------------------------------------
+
+def add_advanced_calendar_features(df: pl.DataFrame, date_column: str, group_column: str) -> pl.DataFrame:
+    """
+    Kaggle stili gelişmiş takvim ve Spatio-Temporal etkileşim özelliklerini ekler.
+
+    Çıktı sütunlar
+    --------------
+    is_payday_period : Türkiye maaş dönemleri (1-5 ve 15-20'si) mi? (Int8, 0/1)
+    route_weekday    : Rota × Gün etkileşimi — "TM_ID_weekday" (Utf8, CatBoost kategorik)
+                       Örn: "Manisa->İstanbul_0" → o rotanın Pazartesi profili.
+                       Mevcut sayısal tm_weekday_interaction'ı tamamlar;
+                       CatBoost bu string sütunu doğrudan kategorik olarak okur.
+    """
+    if group_column not in df.columns:
+        return df
+
+    df = df.with_columns([
+        # 1. Maaş Günü Etkisi (Ayın 1-5'i ve 15-20'si)
+        pl.when(
+            ((pl.col(date_column).dt.day() >= 1) & (pl.col(date_column).dt.day() <= 5)) |
+            ((pl.col(date_column).dt.day() >= 15) & (pl.col(date_column).dt.day() <= 20))
+        ).then(1).otherwise(0).cast(pl.Int8).alias("is_payday_period"),
+
+        # 2. Rota - Gün Etkileşimi (Örn: "Manisa -> İstanbul_0" yani Pazartesi)
+        (pl.col(group_column).cast(pl.Utf8) + "_" + pl.col("weekday").cast(pl.Utf8)).alias("route_weekday")
+    ])
+
+    logger.debug("✅ Gelişmiş Takvim ve Rota-Gün (Spatio-Temporal) özellikleri eklendi.")
     return df
 
 
@@ -594,6 +626,9 @@ def build_feature_matrix(
     # --- Adım 2: Zaman özellikleri ---
     pl_df = add_time_features(pl_df, date_column)
 
+    # --- Adım 2.5: Kaggle Takvim Özellikleri (Maaş günü + Rota-Gün etkileşimi) ---
+    pl_df = add_advanced_calendar_features(pl_df, date_column, group_column)
+
     # --- Adım 3: Tatil özellikleri ---
     pl_df = add_holiday_features(pl_df, date_column, lead_days=holiday_lead_days)
 
@@ -630,12 +665,7 @@ def build_feature_matrix(
             )
 
     # --- Adım 8: Polars → Pandas (CatBoost / sklearn uyumluluğu için) ---
-    try:
-        result: pd.DataFrame = pl_df.to_pandas()
-    except ModuleNotFoundError as exc:
-        if exc.name != "pyarrow":
-            raise
-        result = pd.DataFrame(pl_df.to_dicts())
+    result: pd.DataFrame = pl_df.to_pandas()
 
     logger.info(
         f"✅ Feature matrix hazır (Polars backend): "
