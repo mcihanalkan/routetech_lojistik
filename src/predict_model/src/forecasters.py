@@ -222,6 +222,7 @@ class DemandForecaster(BaseForecaster):
 
         # Runtime'da dolacak
         self.model_: CatBoostRegressor = None
+        self.models_: List[CatBoostRegressor] = []   # Ensemble fold modelleri
         self.cat_features_: List[str] = []
         self.feature_names_: List[str] = []
 
@@ -267,6 +268,39 @@ class DemandForecaster(BaseForecaster):
     # -----------------------------------------------------------------------
     # Veri Temizleme — DataPreprocessor entegrasyonu (leakage-safe)
     # -----------------------------------------------------------------------
+
+    def _learn_campaign_multipliers(self, train_df: pd.DataFrame) -> None:
+        """
+        Her rotanın kampanya dönemlerinde normal günlere göre hacmini ne kadar
+        artırdığını veri üzerinden öğrenir. (Data-Driven Heuristic)
+        Laplace Smoothing ile küçük hacimli rotaların sahte yüksek çarpan üretmesi engellenir.
+        """
+        self.campaign_multipliers_ = {}
+        if "is_campaign_eve" not in train_df.columns or not self.group_column or self.group_column not in train_df.columns:
+            return
+        # Smoothing için tüm verinin global ortalamasını al
+        global_mean = train_df[self.target_column].mean()
+        for grp, grp_df in train_df.groupby(self.group_column):
+            # Laplace Smoothing: Küçük rotalardaki dalgalanmayı sönümlemek için pay ve paydaya global ortalamanın bir kısmını ekle
+            smoothing_weight = 0.5  # Yumuşatma katsayısı
+
+            normal_vol = grp_df.loc[grp_df["is_campaign_eve"] == 0, self.target_column].mean()
+            camp_vol = grp_df.loc[grp_df["is_campaign_eve"] == 1, self.target_column].mean()
+            if pd.notna(normal_vol) and pd.notna(camp_vol):
+                smoothed_normal = normal_vol + (global_mean * smoothing_weight)
+                smoothed_camp = camp_vol + (global_mean * smoothing_weight)
+
+                mult = smoothed_camp / smoothed_normal
+
+                # Çarpanı güvenlik amacıyla 1.0 ile 1.5x arasına sıkıştır (Model zaten çoğunu öğreniyor, biz sadece ince ayar yapıyoruz)
+                mult = max(1.0, min(mult, 1.5))
+                self.campaign_multipliers_[grp] = mult
+        if self.logging_enabled:
+            mean_mult = np.mean(list(self.campaign_multipliers_.values())) if self.campaign_multipliers_ else 1.15
+            logger.info(
+                f"   📊 Rota Bazlı Kampanya Çarpanları Öğrenildi (Smoothed): "
+                f"{len(self.campaign_multipliers_)} rota (Ortalama Çarpan: {mean_mult:.2f}x)"
+            )
 
     def _fit_clip(self, train_df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -470,6 +504,9 @@ class DemandForecaster(BaseForecaster):
         train_df = self._fit_clip(train_df)   # eşikleri öğren + uygula
         test_df, _ = self._apply_clip(test_df)  # sadece uygula
 
+        # --- Dinamik Kampanya Çarpanlarını Öğren ---
+        self._learn_campaign_multipliers(train_df)
+
         # --- Log1p Dönüşümü (opsiyonel) — kampanya günlerini evcilleştir ---
         # Uygulama sırası: clip → log1p (önce uç değerleri kırp, sonra sıkıştır)
         # self.log_transform_enabled_ fit sonunda predict()'e sinyal verir.
@@ -512,24 +549,92 @@ class DemandForecaster(BaseForecaster):
                 f"   Toplam feature sayısı: {len(self.feature_names_)}"
             )
 
-        # --- 4. Model Eğitimi ---
-        self._build_model()
+        # --- 4. Zaman Serisi Cross-Validation ve Ensemble Eğitimi ---
+        # 4 Fold (7'şer günlük) — her biri farklı haftayı validation seti olarak kullanır
+        fold_dates = [
+            ("Fold 1", "2026-04-14", "2026-04-20"),
+            ("Fold 2", "2026-04-21", "2026-04-27"),
+            ("Fold 3", "2026-04-28", "2026-05-04"),
+            ("Fold 4", "2026-05-05", "2026-05-10"),
+        ]
+        self.models_: List[CatBoostRegressor] = []
+
+        if self.logging_enabled:
+            logger.info("🚀 K-Fold Time-Series Ensembling Başlıyor (4 Model Eğitilecek)...")
 
         t_q = time.time()
-        if self.logging_enabled:
-            logger.info("⏳ MultiQuantile Modeli eğitiliyor...")
 
-        train_pool = Pool(
-            data=X_train,
-            label=y_train,
-            cat_features=self.cat_features_,
-        )
+        for fold_name, val_start, val_end in fold_dates:
+            # O fold için Train ve Validation setlerini ayır
+            fold_train_df = df_features[df_features[self.date_column] < val_start].copy()
+            fold_val_df = df_features[
+                (df_features[self.date_column] >= val_start) &
+                (df_features[self.date_column] <= val_end)
+            ].copy()
 
-        self.model_.fit(train_pool)
+            # Fold train/val verisi yoksa atla (tarih aralığı dışı)
+            if fold_train_df.empty or fold_val_df.empty:
+                if self.logging_enabled:
+                    logger.warning(f"   ⚠️  {fold_name}: Train veya Val seti boş, atlanıyor.")
+                continue
+
+            X_fold_train = fold_train_df.drop(columns=[self.date_column, self.target_column], errors="ignore")
+            y_fold_train = fold_train_df[self.target_column]
+            X_fold_val   = fold_val_df.drop(columns=[self.date_column, self.target_column], errors="ignore")
+            y_fold_val   = fold_val_df[self.target_column]
+
+            # Sütun uyumunu garantile
+            for col in self.feature_names_:
+                if col not in X_fold_train.columns:
+                    X_fold_train[col] = 0
+                if col not in X_fold_val.columns:
+                    X_fold_val[col] = 0
+            X_fold_train = X_fold_train[self.feature_names_]
+            X_fold_val   = X_fold_val[self.feature_names_]
+
+            fold_train_pool = Pool(data=X_fold_train, label=y_fold_train, cat_features=self.cat_features_)
+            fold_val_pool   = Pool(data=X_fold_val,   label=y_fold_val,   cat_features=self.cat_features_)
+
+            fold_model = CatBoostRegressor(
+                loss_function=f"MultiQuantile:alpha=0.1,0.5,{Q90_ALPHA}",
+                iterations=self.iterations,
+                depth=self.depth,
+                learning_rate=self.learning_rate,
+                l2_leaf_reg=self.l2_leaf_reg,
+                bagging_temperature=self.bagging_temperature,
+                random_seed=self.random_state,
+                verbose=False,
+                allow_writing_files=False,
+                thread_count=-1,
+            )
+
+            fold_model.fit(
+                fold_train_pool,
+                eval_set=fold_val_pool,
+                early_stopping_rounds=50,
+                verbose=False,
+            )
+
+            best_iter = fold_model.get_best_iteration()
+            if self.logging_enabled:
+                logger.info(
+                    f"   ✅ {fold_name} eğitildi | "
+                    f"Durma İterasyonu: {best_iter} / {self.iterations}"
+                )
+
+            self.models_.append(fold_model)
+
+        # Geriye uyumluluk için self.model_ → ensemble'ın ilk modeline işaret eder
+        # (_evaluate_on_test ve get_feature_importances gibi yardımcılar bunu kullanır)
+        if self.models_:
+            self.model_ = self.models_[0]
 
         elapsed = time.time() - t_q
         if self.logging_enabled:
-            logger.info(f"   ✅ Eğitim tamamlandı ({elapsed:.1f}s)")
+            logger.info(
+                f"   ✅ Ensemble eğitimi tamamlandı: {len(self.models_)} model "
+                f"({elapsed:.1f}s)"
+            )
 
         self.is_fitted_ = True
 
@@ -611,14 +716,18 @@ class DemandForecaster(BaseForecaster):
         # Bunun yerine fit() sırasında kaydedilen context_buffer_ tahmin
         # verisinin önüne eklenir; lag/rolling değerleri gerçek tarihsel
         # veriden hesaplanır. Buffer satırları sonunda çıkarılır.
+        # YENİ: Tahmin edilecek asıl satırları kaybetmemek için işaretliyoruz
+        df = df.copy()
+        df["_is_predict_row_"] = True
         df_predict = self._prepend_context_buffer(df)
-        n_buffer_rows = len(df_predict) - len(df)
-
+        # Buffer'dan gelen geçmiş satırlarda bu sütun NaN olacaktır, onları False yap
+        df_predict["_is_predict_row_"] = df_predict["_is_predict_row_"].fillna(False)
         df_features = self._engineer_features(df_predict, drop_na=False)
+        # Buffer satırlarını çıkart, SADECE asıl tahmin edilecek satırları tut
+        df_features = df_features[df_features["_is_predict_row_"] == True].reset_index(drop=True)
 
-        # Buffer satırlarını çıkar — sadece asıl tahmin dönemini tut
-        if n_buffer_rows > 0:
-            df_features = df_features.iloc[n_buffer_rows:].reset_index(drop=True)
+        # Temizlik: Kodu çöpe atmadan önce işaretçi sütununu sil
+        df_features = df_features.drop(columns=["_is_predict_row_"])
 
         # Kalan küçük NaN'ları (buffer yetersizse) son bilinen değerle doldur
         lag_cols  = [c for c in df_features.columns if c.startswith("lag_")]
@@ -644,15 +753,18 @@ class DemandForecaster(BaseForecaster):
                 X_pred[col] = 0
         X_pred = X_pred[self.feature_names_]  # train ile aynı sütun sırası
 
-        # --- 3 Kantil Tahmini (MultiQuantile) ---
+        # --- 3 Kantil Tahmini (Ensemble MultiQuantile) ---
         pred_pool = Pool(data=X_pred, cat_features=self.cat_features_)
 
-        # MultiQuantile tek seferde (N, 3) boyutunda matris döner
-        multi_preds = self.model_.predict(pred_pool)
+        # ENSEMBLE TAHMİNİ: Eğitilen tüm fold modellerinden tahmin al
+        all_preds = [model.predict(pred_pool) for model in self.models_]
 
-        q10_vals = multi_preds[:, 0]
-        q50_vals = multi_preds[:, 1]
-        q90_vals = multi_preds[:, 2]
+        # ⚠️ YENİ: Outlier (panikleyen) modellerden korunmak için mean yerine MEDIAN kullanıyoruz!
+        ensemble_preds = np.median(all_preds, axis=0)
+
+        q10_vals = ensemble_preds[:, 0]
+        q50_vals = ensemble_preds[:, 1]
+        q90_vals = ensemble_preds[:, 2]
 
         # Negatif tahminleri sıfırla (hacim negatif olamaz)
         q10_vals = np.maximum(q10_vals, 0)
@@ -675,23 +787,23 @@ class DemandForecaster(BaseForecaster):
 
         # --- Hibrit Domain Heuristic (Tahmin çıktısı) ---
         # Kampanya arifesinde ML'in göremediği hacim artışı kural tabanlı eklenir.
-        # q10/q50 → 1.8x (sector standard), q90 → 2.0x (spot araç alarm eşiği).
-        if "is_campaign_eve" in X_pred.columns:
+        if "is_campaign_eve" in X_pred.columns and hasattr(self, "campaign_multipliers_"):
             camp_mask_pred = (X_pred["is_campaign_eve"] == 1).values
             if camp_mask_pred.sum() > 0:
-                q10_vals[camp_mask_pred] *= 1.15  # kalibre: 1.8 → 1.15
-                q50_vals[camp_mask_pred] *= 1.15  # kalibre: 1.8 → 1.15
-                q90_vals[camp_mask_pred] *= 1.25  # kalibre: 2.0 → 1.25 (spot riski)
-                # Çarpan sonrası negatif kalma ihtimali yok ama güvence ekle
+                route_vals = X_pred[self.group_column].values if self.group_column in X_pred.columns else []
+                # q10 ve q50 için normal çarpan, q90 için spot riskine karşı +0.10 tampon
+                mult_array = np.array([self.campaign_multipliers_.get(r, 1.15) for r in route_vals])
+
+                q10_vals[camp_mask_pred] *= mult_array[camp_mask_pred]
+                q50_vals[camp_mask_pred] *= mult_array[camp_mask_pred]
+                q90_vals[camp_mask_pred] *= (mult_array[camp_mask_pred] + 0.10)
+
                 q10_vals = np.maximum(q10_vals, 0)
                 q50_vals = np.maximum(q50_vals, 0)
                 q90_vals = np.maximum(q90_vals, 0)
+
                 if self.logging_enabled:
-                    logger.info(
-                        f"   💡 Domain Heuristic (predict): "
-                        f"{camp_mask_pred.sum()} kampanya arifesi gününe "
-                        f"1.15x (q10/q50) / 1.25x (q90) hacim çarpanı uygulandı."
-                    )
+                    logger.info(f"   💡 Dinamik Domain Heuristic (predict): {camp_mask_pred.sum()} güne akıllı rota çarpanları uygulandı.")
         # ---------------------------------------------------------
 
         # --- In-memory JSON Oluşturma (ALNS formatı) ---
@@ -854,7 +966,10 @@ class DemandForecaster(BaseForecaster):
         """
         # --- TEST SETİ DEĞERLENDİRMESİ ---
         test_pool = Pool(data=X_test, cat_features=self.cat_features_)
-        q50_preds_test = self.model_.predict(test_pool)[:, 1]
+        # Ensemble: tüm modellerin q50 ([:, 1]) medyanı
+        q50_preds_test = np.median(
+            [model.predict(test_pool)[:, 1] for model in self.models_], axis=0
+        )
 
         y_true_test = y_test.values
         # ⚠️ EĞER DÖNÜŞÜM YAPILDIYSA, METRİK HESABINDAN ÖNCE GERİ ÇEVİR!
@@ -864,14 +979,18 @@ class DemandForecaster(BaseForecaster):
         q50_preds_test = np.maximum(q50_preds_test, 0)
 
         # --- Hibrit Domain Heuristic (WAPE değerlendirmesi) ---
-        if "is_campaign_eve" in X_test.columns:
+        if "is_campaign_eve" in X_test.columns and hasattr(self, "campaign_multipliers_"):
             camp_mask_test = (X_test["is_campaign_eve"] == 1).values
-            q50_preds_test[camp_mask_test] *= 1.15
-            if self.logging_enabled and camp_mask_test.sum() > 0:
-                logger.info(
-                    f"   💡 Domain Heuristic (eval): "
-                    f"{camp_mask_test.sum()} kampanya arifesi gününe 1.15x çarpan uygulandı."
-                )
+            if camp_mask_test.sum() > 0:
+                # Her test satırı için ait olduğu rotanın çarpanını getir (bulamazsa 1.15)
+                route_vals = X_test[self.group_column].values if self.group_column in X_test.columns else []
+                mult_array = np.array([self.campaign_multipliers_.get(r, 1.15) for r in route_vals])
+
+                # Sadece kampanya günlerine kendi özel çarpanlarını uygula
+                q50_preds_test[camp_mask_test] *= mult_array[camp_mask_test]
+
+                if self.logging_enabled:
+                    logger.info(f"   💡 Dinamik Domain Heuristic (eval): {camp_mask_test.sum()} güne rota bazlı çarpanlar uygulandı.")
         # ---------------------------------------------------------
 
         sum_true_test = np.sum(y_true_test)
@@ -924,7 +1043,10 @@ class DemandForecaster(BaseForecaster):
         
         if X_train is not None and y_train is not None:
             train_pool = Pool(data=X_train, cat_features=self.cat_features_)
-            q50_preds_train = self.model_.predict(train_pool)[:, 1]
+            # Ensemble: tüm modellerin q50 medyanı
+            q50_preds_train = np.median(
+                [model.predict(train_pool)[:, 1] for model in self.models_], axis=0
+            )
             y_true_train = y_train.values
             # ⚠️ EĞER DÖNÜŞÜM YAPILDIYSA, METRİK HESABINDAN ÖNCE GERİ ÇEVİR!
             if self.log_transform_enabled:
@@ -1025,6 +1147,7 @@ class DemandForecaster(BaseForecaster):
             "  DemandForecaster — Model Özeti",
             "=" * 55,
             f"  Durum           : {status}",
+            f"  Mimari          : {'Ensemble (' + str(len(self.models_)) + ' fold model)' if self.is_fitted_ and self.models_ else 'Tekli Model'}",
             f"  Hedef           : {self.target_column}",
             f"  Grup            : {self.group_column}",
             f"  Horizon         : {self.forecast_horizon} gün",
