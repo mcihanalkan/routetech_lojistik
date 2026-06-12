@@ -16,27 +16,75 @@ tmler = [
     "Isparta", "Mardin", "Erzincan", "Zonguldak", "Karaman", "Denizli"
 ]
 
-hatlar = [f"{tm1}-{tm2}" for tm1 in tmler for tm2 in tmler if tm1 != tm2]
+# ortools_payload.csv dosyasından hatları ve talepleri çek
+payload_csv = Path(__file__).parent.parent / "src" / "predict_model" / "ortools_payload.csv"
 
-gunler = ["11_Mayis", "12_Mayis", "13_Mayis", "14_Mayis", "15_Mayis", "16_Mayis", "17_Mayis"]
+if payload_csv.exists():
+    df_payload = pd.read_csv(payload_csv)
+    
+    # Debug için terminale sütun isimlerini yazdıralım, gözümüzle görelim
+    print(f"🔍 CSV Sütunları: {list(df_payload.columns)}")
+    
+    hatlar = []
+    talep_verisi = {}
+    gecici_gunler = set()
+    
+    for _, row in df_payload.iterrows():
+        # Sütun adı ne olursa olsun güvenli bir şekilde çekmeyi dene
+        source = row.get('source_tm') or row.get('kaynak_tm') or row.get('source') or row.get('kaynak')
+        dest = row.get('destination_tm') or row.get('varis_tm') or row.get('destination') or row.get('varis')
+        
+        # Eğer yukarıdakiler de boş dönerse (None), CSV'nin ilk iki sütununu direkt al
+        if pd.isna(source) or source is None:
+            source = row.iloc[1] # Genellikle 0 tarih, 1 kaynak, 2 varıştır
+        if pd.isna(dest) or dest is None:
+            dest = row.iloc[2]
+            
+        date_str = str(row['date']) if 'date' in row else str(row.iloc[0])
+        q50 = float(row.get('q50', 0))
+        
+        hat = f"{str(source).strip()}-{str(dest).strip()}"
+        if hat not in hatlar:
+            hatlar.append(hat)
+        
+        # Tarih dönüşümü (2026-05-11 -> 11_Mayis)
+        tarih_obj = pd.to_datetime(date_str)
+        gun_adi = f"{tarih_obj.day:02d}_Mayis" 
+        
+        gecici_gunler.add(gun_adi)
+        talep_verisi[(hat, gun_adi)] = int(q50)
+    
+    hatlar = list(set(hatlar))
+    gunler = sorted(list(gecici_gunler))
+    
+    print(f"✅ ortools_payload.csv'den başarıyla yüklendi:")
+    print(f"   Hatlar: {len(hatlar)} adet benzersiz hat")
+    print(f"   Günler: {gunler}")
+    print(f"   Toplam Veri Noktası: {len(talep_verisi)}")
+else:
+    print(f"⚠️  {payload_csv} bulunamadı! Sabit veriler kullanılıyor.")
+    hatlar = [f"{tm1}-{tm2}" for tm1 in tmler for tm2 in tmler if tm1 != tm2]
+    gunler = ["11_Mayis", "12_Mayis", "13_Mayis", "14_Mayis", "15_Mayis", "16_Mayis", "17_Mayis"]
+    talep_verisi = {(h, g): 15000 for h in hatlar for g in gunler}
 
 arac_turleri = ["Tir", "Kamyon", "Hafif Kam", "Kamyonet"]
 
 # Mesafe matrisi
-koordinat_dosya = Path(__file__).parent.parent / "data" / "raw" / "Koordinatlar v2.xlsx"
-df_koordinat = pd.read_excel(koordinat_dosya, sheet_name="Sheet1")
-
 centers, distances_2d = GetDistanceMatrixAsList()
 tm_index = {tm: idx for idx, tm in enumerate(centers)}
 
+# Hatlar için mesafe verisi hesapla (sadece mevcut hatlar)
 mesafe_verisi = {}
 for hat in hatlar:
     tm1, tm2 = hat.split("-")
-    idx1 = tm_index[tm1]
-    idx2 = tm_index[tm2]
-    mesafe_verisi[hat] = distances_2d[idx1][idx2]  # 2D list indexing
+    if tm1 in tm_index and tm2 in tm_index:
+        idx1 = tm_index[tm1]
+        idx2 = tm_index[tm2]
+        mesafe_verisi[hat] = distances_2d[idx1][idx2]
+    else:
+        print(f"⚠️  {hat} için transfer merkezi koordinatı bulunamadı!")
 
-# STOK BİLGİSİ
+# STOK BİLGİSİ (isteğe bağlı, belirlenen hatlar için)
 kiralik_stok_gunluk = {
     ("İstanbul-Yalova", "Tir"): 2,
     ("İstanbul-Eskişehir", "Tir"): 2,
@@ -51,9 +99,6 @@ kiralik_stok_gunluk = {
     ("Kocaeli-Eskişehir", "Kamyon"): 1,
     ("Yalova-Tekirdağ", "Kamyon"): 1,
 }
-
-# Tahmini talep
-talep_verisi = {(h, g): 15000 for h in hatlar for g in gunler}
 
 # ARAÇ PARAMETRELERİ
 arac_parametreleri = {
@@ -130,10 +175,10 @@ for h in hatlar:
             p = arac_parametreleri[a]
 
             if (h, g, a) in kiralik_x:
-                kiralik_maliyet = int(p["sabit_kira"] + dist * p["kiralik_km_maliyet"])
+                kiralik_maliyet = int(p["sabit_kira"] + dist * p["kiralik_km_maliyet"]) *1000
                 maliyet_kalemleri.append(kiralik_x[(h, g, a)] * kiralik_maliyet)
 
-            spot_maliyet = int(p["spot_sabit_maliyet"] + dist * p["spot_km_maliyet"])
+            spot_maliyet = int(p["spot_sabit_maliyet"] + dist * p["spot_km_maliyet"])*1000
             maliyet_kalemleri.append(spot_y[(h, g, a)] * spot_maliyet)
 
         ceza = int(SLA_GECIKME_CEZA_TL_PER_DESI * 1000)  # integer aritmetik için ölçekle
