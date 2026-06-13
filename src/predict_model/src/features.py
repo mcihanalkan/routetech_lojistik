@@ -277,26 +277,101 @@ def add_advanced_calendar_features(df: pl.DataFrame, date_column: str, group_col
     Çıktı sütunlar
     --------------
     is_payday_period : Türkiye maaş dönemleri (1-5 ve 15-20'si) mi? (Int8, 0/1)
+                       — eski binary bayrak, geriye uyumluluk için tutuldu.
     route_weekday    : Rota × Gün etkileşimi — "TM_ID_weekday" (Utf8, CatBoost kategorik)
                        Örn: "Manisa->İstanbul_0" → o rotanın Pazartesi profili.
                        Mevcut sayısal tm_weekday_interaction'ı tamamlar;
                        CatBoost bu string sütunu doğrudan kategorik olarak okur.
+    is_post_holiday  : Tatil dönüşü mü? (Int8, 0/1) — dün tatildi, bugün değil
+                       → birikmiş kargo patlaması beklenir.
+    is_post_campaign : Kampanya artçı şoku mu? (Int8, 0/1) — dün kampanya
+                       öncesi dönemdi, bugün değil → devir devam ediyor.
+
+    Maaş Günü Harmonikleri (Fourier) ve Asimetrik Sönüm
+    ----------------------------------------------------
+    Binary `is_payday_period` bayrağı "ayın 6'sı" ile "ayın 2'si"ni aynı
+    kutuya koyar; CatBoost split'leri için bilgi kaybı yaratır. Aşağıdaki
+    sürekli özellikler ayın gününe göre yumuşak bir sinyal üretir:
+
+    payday_sin_k1 / payday_cos_k1 : Aylık genel salınım (k=1, periyot = ayın gün sayısı)
+    payday_sin_k2 / payday_cos_k2 : Yarım aylık çift maaş döngüsü (k=2, periyot = ay/2)
+                                     → ayın 1'i VE 15'i için aynı fazda zirve yapar.
+    public_payday_impact  : Ayın 15'i (kamu maaşı) sonrası asimetrik üstel
+                            sönüm. Maaş sonrası (gün>=15): exp(-(gün-15)/2.2)
+                            (yavaş sönüm, 3 günlük harcama dalgası).
+                            Maaş öncesi (gün<15): exp(-(15-gün)/1.2)
+                            (hızlı sönüm, kısa bekleyiş etkisi).
+    private_payday_impact : Ayın 1'i (özel sektör maaşı) sonrası asimetrik
+                            üstel sönüm. Mesafe, ayın başına/sonuna göre
+                            simetrik hesaplanır (dist_private_payday);
+                            maaş sonrası ilk 3 gün hızlı (exp(-d/1.5)),
+                            diğer günler kademeli (exp(-d/3.0)) sönüm.
     """
     if group_column not in df.columns:
         return df
 
+    TWO_PI = 2.0 * np.pi
+    day = pl.col(date_column).dt.day().cast(pl.Float64)
+    days_in_month = pl.col(date_column).dt.month_end().dt.day().cast(pl.Float64)
+
+    # --- Özel sektör maaşı mesafesi (ayın 1'i merkezli, ay başı/sonuna göre simetrik) ---
+    # day >= days_in_month - 1  → maaşın yattığı gün / arife  → mesafe 0
+    # day <= 3                  → maaş sonrası ilk günler     → mesafe = day
+    # diğer                     → min(day - 3, days_in_month - 1 - day)
+    dist_private = (
+        pl.when(day >= days_in_month - 1.0).then(0.0)
+          .when(day <= 3.0).then(day)
+          .otherwise(
+              pl.min_horizontal(day - 3.0, days_in_month - 1.0 - day)
+          )
+    )
+
     df = df.with_columns([
-        # 1. Maaş Günü Etkisi (Ayın 1-5'i ve 15-20'si)
+        # 1. Maaş Günü Etkisi (Ayın 1-5'i ve 15-20'si) — geriye uyumlu binary bayrak
         pl.when(
             ((pl.col(date_column).dt.day() >= 1) & (pl.col(date_column).dt.day() <= 5)) |
             ((pl.col(date_column).dt.day() >= 15) & (pl.col(date_column).dt.day() <= 20))
         ).then(1).otherwise(0).cast(pl.Int8).alias("is_payday_period"),
 
         # 2. Rota - Gün Etkileşimi (Örn: "Manisa -> İstanbul_0" yani Pazartesi)
-        (pl.col(group_column).cast(pl.Utf8) + "_" + pl.col("weekday").cast(pl.Utf8)).alias("route_weekday")
+        (pl.col(group_column).cast(pl.Utf8) + "_" + pl.col("weekday").cast(pl.Utf8)).alias("route_weekday"),
+
+        # 3. Tatil Dönüşü Birikim Etkisi (Post-Holiday Backlog)
+        # Dün tatilse ve bugün tatil değilse -> Birikim patlaması yaşanacak!
+        # .over(group_column): shift rota bazında yapılır, rotalar arası sızıntı önlenir.
+        pl.when(
+            (pl.col("is_holiday").shift(1).over(group_column) == 1) & (pl.col("is_holiday") == 0)
+        ).then(1).otherwise(0).cast(pl.Int8).alias("is_post_holiday"),
+
+        # 4. Kampanya Sonrası Artçı Şok (Post-Campaign)
+        # Kampanya bittikten sonraki 1 gün kargo devirleri devam eder.
+        pl.when(
+            (pl.col("is_campaign_eve").shift(1).over(group_column) == 1) & (pl.col("is_campaign_eve") == 0)
+        ).then(1).otherwise(0).cast(pl.Int8).alias("is_post_campaign"),
+
+        # 5. Maaş Günü Fourier Harmonikleri
+        (TWO_PI * 1.0 * day / days_in_month).sin().alias("payday_sin_k1"),
+        (TWO_PI * 1.0 * day / days_in_month).cos().alias("payday_cos_k1"),
+        (TWO_PI * 2.0 * day / days_in_month).sin().alias("payday_sin_k2"),
+        (TWO_PI * 2.0 * day / days_in_month).cos().alias("payday_cos_k2"),
+
+        # 6. Kamu Sektörü Maaşı (Ayın 15'i) — Asimetrik Üstel Sönüm
+        pl.when(day >= 15.0)
+          .then((-(day - 15.0) / 2.2).exp())   # maaş sonrası: yavaş sönüm (3 günlük dalga)
+          .otherwise((-(15.0 - day) / 1.2).exp())  # maaş öncesi: hızlı sönüm (kısa bekleyiş)
+          .alias("public_payday_impact"),
+
+        # 7. Özel Sektör Maaşı (Ayın 1'i) — Asimetrik Üstel Sönüm
+        pl.when(day <= 3.0)
+          .then((-dist_private / 1.5).exp())   # maaş sonrası ilk 3 gün: hızlı lojistik çıkış
+          .otherwise((-dist_private / 3.0).exp())  # maaş öncesi: kademeli azalma
+          .alias("private_payday_impact"),
     ])
 
-    logger.debug("✅ Gelişmiş Takvim ve Rota-Gün (Spatio-Temporal) özellikleri eklendi.")
+    logger.debug(
+        "✅ Gelişmiş Takvim, Rota-Gün, Birikim (Backlog) ve Maaş Harmonik/Sönüm "
+        "özellikleri eklendi."
+    )
     return df
 
 
@@ -307,7 +382,9 @@ def add_advanced_calendar_features(df: pl.DataFrame, date_column: str, group_col
 def add_holiday_features(
     df: pl.DataFrame,
     date_column: str,
+    group_column: Optional[str] = None,
     lead_days: int = HOLIDAY_LEAD_DAYS,
+    backlog_alpha: float = 1.4,
 ) -> pl.DataFrame:
     """
     Türkiye resmi tatil ve dini bayram bayraklarını ekler.
@@ -320,45 +397,132 @@ def add_holiday_features(
 
     Çıktı sütunlar
     --------------
-    is_holiday     : O gün resmi tatil mi? (Int8, 0/1)
-    is_holiday_eve : Tatil öncesi `lead_days` içinde mi? (Int8, 0/1)
+    is_holiday              : O gün resmi tatil mi? (Int8, 0/1)
+    is_holiday_eve          : Tatil öncesi `lead_days` içinde mi? (Int8, 0/1)
+    is_closed               : O gün lojistik ağ kapalı mı? (Int8, 0/1)
+                              (resmi tatil VEYA Pazar günü — Türkiye'de
+                              pazar günleri dağıtım yapılmaz)
+    accumulated_closed_days : Az önce sona eren ardışık kapalı gün sayısı
+                              (Float64) — Lojistik Birikim teorisi (BAI),
+                              rota bazında hesaplanır.
+    days_since_resumption   : Hizmete dönüşten itibaren geçen aktif gün
+                              sayısı (Int64). Kapalı günlerde -1.
+    backlog_release_index   : Tatil dönüşü birikmiş kargonun üstel
+                              sönümle dağıtım hızı (Float64).
+                              backlog_release_index =
+                                accumulated_closed_days.shift(1)
+                                * exp(-days_since_resumption / alpha)
+                              alpha≈1.4: TR lojistik ağının birikmiş
+                              yükü eritme hız sabiti (gün bazında).
+                              4 günden sonra etki sıfırlanır.
 
     Parameters
     ----------
-    df          : Polars DataFrame
-    date_column : Datetime sütunu
-    lead_days   : Tatil arifesi kaç gün önceden başlasın (varsayılan: 2)
+    df            : Polars DataFrame
+    date_column   : Datetime sütunu
+    group_column  : Rota/grup sütunu — backlog hesapları bu sütun
+                    bazında (.over()) yapılır; None ise tek seri kabul
+                    edilir (rotalar arası sızıntı riski oluşmaz).
+    lead_days     : Tatil arifesi kaç gün önceden başlasın (varsayılan: 2)
+    backlog_alpha : Birikim erime hız sabiti (varsayılan: 1.4)
 
     Returns
     -------
     pl.DataFrame
     """
     if not _HOLIDAYS_AVAILABLE:
-        return df.with_columns([
+        df = df.with_columns([
             pl.lit(0).cast(pl.Int8).alias("is_holiday"),
             pl.lit(0).cast(pl.Int8).alias("is_holiday_eve"),
         ])
+        holiday_set = set()
+    else:
+        years = df.select(pl.col(date_column).dt.year()).to_series().unique().to_list()
+        holiday_set = _build_holiday_set(years)
 
-    years = df.select(pl.col(date_column).dt.year()).to_series().unique().to_list()
-    holiday_set = _build_holiday_set(years)
+        # Python date objeleri — epoch matematiği yok, Polars versiyonundan bağımsız
+        holiday_days = [pd.Timestamp(d).date() for d in holiday_set]
+        holiday_eve_days = []
+        for d in holiday_set:
+            for offset in range(1, lead_days + 1):
+                eve = pd.Timestamp(d) - pd.Timedelta(days=offset)
+                holiday_eve_days.append(eve.date())
 
-    # Python date objeleri — epoch matematiği yok, Polars versiyonundan bağımsız
-    holiday_days = [pd.Timestamp(d).date() for d in holiday_set]
-    holiday_eve_days = []
-    for d in holiday_set:
-        for offset in range(1, lead_days + 1):
-            eve = pd.Timestamp(d) - pd.Timedelta(days=offset)
-            holiday_eve_days.append(eve.date())
+        # cast(pl.Date).is_in() — native Polars Date karşılaştırması
+        df = df.with_columns([
+            pl.col(date_column).cast(pl.Date).is_in(holiday_days)
+              .cast(pl.Int8).alias("is_holiday"),
+            pl.col(date_column).cast(pl.Date).is_in(holiday_eve_days)
+              .cast(pl.Int8).alias("is_holiday_eve"),
+        ])
 
-    # cast(pl.Date).is_in() — native Polars Date karşılaştırması
+    # ------------------------------------------------------------------
+    # Lojistik Birikim (BAI) — is_closed = tatil VEYA Pazar günü
+    # ------------------------------------------------------------------
     df = df.with_columns([
-        pl.col(date_column).cast(pl.Date).is_in(holiday_days)
-          .cast(pl.Int8).alias("is_holiday"),
-        pl.col(date_column).cast(pl.Date).is_in(holiday_eve_days)
-          .cast(pl.Int8).alias("is_holiday_eve"),
+        pl.when(
+            (pl.col("is_holiday") == 1) | (pl.col(date_column).dt.weekday() == 7)
+        ).then(1).otherwise(0).cast(pl.Int8).alias("is_closed")
     ])
 
-    logger.debug(f"✅ Tatil özellikleri eklendi ({len(holiday_set)} tatil günü, Polars native).")
+    over_keys = [group_column] if group_column and group_column in df.columns else None
+
+    def _over(expr: pl.Expr) -> pl.Expr:
+        return expr.over(over_keys) if over_keys else expr
+
+    # _reset_grp: her açık günde 1 artar — ardışık kapalı blokları gruplar
+    df = df.with_columns([
+        _over((pl.col("is_closed") == 0).cum_sum()).alias("_reset_grp")
+    ])
+
+    # streak_len: o ana kadar süregelen ardışık kapalı gün sayısı
+    reset_keys = (over_keys or []) + ["_reset_grp"]
+    df = df.with_columns([
+        pl.when(pl.col("is_closed") == 1)
+          .then(pl.col("is_closed").cum_sum().over(reset_keys))
+          .otherwise(0)
+          .alias("_streak_len")
+    ])
+
+    # accumulated_closed_days: az önce sona eren kapalı bloğun boyu (açık günlerde dolu, kapalı günlerde 0)
+    df = df.with_columns([
+        pl.when(pl.col("is_closed") == 0)
+          .then(_over(pl.col("_streak_len").shift(1)).fill_null(0))
+          .otherwise(0.0)
+          .cast(pl.Float64)
+          .alias("accumulated_closed_days")
+    ])
+
+    # days_since_resumption: açık günlerde, mevcut açık-blok içindeki 1-indeksli pozisyon; kapalı günlerde -1
+    df = df.with_columns([
+        pl.when(pl.col("is_closed") == 0)
+          .then(pl.int_range(1, pl.len() + 1).over(reset_keys))
+          .otherwise(-1)
+          .alias("days_since_resumption")
+    ])
+
+    # backlog_release_index: önceki günün accumulated_closed_days'i * exp(-days_since_resumption/alpha)
+    # 4 günden sonra etki sıfırlanır
+    df = df.with_columns([
+        _over(pl.col("accumulated_closed_days").shift(1)).fill_null(0.0).alias("_prev_accum")
+    ])
+    df = df.with_columns([
+        pl.when(
+            (pl.col("is_closed") == 0) &
+            (pl.col("days_since_resumption") >= 0) &
+            (pl.col("days_since_resumption") <= 4)
+        )
+        .then(pl.col("_prev_accum") * (-pl.col("days_since_resumption") / backlog_alpha).exp())
+        .otherwise(0.0)
+        .alias("backlog_release_index")
+    ])
+
+    df = df.drop(["_reset_grp", "_streak_len", "_prev_accum"])
+
+    logger.debug(
+        f"✅ Tatil özellikleri eklendi ({len(holiday_set)} tatil günü, "
+        f"Polars native, BAI alpha={backlog_alpha})."
+    )
     return df
 
 
@@ -626,17 +790,20 @@ def build_feature_matrix(
     # --- Adım 2: Zaman özellikleri ---
     pl_df = add_time_features(pl_df, date_column)
 
-    # --- Adım 2.5: Kaggle Takvim Özellikleri (Maaş günü + Rota-Gün etkileşimi) ---
-    pl_df = add_advanced_calendar_features(pl_df, date_column, group_column)
-
     # --- Adım 3: Tatil özellikleri ---
-    pl_df = add_holiday_features(pl_df, date_column, lead_days=holiday_lead_days)
+    pl_df = add_holiday_features(pl_df, date_column, group_column=group_column, lead_days=holiday_lead_days)
 
     # --- Adım 3.5: Kampanya (E-ticaret) özellikleri ---
     # lead_days=3: Anneler Günü gibi kampanyalarda 5 günlük arife
     # Nisan/Mayıs tatil birikim dönemleriyle çakışıyor.
     # 3 gün, gerçek e-ticaret sipariş penceresini daha temiz modelliyor.
     pl_df = add_campaign_features(pl_df, date_column, lead_days=3)
+
+    # --- Adım 3.7: Kaggle Takvim Özellikleri (Maaş günü + Rota-Gün + Birikim) ---
+    # is_holiday ve is_campaign_eve sütunlarına bağımlı olduğu için
+    # tatil/kampanya adımlarından SONRA çalıştırılır.
+    pl_df = add_advanced_calendar_features(pl_df, date_column, group_column)
+
 
     # --- Adım 4: Spatio-temporal ---
     if group_column and group_column in pl_df.columns:
