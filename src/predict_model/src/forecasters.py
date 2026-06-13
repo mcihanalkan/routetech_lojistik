@@ -87,16 +87,18 @@ def _load_hyperparams(
     learning_rate = float(p["learning_rate"])
     l2_leaf_reg   = float(p.get("l2_leaf_reg", 10.0))
     bagging_temp  = float(p.get("bagging_temperature", 0.3))
+    # v4: JSON'da alpha yoksa (optimize.py v4 öncesi bucket) varsayılan 0.50 (simetrik medyan)
+    alpha         = float(p.get("alpha", 0.50))
 
     if logging_enabled:
         logger.info(
             f"⚖️  Hiperparametre yüklendi: {label}\n"
             f"   iter={iterations} | depth={depth} | lr={learning_rate:.4f} | "
-            f"l2={l2_leaf_reg:.2f} | bag_temp={bagging_temp:.3f}\n"
+            f"l2={l2_leaf_reg:.2f} | bag_temp={bagging_temp:.3f} | opt_alpha={alpha:.4f}\n"
             f"   (Veri: {data_size:,} satır)"
         )
 
-    return iterations, depth, learning_rate, l2_leaf_reg, bagging_temp, label
+    return iterations, depth, learning_rate, l2_leaf_reg, bagging_temp, alpha, label
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +216,7 @@ class DemandForecaster(BaseForecaster):
         self.depth                 = depth
         self.l2_leaf_reg           = 10.0   # JSON'dan yüklenince fit() içinde üzerine yazılır
         self.bagging_temperature   = 0.3    # JSON'dan yüklenince fit() içinde üzerine yazılır
+        self.optimized_alpha_      = 0.50   # JSON'dan yüklenince fit() içinde üzerine yazılır (v4)
         self.lags                  = lags or [1, 7, 14]
         self.rolling_windows       = rolling_windows or [7, 14]
         self.underestimation_penalty = underestimation_penalty
@@ -242,8 +245,11 @@ class DemandForecaster(BaseForecaster):
         Bu sayede kantillerin birbirini kesmesi (crossing) engellenir
         ve eğitim süresi 3 kat kısalır!
         """
-        # alpha listesi: q10, q50 ve q90(Asimetrik 9x ceza)
-        loss_fn = f"MultiQuantile:alpha=0.1,0.5,{Q90_ALPHA}"
+        # alpha listesi: q10, Optuna'nın bulduğu asimetrik kuantil ve q90(9x ceza)
+        # optimized_alpha_ henüz set edilmemişse (standalone _build_model çağrısı)
+        # varsayılan 0.50 kullan — fit() her zaman önce _load_hyperparams çağırır.
+        _alpha = getattr(self, "optimized_alpha_", 0.50)
+        loss_fn = f"MultiQuantile:alpha=0.1,{_alpha:.4f},{Q90_ALPHA}"
 
         self.model_ = CatBoostRegressor(
             iterations=self.iterations,
@@ -470,7 +476,7 @@ class DemandForecaster(BaseForecaster):
         # --- 0. Dinamik Hiperparametre Seçimi — hyperparams_map.json'dan ---
         data_size = len(df)
         self.iterations, self.depth, self.learning_rate, self.l2_leaf_reg, \
-            self.bagging_temperature, config_label = \
+            self.bagging_temperature, self.optimized_alpha_, config_label = \
             _load_hyperparams(data_size, self.logging_enabled)
 
         # --- 1. Validasyon ---
@@ -595,8 +601,11 @@ class DemandForecaster(BaseForecaster):
             fold_train_pool = Pool(data=X_fold_train, label=y_fold_train, cat_features=self.cat_features_)
             fold_val_pool   = Pool(data=X_fold_val,   label=y_fold_val,   cat_features=self.cat_features_)
 
+            # v4: Ortadaki kuantili (index 1) sabit 0.5 yerine Optuna'nın bulduğu
+            # asimetrik alpha ile değiştiriyoruz. JSON'da alpha yoksa 0.5 (eski davranış).
+            loss_fn_v4 = f"MultiQuantile:alpha=0.1,{self.optimized_alpha_:.4f},{Q90_ALPHA}"
             fold_model = CatBoostRegressor(
-                loss_function=f"MultiQuantile:alpha=0.1,0.5,{Q90_ALPHA}",
+                loss_function=loss_fn_v4,
                 iterations=self.iterations,
                 depth=self.depth,
                 learning_rate=self.learning_rate,

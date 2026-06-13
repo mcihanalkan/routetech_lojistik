@@ -1,14 +1,18 @@
 {
     "small": {
         "row_count": 10770,
-        "best_wape": 0.260553,
-        "optimization_time_minutes": 15.04,
+        "gamma": 2.0,
+        "best_hybrid_score": 0.382386,
+        "best_wape": 0.27106,
+        "underprediction_rate": 0.05577,
+        "optimization_time_minutes": 15.06,
         "params": {
-            "iterations": 498,
-            "depth": 5,
-            "learning_rate": 0.0784339662253313,
-            "l2_leaf_reg": 23.032654434596758,
-            "bagging_temperature": 0.5975548906437792
+            "iterations": 349,
+            "alpha": 0.8123,
+            "depth": 6,
+            "learning_rate": 0.037805530819230944,
+            "l2_leaf_reg": 35.22489545111236,
+            "bagging_temperature": 0.48574429451724266
         }
     }
 }

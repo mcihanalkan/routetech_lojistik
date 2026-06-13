@@ -10,9 +10,28 @@ Kullanım:
     python optimize.py --data baska_veri.xlsx  # farklı veriyle
     python optimize.py --trials 50 --timeout 1200
     python optimize.py --trials 50 --timeout 0  # timeout yok, sadece trial sayısı sınırı
+    python optimize.py --gamma 2.0              # spot/atıl maliyet oranı: (C_spot/C_atil) - 1
+    python optimize.py --gamma 0               # asimetrik ceza kapalı (eski davranış)
 
 Her çalıştırmada JSON'daki ilgili bucket güncellenir.
 Yeni bir veri boyutu (örn. 500K satır) gelirse otomatik yeni bucket eklenir.
+
+--- Asimetrik Maliyet Mantığı (v4) ---
+Önceki sürümler sabit alpha=0.5 (medyan) ile simetrik WAPE minimize ediyordu.
+Lojistik operasyonlarda eksik tahmin → spot araç → fazla tahmin maliyetinin
+katları kadar pahalıdır. Bu asimetriyi modele yansıtmak için:
+
+  1. alpha (Quantile seviyesi) artık Optuna'nın arama uzayında [0.50, 0.85]
+     → model hangi kuantilin en iyi kapasite kararını verdiğini kendisi bulur.
+
+  2. Objective fonksiyonu hibrit:
+       L_hybrid = WAPE + γ × Underprediction_Penalty
+     WAPE terimi modelin "sonsuz yukarı tahmin" kaçış yolunu kapatır.
+     γ (gamma) = (C_spot / C_atıl) - 1  →  operasyonel maliyet rasyondan türetilir.
+     Örn: spot 3× pahalıysa γ = 2.0
+
+  3. Hem alpha hem de hybrid_score JSON'a yazılır; forecasters.py alpha'yı
+     loss_function içinde kullanmalıdır.
 """
 
 import argparse
@@ -48,6 +67,39 @@ GROUP_COL   = "rota"
 KAYNAK_COL  = "kaynak_tm"
 VARIS_COL   = "varis_tm"
 
+# ---------------------------------------------------------------------------
+# Varsayılan gamma — CLI ile veya optimize() çağrısında override edilebilir.
+# γ = (C_spot / C_atıl) - 1
+# Spot araç 3× pahalıysa → γ = 2.0  (1 WAPE + 2 ceza = toplamda 3× ağırlık)
+# Asimetrik cezayı tamamen kapatmak için → γ = 0.0
+# ---------------------------------------------------------------------------
+DEFAULT_GAMMA = 2.0
+
+# alpha arama aralığı: medyanın altına düşmesin (eksik tahmin yanlılığı artar)
+ALPHA_MIN = 0.50
+ALPHA_MAX = 0.85
+
+
+# ---------------------------------------------------------------------------
+# Hibrit kayıp fonksiyonu
+# ---------------------------------------------------------------------------
+
+def _hybrid_score(y_true: np.ndarray, y_pred: np.ndarray, gamma: float) -> float:
+    """
+    L_hybrid = WAPE + γ × Underprediction_Penalty
+
+    WAPE  : genel tahmin doğruluğunu ölçer; modelin "sonsuz yukarı"
+            tahmin yaparak γ cezasından kaçmasını engeller (çapa görevi).
+    Ceza  : sadece eksik tahmin (y_true > y_pred) olduğunda devreye girer.
+    γ = 0 → saf WAPE (eski davranış), γ > 0 → asimetrik ceza aktif.
+    """
+    total = np.sum(y_true)
+    if total <= 0:
+        return 1.0
+    wape        = np.sum(np.abs(y_true - y_pred)) / total
+    underpred   = np.sum(np.maximum(y_true - y_pred, 0.0)) / total
+    return float(wape + gamma * underpred)
+
 
 # ---------------------------------------------------------------------------
 # Veri boyutuna göre Optuna arama uzayı
@@ -58,13 +110,7 @@ def _search_space(n_rows: int) -> dict:
     Veri boyutuna göre Optuna arama uzayı.
     Küçük veri → sığ/regularize, büyük veri → derin/kapasiteli.
 
-    small bucket değişiklikleri (v3 — derinleşme + yeni feature'lar):
-      - depth  : (3,4) → (4,8)     — yeni calendar/backlog feature'larını
-                                      öğrenebilmesi için ağaçlar serbest
-      - l2     : (10.0,30.0) → (10.0,40.0) — derinleşmeye karşı ceza üst
-                                      sınırı artırıldı, ezber dengelendi
-    Diğer bucket'larda da depth alt/üst sınırları ve l2 üst sınırı
-    aynı mantıkla genişletildi (max l2=40.0).
+    v4 değişikliği: alpha alanı eklendi (tüm bucket'larda ortak [0.50, 0.85]).
     """
     if n_rows < 5_000:
         return dict(iter=(200, 600, 100), depth=(3, 6), lr=(0.02, 0.15), l2=(5.0, 25.0), bag=(0.1, 0.5))
@@ -140,18 +186,30 @@ def load_data(path: str) -> pd.DataFrame:
 
 def optimize(
     data_path: str,
-    n_trials: int = 30,
-    timeout: int  = 180,
+    n_trials: int  = 30,
+    timeout: int   = 180,
+    gamma: float   = DEFAULT_GAMMA,
 ) -> dict:
     """
-    q50 WAPE'yi minimize eden hiperparametreleri bul.
-    q50 üzerinde optimize → q10/q90 aynı yapıyı kullanır.
+    Hibrit L_hybrid = WAPE + γ × Underprediction_Penalty skorunu minimize eden
+    hiperparametreleri bul. alpha (Quantile seviyesi) artık arama uzayında.
+
+    gamma=0 → eski simetrik WAPE davranışı (geriye dönük uyumluluk).
     Walk-forward split: son %20 validation (anormal haftalar dışlanır).
     """
     t0 = time.time()
     logger.info("=" * 60)
-    logger.info("🔍 Optuna Hiperparametre Optimizasyonu")
+    logger.info("🔍 Optuna Hiperparametre Optimizasyonu  (v4 — Hibrit Asimetrik)")
     logger.info("=" * 60)
+
+    if gamma > 0:
+        logger.info(
+            f"   γ (gamma) = {gamma:.2f}  →  spot maliyet ≈ {gamma + 1:.1f}× atıl maliyet\n"
+            f"   Objective : WAPE + {gamma:.2f} × Underprediction_Penalty\n"
+            f"   alpha arama aralığı: [{ALPHA_MIN}, {ALPHA_MAX}]"
+        )
+    else:
+        logger.info("   γ = 0 → Simetrik WAPE modu (asimetrik ceza devre dışı)")
 
     # Veri
     full_df = load_data(data_path)
@@ -159,7 +217,7 @@ def optimize(
     bucket  = _bucket_name(n_rows)
     space   = _search_space(n_rows)
 
-    logger.info(f"   Gerçek kayıt: {n_rows:,} | Bucket: {bucket}")
+    logger.info(f"\n   Gerçek kayıt: {n_rows:,} | Bucket: {bucket}")
 
     # Feature engineering
     feat_df = build_feature_matrix(
@@ -167,7 +225,7 @@ def optimize(
         target_column  = TARGET_COL,
         date_column    = DATE_COL,
         group_column   = GROUP_COL,
-        lags           = [1, 7, 14, 21],  # lag_2,3 negatif otokor. | lag_30 kaldırıldı → +801 satır eğitim
+        lags           = [1, 7, 14, 21],
         rolling_windows= [7, 14],
         drop_na        = True,
     )
@@ -193,7 +251,7 @@ def optimize(
     feature_cols = [c for c in train_df.columns if c not in drop_cols]
     cat_features = get_categorical_columns(train_df[feature_cols])
 
-    # Validation: anormal haftaları WAPE'den çıkar
+    # Validation: anormal haftaları dışla
     val_df = val_df.copy()
     val_df["_week"] = val_df[DATE_COL].dt.isocalendar().week.astype(int)
     val_df["_year"] = val_df[DATE_COL].dt.year
@@ -212,44 +270,83 @@ def optimize(
         f"   {n_trials} trial, {timeout}s timeout"
     )
 
-    # Objective
+    # -----------------------------------------------------------------------
+    # Objective — Hibrit asimetrik kayıp
+    # -----------------------------------------------------------------------
     def objective(trial):
         s = space
+
+        # alpha: Quantile seviyesi — Optuna'nın arama uzayında
+        # gamma=0 ise simetrik mod; alpha'yı 0.5'e sabitle (gereksiz arama yapma)
+        if gamma > 0:
+            alpha = trial.suggest_float("alpha", ALPHA_MIN, ALPHA_MAX)
+        else:
+            alpha = 0.5
+
         params = {
             "iterations":          trial.suggest_int("iterations", s["iter"][0], s["iter"][1], step=s["iter"][2]),
             "depth":               trial.suggest_int("depth", s["depth"][0], s["depth"][1]),
             "learning_rate":       trial.suggest_float("learning_rate", s["lr"][0], s["lr"][1], log=True),
             "l2_leaf_reg":         trial.suggest_float("l2_leaf_reg", s["l2"][0], s["l2"][1]),
             "bagging_temperature": trial.suggest_float("bagging_temperature", s["bag"][0], s["bag"][1]),
-            "loss_function":       "Quantile:alpha=0.5",
+            # alpha dinamik: CatBoost içsel kuantil kaybı da asimetrik eğitir
+            "loss_function":       f"Quantile:alpha={alpha:.4f}",
             "random_seed":         42,
             "verbose":             False,
             "allow_writing_files": False,
             "thread_count":        -1,
         }
+
         model = CatBoostRegressor(**params)
         model.fit(
             Pool(X_tr, y_tr, cat_features=cat_features),
             eval_set=Pool(X_val, y_val, cat_features=cat_features),
             early_stopping_rounds=50,
         )
+
         # early_stopping'in gerçekte durduğu iteration'ı kaydet
         trial.set_user_attr("best_iteration", model.get_best_iteration())
-        preds = np.maximum(model.predict(X_val), 0)
-        wape  = float(np.sum(np.abs(y_val - preds)) / np.sum(y_val)) if np.sum(y_val) > 0 else 1.0
-        return wape
+        trial.set_user_attr("alpha", alpha)
 
-    study = optuna.create_study(direction="minimize", study_name=f"rtopt_{bucket}")
+        preds = np.maximum(model.predict(X_val), 0)
+
+        # Hibrit skor: Optuna bu değeri minimize eder
+        score = _hybrid_score(y_val, preds, gamma=gamma)
+        return score
+
+    study = optuna.create_study(direction="minimize", study_name=f"rtopt_{bucket}_v4")
     study.optimize(objective, n_trials=n_trials, timeout=timeout, show_progress_bar=True)
 
     best    = study.best_params
     elapsed = time.time() - t0
 
     best_iter_actual = study.best_trial.user_attrs.get("best_iteration", best["iterations"])
+    best_alpha       = study.best_trial.user_attrs.get("alpha", 0.5)
+
+    # Hybrid skorun bileşenlerini ayrıca hesapla (raporlama için)
+    # En iyi trial'ın skoru zaten study.best_value; pure WAPE'yi de logla
+    best_model = CatBoostRegressor(
+        iterations          = best_iter_actual,
+        depth               = best["depth"],
+        learning_rate       = best["learning_rate"],
+        l2_leaf_reg         = best["l2_leaf_reg"],
+        bagging_temperature = best["bagging_temperature"],
+        loss_function       = f"Quantile:alpha={best_alpha:.4f}",
+        random_seed         = 42,
+        verbose             = False,
+        allow_writing_files = False,
+        thread_count        = -1,
+    )
+    best_model.fit(Pool(X_tr, y_tr, cat_features=cat_features))
+    best_preds   = np.maximum(best_model.predict(X_val), 0)
+    pure_wape    = float(np.sum(np.abs(y_val - best_preds)) / np.sum(y_val)) if np.sum(y_val) > 0 else 1.0
+    underpred_rt = float(np.sum(np.maximum(y_val - best_preds, 0)) / np.sum(y_val)) if np.sum(y_val) > 0 else 1.0
 
     logger.info(
         f"\n✅ Optimizasyon tamamlandı ({elapsed/60:.1f} dakika)\n"
-        f"   Best WAPE      : {study.best_value:.4%}\n"
+        f"   Hibrit skor    : {study.best_value:.4%}  "
+        f"(WAPE={pure_wape:.4%} | UnderpredRate={underpred_rt:.4%})\n"
+        f"   alpha (kuantil): {best_alpha:.4f}\n"
         f"   iterations     : {best['iterations']} → erken durak: {best_iter_actual}\n"
         f"   depth          : {best['depth']}\n"
         f"   learning_rate  : {best['learning_rate']:.6f}\n"
@@ -257,16 +354,21 @@ def optimize(
         f"   bagging_temp   : {best['bagging_temperature']:.3f}"
     )
 
+    # -----------------------------------------------------------------------
     # JSON güncelle
     # best_iteration: early_stopping'in gerçekte durduğu adım.
-    # Bu değer forecasters.py'de iterations olarak kullanılır — arama uzayındaki
-    # ham sayı değil, validation'da en iyi performansı veren gerçek adım sayısı.
+    # alpha: forecasters.py'de loss_function içinde kullanılmalıdır.
+    # -----------------------------------------------------------------------
     result_entry = {
-        "row_count":                n_rows,
-        "best_wape":                round(study.best_value, 6),
+        "row_count":                 n_rows,
+        "gamma":                     gamma,
+        "best_hybrid_score":         round(study.best_value, 6),
+        "best_wape":                 round(pure_wape, 6),
+        "underprediction_rate":      round(underpred_rt, 6),
         "optimization_time_minutes": round(elapsed / 60, 2),
         "params": {
             "iterations":          best_iter_actual,   # ← early_stopping gerçek dur noktası
+            "alpha":               round(best_alpha, 4),  # ← YENİ: forecasters.py'e aktar
             "depth":               best["depth"],
             "learning_rate":       best["learning_rate"],
             "l2_leaf_reg":         best["l2_leaf_reg"],
@@ -298,12 +400,25 @@ def optimize(
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Hiperparametre Optimizasyonu")
+    parser = argparse.ArgumentParser(
+        description="Hiperparametre Optimizasyonu — Hibrit Asimetrik WAPE (v4)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Gamma kalibrasyonu:
+  --gamma değeri = (C_spot / C_atıl) - 1
+  Spot araç 2× pahalıysa  →  --gamma 1.0
+  Spot araç 3× pahalıysa  →  --gamma 2.0  (varsayılan)
+  Spot araç 4× pahalıysa  →  --gamma 3.0
+  Asimetrik ceza kapalı   →  --gamma 0
+        """
+    )
     parser.add_argument("--data",    default="data/Desi_talep.xlsx", help="Veri dosyası")
-    parser.add_argument("--trials",  type=int, default=50,      help="Optuna trial sayısı")
-    parser.add_argument("--timeout", type=int, default=900,     help="Timeout (saniye) — 0 = sınırsız (sadece trials sayısı geçerli)")
+    parser.add_argument("--trials",  type=int,   default=50,           help="Optuna trial sayısı")
+    parser.add_argument("--timeout", type=int,   default=900,          help="Timeout (saniye) — 0 = sınırsız")
+    parser.add_argument("--gamma",   type=float, default=DEFAULT_GAMMA,
+                        help=f"Asimetrik ceza katsayısı (C_spot/C_atıl - 1). Varsayılan: {DEFAULT_GAMMA}")
     args = parser.parse_args()
 
     timeout = args.timeout if args.timeout > 0 else None
-    result = optimize(args.data, n_trials=args.trials, timeout=timeout)
+    result  = optimize(args.data, n_trials=args.trials, timeout=timeout, gamma=args.gamma)
     print(f"\nJSON'a yazılan parametreler:\n{json.dumps(result, indent=2)}")
