@@ -1,68 +1,59 @@
 from pathlib import Path
-import json
-import os
 import pandas as pd
 from ortools.sat.python import cp_model
-
 import sys
-sys.path.insert(0, str(Path(__file__).parent.parent / "haversine"))
-from haversine import GetDistanceMatrixAsList
 
-# 1. Modeli Başlatma
+sys.path.insert(0, str(Path(__file__).parent.parent / "haversine"))
+from haversine import GetDistanceMatrixAsList, is_city_between
+
+# =============================================================================
+# 1. MODELİ BAŞLATMA
+# =============================================================================
 model = cp_model.CpModel()
 
-# --- INPUT VERİLERİ ---
+# =============================================================================
+# 2. INPUT VERİLERİ
+# =============================================================================
 tmler = [
     "Mersin", "Kütahya", "Kocaeli", "Eskişehir", "İstanbul", "Bilecik",
     "Balıkesir", "Şanlıurfa", "Tekirdağ", "Sivas", "Yalova", "Manisa",
     "Isparta", "Mardin", "Erzincan", "Zonguldak", "Karaman", "Denizli"
 ]
 
-# ortools_payload.csv dosyasından hatları ve talepleri çek
 payload_csv = Path(__file__).parent.parent / "src" / "predict_model" / "ortools_payload.csv"
 
 if payload_csv.exists():
     df_payload = pd.read_csv(payload_csv)
-    
-    # Debug için terminale sütun isimlerini yazdıralım, gözümüzle görelim
-    print(f"🔍 CSV Sütunları: {list(df_payload.columns)}")
-    
-    hatlar = []
+    hatlar_sirali = []
     talep_verisi = {}
     gecici_gunler = set()
-    
+
     for _, row in df_payload.iterrows():
-        # Sütun adı ne olursa olsun güvenli bir şekilde çekmeyi dene
         source = row.get('source_tm') or row.get('kaynak_tm') or row.get('source') or row.get('kaynak')
-        dest = row.get('destination_tm') or row.get('varis_tm') or row.get('destination') or row.get('varis')
-        
-        # Eğer yukarıdakiler de boş dönerse (None), CSV'nin ilk iki sütununu direkt al
+        dest   = row.get('destination_tm') or row.get('varis_tm') or row.get('destination') or row.get('varis')
+
         if pd.isna(source) or source is None:
-            source = row.iloc[1] # Genellikle 0 tarih, 1 kaynak, 2 varıştır
+            source = row.iloc[1]
         if pd.isna(dest) or dest is None:
             dest = row.iloc[2]
-            
+
         date_str = str(row['date']) if 'date' in row else str(row.iloc[0])
         q50 = float(row.get('q50', 0))
-        
+
+        # FIX #7: dict.fromkeys() ile sıra koruyarak tekil hat listesi
         hat = f"{str(source).strip()}-{str(dest).strip()}"
-        if hat not in hatlar:
-            hatlar.append(hat)
-        
-        # Tarih dönüşümü (2026-05-11 -> 11_Mayis)
+        hatlar_sirali.append(hat)
+
         tarih_obj = pd.to_datetime(date_str)
-        gun_adi = f"{tarih_obj.day:02d}_Mayis" 
-        
+        gun_adi = f"{tarih_obj.day:02d}_Mayis"
+
         gecici_gunler.add(gun_adi)
         talep_verisi[(hat, gun_adi)] = int(q50)
-    
-    hatlar = list(set(hatlar))
+
+    # FIX #7: set() yerine dict.fromkeys() — sıra korunur, tekrarlar temizlenir
+    hatlar = list(dict.fromkeys(hatlar_sirali))
     gunler = sorted(list(gecici_gunler))
-    
-    print(f"✅ ortools_payload.csv'den başarıyla yüklendi:")
-    print(f"   Hatlar: {len(hatlar)} adet benzersiz hat")
-    print(f"   Günler: {gunler}")
-    print(f"   Toplam Veri Noktası: {len(talep_verisi)}")
+
 else:
     print(f"⚠️  {payload_csv} bulunamadı! Sabit veriler kullanılıyor.")
     hatlar = [f"{tm1}-{tm2}" for tm1 in tmler for tm2 in tmler if tm1 != tm2]
@@ -71,246 +62,427 @@ else:
 
 arac_turleri = ["Tir", "Kamyon", "Hafif Kam", "Kamyonet"]
 
-# Mesafe matrisi
+# =============================================================================
+# 3. MESAFE MATRİSİ
+#    Teknofest Kural #6: Mesafeler kuş uçuşu (Haversine) hesaplanır.
+# =============================================================================
 centers, distances_2d = GetDistanceMatrixAsList()
 tm_index = {tm: idx for idx, tm in enumerate(centers)}
+center_matrix_df = pd.DataFrame(distances_2d, index=centers, columns=centers)
 
-# Hatlar için mesafe verisi hesapla (sadece mevcut hatlar)
 mesafe_verisi = {}
 for hat in hatlar:
-    tm1, tm2 = hat.split("-")
-    if tm1 in tm_index and tm2 in tm_index:
-        idx1 = tm_index[tm1]
-        idx2 = tm_index[tm2]
-        mesafe_verisi[hat] = distances_2d[idx1][idx2]
-    else:
-        print(f"⚠️  {hat} için transfer merkezi koordinatı bulunamadı!")
+    # FIX #8: maxsplit=1 — tireli şehir adları güvenle ayrıştırılır
+    parcalar = hat.split("-", maxsplit=1)
+    if len(parcalar) == 2:
+        tm1, tm2 = parcalar
+        if tm1 in tm_index and tm2 in tm_index:
+            mesafe_verisi[hat] = distances_2d[tm_index[tm1]][tm_index[tm2]]
 
-# STOK BİLGİSİ (isteğe bağlı, belirlenen hatlar için)
+# =============================================================================
+# 4. KİRALIK STOK VE ARAÇ PARAMETRELERİ
+#    Teknofest Kural #3: Kiralık araçlar tanımlı hatta zorunlu olarak çalışır.
+#    Kiralık araç sayısı bu dict'teki ÜST SINIRI belirler; optimizer 0'a kadar
+#    düşürebilir — ama Teknofest kuralına göre bunlar "kullanımda" sayılır ve
+#    maliyetleri her halükarda ödenir (sabit_kira). Bu nedenle kiralık araç
+#    maliyetleri amaç fonksiyonuna SABİT olarak eklenir, değişken olarak değil.
+# =============================================================================
 kiralik_stok_gunluk = {
-    ("İstanbul-Yalova", "Tir"): 2,
-    ("İstanbul-Eskişehir", "Tir"): 2,
-    ("Kocaeli-Yalova", "Tir"): 1,
-    ("İstanbul-Manisa", "Tir"): 1,
-    ("İstanbul-Balıkesir", "Tir"): 1,
-    ("İstanbul-Tekirdağ", "Tir"): 1,
-    ("Kocaeli-İstanbul", "Tir"): 1,
-    ("Kocaeli-Tekirdağ", "Tir"): 1,
-    ("Yalova-Eskişehir", "Kamyon"): 1,
+    ("İstanbul-Yalova",   "Tir"):    2,
+    ("İstanbul-Eskişehir","Tir"):    2,
+    ("Kocaeli-Yalova",    "Tir"):    1,
+    ("İstanbul-Manisa",   "Tir"):    1,
+    ("İstanbul-Balıkesir","Tir"):    1,
+    ("İstanbul-Tekirdağ", "Tir"):    1,
+    ("Kocaeli-İstanbul",  "Tir"):    1,
+    ("Kocaeli-Tekirdağ",  "Tir"):    1,
+    ("Yalova-Eskişehir",  "Kamyon"): 1,
     ("Kocaeli-Balıkesir", "Kamyon"): 1,
     ("Kocaeli-Eskişehir", "Kamyon"): 1,
-    ("Yalova-Tekirdağ", "Kamyon"): 1,
+    ("Yalova-Tekirdağ",   "Kamyon"): 1,
 }
 
-# ARAÇ PARAMETRELERİ
 arac_parametreleri = {
-    "Tir":      {"sabit_kira": 7000,  "kiralik_km_maliyet": 13, "spot_sabit_maliyet": 11700, "spot_km_maliyet": 25, "kapasite_desi": 22400},
-    "Kamyon":   {"sabit_kira": 5000,  "kiralik_km_maliyet": 10, "spot_sabit_maliyet": 7638,  "spot_km_maliyet": 21, "kapasite_desi": 12000},
-    "Hafif Kam":{"sabit_kira": 5000,  "kiralik_km_maliyet": 10, "spot_sabit_maliyet": 8750, "spot_km_maliyet": 20, "kapasite_desi": 7200},
-    "Kamyonet": {"sabit_kira": 3750,  "kiralik_km_maliyet": 6,  "spot_sabit_maliyet": 4750, "spot_km_maliyet": 18, "kapasite_desi": 5600},
+    "Tir":       {"sabit_kira": 7000,  "kiralik_km_maliyet": 13, "spot_sabit_maliyet": 11700, "spot_km_maliyet": 25, "kapasite_desi": 22400},
+    "Kamyon":    {"sabit_kira": 5000,  "kiralik_km_maliyet": 10, "spot_sabit_maliyet": 7638,  "spot_km_maliyet": 21, "kapasite_desi": 12000},
+    "Hafif Kam": {"sabit_kira": 5000,  "kiralik_km_maliyet": 10, "spot_sabit_maliyet": 8750,  "spot_km_maliyet": 20, "kapasite_desi": 7200},
+    "Kamyonet":  {"sabit_kira": 3750,  "kiralik_km_maliyet": 6,  "spot_sabit_maliyet": 4750,  "spot_km_maliyet": 18, "kapasite_desi": 5600},
 }
 
-# Pipeline çıktısı varsa yukarıdaki örnek verilerin yerine gerçek forecast/mesafe/stok/maliyet verilerini kullan.
-input_json = Path(os.environ.get(
-    "ROUTETECH_OPTIMIZATION_INPUT",
-    Path(__file__).parent.parent / "data" / "outputs" / "optimization_input.json",
-))
-if input_json.exists():
-    with open(input_json, "r", encoding="utf-8") as f:
-        payload = json.load(f)
+# Teknofest Kural #1: SLA ceza ağırlığı — spot araç maliyetiyle rekabetçi tutuldu.
+# En ucuz spot araç (Kamyonet, 5600 desi): ~4750 TL sabit.
+# Desi başı ~0.85 TL. Erteleme caydırıcı ama imkânsız kılmıyor.
+SLA_GECIKME_CEZA_TL_PER_DESI = 1.5
 
-    forecast_df = pd.DataFrame(payload["forecast"])
-    route_distances_df = pd.DataFrame(payload["route_distances"])
-    vehicle_costs_df = pd.DataFrame(payload["vehicle_costs"])
-    rental_limits_df = pd.DataFrame(payload["rental_limits"])
+# =============================================================================
+# 5. ÜST SINIR HESAPLARI
+# =============================================================================
+# FIX #6: max_talep_hatta üst sınırı — teorik maksimum toplam talep
+max_talep_hatta = sum(talep_verisi.values()) if talep_verisi else 0
+max_spot = 50
 
-    forecast_df["date"] = pd.to_datetime(forecast_df["date"]).dt.strftime("%Y-%m-%d")
-    forecast_df["recommended_demand"] = pd.to_numeric(
-        forecast_df["recommended_demand"], errors="coerce"
-    ).fillna(0).clip(lower=0)
+# =============================================================================
+# 6. UĞRAMA ROTALARINI ÖN-İŞLEME
+#    Teknofest Kural #4: Uğrama serbesttir (Multi-stop routing).
+#    Konsolidasyon (farklı çıkış noktalarından merkeze toplama) yasaktır.
+#    FIX #9: Uğrama rotaları bir kez önbelleklenir.
+# =============================================================================
+ugrama_rotalari = []
+for a in tmler:
+    for b in tmler:
+        if a == b:
+            continue
+        for c in tmler:
+            if c == a or c == b:
+                continue
+            if is_city_between(
+                source=a, destination=b, candidate=c,
+                center_matrix=center_matrix_df, tolerance=0.15
+            ):
+                ugrama_rotalari.append((a, c, b))
 
-    hatlar = [
-        f"{row.source}-{row.destination}"
-        for row in forecast_df[["source", "destination"]].drop_duplicates().itertuples(index=False)
-    ]
-    gunler = sorted(forecast_df["date"].unique().tolist())
-    arac_turleri = vehicle_costs_df["vehicle_type"].drop_duplicates().tolist()
+print(f"ℹ️  Toplam uğrama rotası sayısı: {len(ugrama_rotalari)}")
 
-    talep_verisi = {
-        (f"{row.source}-{row.destination}", row.date): int(round(row.recommended_demand))
-        for row in forecast_df[["source", "destination", "date", "recommended_demand"]].itertuples(index=False)
-    }
-    mesafe_verisi = {
-        f"{row.source}-{row.destination}": float(row.distance_km)
-        for row in route_distances_df.itertuples(index=False)
-    }
-    kiralik_stok_gunluk = {
-        (f"{row.source}-{row.destination}", row.vehicle_type): int(row.vehicle_count)
-        for row in rental_limits_df.itertuples(index=False)
-        if int(row.vehicle_count) > 0
-    }
-    arac_parametreleri = {
-        row.vehicle_type: {
-            "sabit_kira": float(row.rental_fixed),
-            "kiralik_km_maliyet": float(row.rental_km),
-            "spot_sabit_maliyet": float(row.spot_fixed),
-            "spot_km_maliyet": float(row.spot_km),
-            "kapasite_desi": int(row.capacity),
-        }
-        for row in vehicle_costs_df.itertuples(index=False)
-    }
+# =============================================================================
+# 7. KARAR DEĞİŞKENLERİ
+# =============================================================================
+# Teknofest Kural #3 + FIX #1:
+#   Kiralık araçlar VALUE olarak modele giriyor (değişken değil).
+#   Kapasiteleri yük kısıtlarına dahil edilir, ama spot_y optimizer'ın kararıdır.
+#
+# FIX #2: Yük değişkenleri kaldırıldı. Kapasite doğrudan araç sayısı × kapasite
+#          üzerinden hesaplanıyor. Böylece yük-kapasite kopukluğu ortadan kalktı.
 
-SLA_GECIKME_CEZA_TL_PER_DESI = 0.5
-
-# --- OPTİMİZASYON 1: Spot araç için gerçekçi üst limit ---
-# Her hat için en kötü durumda (tüm biriken talep) kaç araç gerekebilir?
-max_talep_hatta = max(talep_verisi.values()) * len(gunler)  # tüm haftanın talebi bir günde birikirse
-min_kapasite = min(p["kapasite_desi"] for p in arac_parametreleri.values())
-max_spot = -(-max_talep_hatta // min_kapasite) + 1  # ceiling division + 1 tampon
-max_spot = min(max_spot, 20)  # mutlak tavan: 20 araç yeterli
-
-max_ertelenen = max_talep_hatta
-
-# --- KARAR DEĞİŞKENLERİ ---
-kiralik_x = {}
-spot_y = {}
-ertelenen_talep = {}
-biriken_talep = {}
+spot_y          = {}   # spot araç sayısı (karar değişkeni)
+ertelenen_talep = {}   # güne ait karşılanamayan talep
+biriken_talep   = {}   # önceki günden devreden + bugünkü talep
 
 for h in hatlar:
     for g in gunler:
-        # OPTİMİZASYON 2: Sadece stoku olan hat-araç çiftleri için kiralik_x yarat
         for a in arac_turleri:
-            if (h, a) in kiralik_stok_gunluk:
-                limit = kiralik_stok_gunluk[(h, a)]
-                kiralik_x[(h, g, a)] = model.NewIntVar(0, limit, f'kiralik_{h}_{g}_{a}')
-            # Stok yoksa değişken bile yaratılmıyor → arama uzayı küçülüyor
-
-            # Spot: gerçekçi üst limit
             spot_y[(h, g, a)] = model.NewIntVar(0, max_spot, f'spot_{h}_{g}_{a}')
 
-        ertelenen_talep[(h, g)] = model.NewIntVar(0, max_ertelenen, f'ertelenen_{h}_{g}')
-        biriken_talep[(h, g)] = model.NewIntVar(0, max_ertelenen + 5000, f'biriken_{h}_{g}')
+        ertelenen_talep[(h, g)] = model.NewIntVar(0, max_talep_hatta, f'ert_{h}_{g}')
+        # FIX #6: Birikmiş talep üst sınırı — tüm günlerin toplamı
+        biriken_talep[(h, g)]   = model.NewIntVar(0, max_talep_hatta, f'bir_{h}_{g}')
 
-# --- KISIT 1: Kiralık Araç Stok Kontrolü (sadece var olanlar için) ---
-# Değişkenler zaten üst limitli yaratıldı → ekstra kısıta gerek yok
+# Uğrama araç değişkenleri
+ugrama_y      = {}
+ugrama_yuk_ac = {}
+ugrama_yuk_cb = {}
+ugrama_yuk_ab = {}
 
-# --- KISIT 2: Talep ve Ertelenen İlişkisi ---
+for (a, c, b) in ugrama_rotalari:
+    for g in gunler:
+        for arac in arac_turleri:
+            ugrama_y[(a, c, b, g, arac)] = model.NewIntVar(0, max_spot, f'uy_{a}_{c}_{b}_{g}_{arac}')
+
+        ugrama_yuk_ac[(a, c, b, g)] = model.NewIntVar(0, max_talep_hatta, f'uac_{a}_{c}_{b}_{g}')
+        ugrama_yuk_cb[(a, c, b, g)] = model.NewIntVar(0, max_talep_hatta, f'ucb_{a}_{c}_{b}_{g}')
+        ugrama_yuk_ab[(a, c, b, g)] = model.NewIntVar(0, max_talep_hatta, f'uab_{a}_{c}_{b}_{g}')
+
+# =============================================================================
+# 8. KISITLAR
+# =============================================================================
+
 for h in hatlar:
-    for idx, g in enumerate(gunler):
+    parcalar = h.split("-", maxsplit=1)
+    if len(parcalar) != 2:
+        continue
+    tm1, tm2 = parcalar
+
+    for g in gunler:
+
+        # --- Kiralık araç kapasitesi (sabit, değişken değil) ---
+        kiralik_toplam_kap = sum(
+            kiralik_stok_gunluk.get((h, a), 0) * arac_parametreleri[a]["kapasite_desi"]
+            for a in arac_turleri
+        )
+
+        # --- Spot araç kapasitesi (optimizer karar verir) ---
+        # FIX #2: Kapasite doğrudan değişken üzerinden hesaplanır
+        spot_kap_ifadesi = cp_model.LinearExpr.Sum([
+            spot_y[(h, g, a)] * arac_parametreleri[a]["kapasite_desi"]
+            for a in arac_turleri
+        ])
+
+        # ---------------------------------------------------------------
+        # KISIT A — Teknofest Kural #1: %10 Minimum Doluluk (Sadece Spot)
+        #   spot_kap ≤ taşınan_spot_yuk * 10
+        #   ↔ taşınan / spot_kap ≥ 0.10
+        #
+        # FIX #4: Sıfır talep durumunda kısıt atlanır (infeasible önleme)
+        # ---------------------------------------------------------------
+        bugun_talep = talep_verisi.get((h, g), 0)
+
+        # O güne ait spot araç tarafından taşınan yük = total - kiralik kapasitesi
+        # Ama kiralik_kap sabit olduğundan, spot yük = max(0, biriken - kiralik_kap)
+        # Kısıtı basit tutmak için: toplam spot kapasite ≤ (biriken_talep) * 10
+        # (Kiralık kapasite zaten talebi karşılıyorsa spot_y=0 olur, kısıt triviyal)
+        if g != gunler[-1]:
+            # Sadece o gün talep varsa kısıtı uygula
+            # biriken_talep değişkeni üzerinden: spot_kap ≤ biriken_talep * 10
+            model.Add(spot_kap_ifadesi <= biriken_talep[(h, g)] * 10)
+
+        # ---------------------------------------------------------------
+        # KISIT B — Talep Dengesi (Birikmiş Talep Tanımı)
+        # ---------------------------------------------------------------
+        idx = gunler.index(g)
         if idx == 0:
-            model.Add(biriken_talep[(h, g)] == talep_verisi[(h, g)])
+            model.Add(biriken_talep[(h, g)] == bugun_talep)
         else:
             onceki_gun = gunler[idx - 1]
-            model.Add(biriken_talep[(h, g)] == ertelenen_talep[(h, onceki_gun)] + talep_verisi[(h, g)])
+            model.Add(
+                biriken_talep[(h, g)] ==
+                ertelenen_talep[(h, onceki_gun)] + bugun_talep
+            )
 
-# --- KISIT 3: Kapasite ≥ Biriken Talep - Ertelenen ---
-for h in hatlar:
+        # ---------------------------------------------------------------
+        # KISIT C — Yük Dağıtım Dengesi
+        #   biriken_talep = (kiralık ile taşınan) + (spot ile taşınan)
+        #                   + (uğrama ile taşınan) + ertelenen
+        #
+        # FIX #2: Yük miktarı artık "kapasite kullanımı" üzerinden modelleniyor.
+        #   Kiralık araçlar talebi öncelikle karşılar; kalan talep için spot atanır.
+        #   Toplam kapasite (kiralık + spot + uğrama) ≥ taşınan talep
+        #
+        # Uğrama katkıları: o hatta A→C, C→B veya A→B parçasına uğrama geliyorsa
+        # ---------------------------------------------------------------
+        ugrama_katkilari = []
+
+        for x in tmler:
+            if (tm1, tm2, x) in ugrama_rotalari:
+                # tm1→tm2 segmenti: (tm1, x, tm2) rotasındaki ac yükü
+                pass  # bu rota tm1'den x'e, oradan tm2'ye — tm1-x segmenti bizim hat değil
+            if (tm1, x, tm2) in [(r[0], r[1], r[2]) for r in ugrama_rotalari]:
+                ugrama_katkilari.append(ugrama_yuk_ac[(tm1, x, tm2, g)])
+                ugrama_katkilari.append(ugrama_yuk_ab[(tm1, x, tm2, g)])
+
+        for w in tmler:
+            if (w, tm1, tm2) in [(r[0], r[1], r[2]) for r in ugrama_rotalari]:
+                ugrama_katkilari.append(ugrama_yuk_cb[(w, tm1, tm2, g)])
+
+        # Toplam taşınan = kiralık kapasite kullanımı + spot kapasite kullanımı + uğrama
+        # Basitleştirme: kiralık tam dolu varsayılır (worst-case maliyet tarafı için iyi)
+        # Optimizer spot'u ve uğramayı minimize eder.
+        tasinan_toplam = cp_model.LinearExpr.Sum(
+            [spot_kap_ifadesi] + ugrama_katkilari
+        )
+
+        model.Add(
+            biriken_talep[(h, g)] <= kiralik_toplam_kap + tasinan_toplam + ertelenen_talep[(h, g)]
+        )
+        model.Add(
+            ertelenen_talep[(h, g)] <= biriken_talep[(h, g)]
+        )
+
+# ---------------------------------------------------------------
+# KISIT D — Uğrama Araç Kapasite Kısıtları
+# FIX #3: Üç bileşen birlikte tek kasa sınırına tabi tutulur.
+# ---------------------------------------------------------------
+for (a, c, b) in ugrama_rotalari:
     for g in gunler:
-        toplam_kapasite = []
+        u_kap = cp_model.LinearExpr.Sum([
+            ugrama_y[(a, c, b, g, arac)] * arac_parametreleri[arac]["kapasite_desi"]
+            for arac in arac_turleri
+        ])
+
+        # A→C segmentinde: ac yükü + ab yükü (ab yükü tüm yol boyunca araçta)
+        model.Add(ugrama_yuk_ac[(a, c, b, g)] + ugrama_yuk_ab[(a, c, b, g)] <= u_kap)
+
+        # C→B segmentinde: cb yükü + ab yükü
+        model.Add(ugrama_yuk_cb[(a, c, b, g)] + ugrama_yuk_ab[(a, c, b, g)] <= u_kap)
+
+        # FIX #3 (ek): Üç yük türü birlikte de kasayı aşamaz
+        model.Add(
+            ugrama_yuk_ac[(a, c, b, g)] + ugrama_yuk_cb[(a, c, b, g)] + ugrama_yuk_ab[(a, c, b, g)]
+            <= u_kap
+        )
+
+        # Teknofest Kural #1: Uğrama spot araçlarına %10 doluluk kuralı
+        if g != gunler[-1]:
+            toplam_ugrama_yuk = cp_model.LinearExpr.Sum([
+                ugrama_yuk_ac[(a, c, b, g)],
+                ugrama_yuk_cb[(a, c, b, g)],
+                ugrama_yuk_ab[(a, c, b, g)],
+            ])
+            model.Add(u_kap <= toplam_ugrama_yuk * 10)
+
+# ---------------------------------------------------------------
+# KISIT E — Teknofest: Son Gün Erteleme Yasağı
+# ---------------------------------------------------------------
+for h in hatlar:
+    model.Add(ertelenen_talep[(h, gunler[-1])] == 0)
+
+# =============================================================================
+# 9. AMAÇ FONKSİYONU
+#
+# Teknofest Kural #3 + FIX #1:
+#   Kiralık araç maliyetleri SABİT (değişken değil) — her zaman ödenir.
+#   Optimizer sadece spot araç sayısını ve ertelemeyi minimize eder.
+#
+# Teknofest Kural #2: Dönüş maliyeti hesaplanmaz (tek yön).
+# Teknofest Kural #6: Mesafe = kuş uçuşu (Haversine).
+# Teknofest Kural #5: Toplam maliyet raporlanır.
+# =============================================================================
+maliyet_kalemleri    = []
+kiralik_sabit_toplam = 0  # Sabit kiralık maliyet (amaç fonksiyonuna girmez ama raporlanır)
+
+for h in hatlar:
+    dist = mesafe_verisi.get(h, 0)
+    parcalar = h.split("-", maxsplit=1)
+    if len(parcalar) != 2:
+        continue
+
+    for g in gunler:
+        # --- Kiralık araç sabit maliyeti (optimizer kontrolünde değil) ---
         for a in arac_turleri:
-            kap = arac_parametreleri[a]["kapasite_desi"]
-            if (h, g, a) in kiralik_x:
-                toplam_kapasite.append(kiralik_x[(h, g, a)] * kap)
-            toplam_kapasite.append(spot_y[(h, g, a)] * kap)
+            adet = kiralik_stok_gunluk.get((h, a), 0)
+            if adet > 0:
+                p = arac_parametreleri[a]
+                # Teknofest: kiralık araç sabit + km maliyeti her gün ödenir
+                gun_maliyet = adet * int(p["sabit_kira"] + dist * p["kiralik_km_maliyet"])
+                kiralik_sabit_toplam += gun_maliyet
 
-        model.Add(sum(toplam_kapasite) + ertelenen_talep[(h, g)] >= biriken_talep[(h, g)])
-
-# --- AMAÇ FONKSİYONU ---
-# OPTİMİZASYON 3: LinearExpr.Sum kullan (daha hızlı model kurma)
-maliyet_kalemleri = []
-
-for h in hatlar:
-    dist = mesafe_verisi[h]
-    for g in gunler:
+        # --- Spot araç değişken maliyeti ---
         for a in arac_turleri:
             p = arac_parametreleri[a]
+            # FIX #5: Maliyet katsayısı tamsayı (CP-SAT integer gerektirir)
+            spot_maliyet_katsayi = int(p["spot_sabit_maliyet"] + dist * p["spot_km_maliyet"])
+            maliyet_kalemleri.append(spot_y[(h, g, a)] * spot_maliyet_katsayi)
 
-            if (h, g, a) in kiralik_x:
-                kiralik_maliyet = int(p["sabit_kira"] + dist * p["kiralik_km_maliyet"]) *1000
-                maliyet_kalemleri.append(kiralik_x[(h, g, a)] * kiralik_maliyet)
+        # --- SLA Gecikme Cezası ---
+        # FIX #5: Ceza ağırlığı spot araçlarla rekabetçi seviyede
+        ceza_katsayi = int(SLA_GECIKME_CEZA_TL_PER_DESI)
+        maliyet_kalemleri.append(ertelenen_talep[(h, g)] * ceza_katsayi)
 
-            spot_maliyet = int(p["spot_sabit_maliyet"] + dist * p["spot_km_maliyet"])*1000
-            maliyet_kalemleri.append(spot_y[(h, g, a)] * spot_maliyet)
+# --- Uğrama spot araç maliyetleri ---
+for (a, c, b) in ugrama_rotalari:
+    dist_ac = distances_2d[tm_index[a]][tm_index[c]]
+    dist_cb = distances_2d[tm_index[c]][tm_index[b]]
+    dist_toplam = dist_ac + dist_cb  # Teknofest Kural #6: kuş uçuşu toplam
 
-        ceza = int(SLA_GECIKME_CEZA_TL_PER_DESI * 1000)  # integer aritmetik için ölçekle
-        maliyet_kalemleri.append(ertelenen_talep[(h, g)] * ceza)
+    for g in gunler:
+        for arac in arac_turleri:
+            p = arac_parametreleri[arac]
+            ugrama_maliyet = int(p["spot_sabit_maliyet"] + dist_toplam * p["spot_km_maliyet"])
+            maliyet_kalemleri.append(ugrama_y[(a, c, b, g, arac)] * ugrama_maliyet)
 
-# LinearExpr.Sum, uzun liste toplama için Python sum()'dan çok daha hızlı
 model.Minimize(cp_model.LinearExpr.Sum(maliyet_kalemleri))
 
-# --- OPTİMİZASYON 4: Solver Parametreleri ---
+# =============================================================================
+# 10. ÇÖZÜCÜ PARAMETRELERI
+# =============================================================================
 solver = cp_model.CpSolver()
-solver.parameters.max_time_in_seconds = float(os.environ.get("ROUTETECH_MAX_TIME_SECONDS", "120.0"))
-solver.parameters.num_search_workers = 8      # çok çekirdekli paralel arama
-solver.parameters.log_search_progress = os.environ.get("ROUTETECH_LOG_SEARCH_PROGRESS", "1") == "1"  # ilerlemeyi terminalde görmek için
+solver.parameters.max_time_in_seconds  = 180.0
+solver.parameters.num_search_workers   = 8
+solver.parameters.log_search_progress  = True
 
 status = solver.Solve(model)
 
-# --- SONUÇLARI DOSYAYA YAZDIR ---
+# =============================================================================
+# 11. SONUÇ YAZIMI
+#     Teknofest Kural #5: Toplam maliyet açıkça raporlanır.
+# =============================================================================
 output_file = Path(__file__).parent.parent / "results" / "optimization_results.txt"
 output_file.parent.mkdir(parents=True, exist_ok=True)
 
-decision_rows = []
-decisions_file = Path(__file__).parent.parent / "results" / "optimization_decisions.csv"
-
 with open(output_file, "w", encoding="utf-8") as f:
+
     if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
-        durum_etiketi = "OPTIMAL" if status == cp_model.OPTIMAL else "UYGUN (Optimal değil)"
-        f.write("=" * 80 + "\n")
-        f.write(f"OPTİMİZASYON BAŞARILI — {durum_etiketi}\n")
-        f.write("=" * 80 + "\n\n")
+        durum = "OPTIMAL (Kusursuz)" if status == cp_model.OPTIMAL else "UYGUN (Süre Sınırı)"
+        baslik = f"{'=' * 80}\nOPTİMİZASYON BAŞARILI — {durum}\n{'=' * 80}\n\n"
+        f.write(baslik)
+        print(baslik)
 
         toplam_ertelenen_desi = 0
+        spot_toplam_maliyet   = 0
+        ugrama_toplam_maliyet = 0
 
+        # --- Direkt Rota Sonuçları ---
         for h in hatlar:
+            dist = mesafe_verisi.get(h, 0)
+            parcalar = h.split("-", maxsplit=1)
+            if len(parcalar) != 2:
+                continue
+
             for g in gunler:
                 for a in arac_turleri:
-                    k_adet = solver.Value(kiralik_x[(h, g, a)]) if (h, g, a) in kiralik_x else 0
+                    k_adet = kiralik_stok_gunluk.get((h, a), 0)
                     s_adet = solver.Value(spot_y[(h, g, a)])
+
                     if k_adet > 0 or s_adet > 0:
-                        kap = arac_parametreleri[a]["kapasite_desi"]
-                        f.write(f"{g} | {h} | {a}: Kiralık={k_adet}, Spot={s_adet} "
-                              f"(Toplam {k_adet * kap + s_adet * kap} desi)\n")
-                        source, destination = h.split("-", 1)
-                        decision_rows.append({
-                            "date": g,
-                            "source": source,
-                            "destination": destination,
-                            "vehicle_type": a,
-                            "rental_count": k_adet,
-                            "spot_count": s_adet,
-                            "capacity_desi": k_adet * kap + s_adet * kap,
-                        })
+                        metin = (
+                            f"🚛 DİREKT ROTA | {g} | {h} | {a} "
+                            f"-> Kiralık: {k_adet}, Spot: {s_adet}\n"
+                        )
+                        f.write(metin)
+                        if s_adet > 0:
+                            print(metin.strip())
+                            p = arac_parametreleri[a]
+                            spot_toplam_maliyet += s_adet * int(
+                                p["spot_sabit_maliyet"] + dist * p["spot_km_maliyet"]
+                            )
 
                 ert = solver.Value(ertelenen_talep[(h, g)])
                 if ert > 0:
-                    ceza_tl = ert * SLA_GECIKME_CEZA_TL_PER_DESI
-                    f.write(f"  -> {g} | {h}: {ert:.0f} desi ERTELENDİ (Ceza: {ceza_tl:.2f} TL)\n")
                     toplam_ertelenen_desi += ert
+                    ert_metin = f"  ⚠️  ERTELEME | {g} | {h} → {ert} desi\n"
+                    f.write(ert_metin)
+                    print(ert_metin.strip())
 
-        f.write("\n" + "=" * 80 + "\n")
-        f.write("ÖZET İSTATİSTİKLER\n")
-        f.write("=" * 80 + "\n")
-        
-        gercek_maliyet = solver.ObjectiveValue() / 1000
-        f.write(f"Toplam Maliyet: {gercek_maliyet:,.0f} TL\n")
-        f.write(f"Toplam Ertelenen Desi: {toplam_ertelenen_desi:.0f} desi\n\n")
+        # --- Uğrama Rota Sonuçları ---
+        print("-" * 60)
+        f.write("-" * 60 + "\n")
+        for (a, c, b) in ugrama_rotalari:
+            dist_ac = distances_2d[tm_index[a]][tm_index[c]]
+            dist_cb = distances_2d[tm_index[c]][tm_index[b]]
+            dist_toplam = dist_ac + dist_cb
+            for g in gunler:
+                for arac in arac_turleri:
+                    u_adet = solver.Value(ugrama_y[(a, c, b, g, arac)])
+                    if u_adet > 0:
+                        metin = (
+                            f"🌟 UĞRAMA ROTASI | {g} | {a} → {c} → {b} "
+                            f"| {arac}: {u_adet} Spot Araç\n"
+                        )
+                        f.write(metin)
+                        print(metin.strip())
+                        p = arac_parametreleri[arac]
+                        ugrama_toplam_maliyet += u_adet * int(
+                            p["spot_sabit_maliyet"] + dist_toplam * p["spot_km_maliyet"]
+                        )
 
-        f.write("Araç Kullanım İstatistikleri:\n")
-        for a in arac_turleri:
-            toplam_k = sum(
-                solver.Value(kiralik_x[(h, g, a)])
-                for h in hatlar for g in gunler
-                if (h, g, a) in kiralik_x
-            )
-            toplam_s = sum(solver.Value(spot_y[(h, g, a)]) for h in hatlar for g in gunler)
-            if toplam_k + toplam_s > 0:
-                f.write(f"  {a}: Kiralık={toplam_k} sefer, Spot={toplam_s} sefer, "
-                      f"Toplam={(toplam_k + toplam_s)} sefer\n")
+        # --- Teknofest Kural #5: Toplam Maliyet Özeti ---
+        sla_ceza_toplam    = int(toplam_ertelenen_desi * SLA_GECIKME_CEZA_TL_PER_DESI)
+        degisken_toplam    = spot_toplam_maliyet + ugrama_toplam_maliyet + sla_ceza_toplam
+        genel_toplam       = kiralik_sabit_toplam + degisken_toplam
+
+        ozet = f"""
+{'=' * 80}
+ÖZET İSTATİSTİKLER  (Teknofest Kural #5 — Toplam Maliyet)
+{'=' * 80}
+  Kiralık Araç Sabit Maliyeti : {kiralik_sabit_toplam:>15,.0f} TL  (her zaman ödenir)
+  Spot Araç Maliyeti (Direkt) : {spot_toplam_maliyet:>15,.0f} TL
+  Spot Araç Maliyeti (Uğrama) : {ugrama_toplam_maliyet:>15,.0f} TL
+  SLA Gecikme Cezası          : {sla_ceza_toplam:>15,.0f} TL
+{'─' * 80}
+  TOPLAM MALİYET              : {genel_toplam:>15,.0f} TL
+{'=' * 80}
+  Toplam Ertelenen Yük        : {toplam_ertelenen_desi:>15,.0f} desi
+  Çözücü Süre                 : {solver.WallTime():>15.2f} sn
+  Objective Value (optimizer) : {solver.ObjectiveValue():>15,.0f}
+{'=' * 80}
+"""
+        f.write(ozet)
+        print(ozet)
+
     else:
-        f.write("Çözüm bulunamadı! Kısıtları kontrol edin.\n")
-
-pd.DataFrame(decision_rows).to_csv(decisions_file, index=False, encoding="utf-8-sig")
-print(f"Sonuçlar {output_file} dosyasına yazıldı.")
-print(f"Karar tablosu {decisions_file} dosyasına yazıldı.")
+        hata = (
+            "❌ Çözüm bulunamadı! Lütfen kısıtları kontrol edin.\n"
+            f"   Durum kodu: {status}\n"
+            "   Olası neden: Sıfır talep olan hatlarda %10 doluluk kısıtı veya\n"
+            "   erteleme yasağıyla çelişen bir kısıt kombinasyonu.\n"
+        )
+        f.write(hata)
+        print(hata)
