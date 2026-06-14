@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from haversine import build_route_distance_table, build_stopover_candidate_table
@@ -10,7 +13,12 @@ from src.forecast_payload import load_alns_payload_forecast, run_predict_model
 from src.submission import write_optimization_inputs
 
 
-def run(forecast_json: Path | None = None, skip_predict: bool = False) -> dict:
+def run(
+    forecast_json: Path | None = None,
+    skip_predict: bool = False,
+    skip_optimization: bool = False,
+    max_time_seconds: float = 120.0,
+) -> dict:
     raw = load_raw_data()
 
     if forecast_json is not None:
@@ -51,11 +59,31 @@ def run(forecast_json: Path | None = None, skip_predict: bool = False) -> dict:
     for label, path in paths.items():
         print(f"  - {label}: {path}")
 
+    optimization_result = None
+    if not skip_optimization:
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
+        env["ROUTETECH_OPTIMIZATION_INPUT"] = str(paths["optimization_input_json"])
+        env["ROUTETECH_MAX_TIME_SECONDS"] = str(max_time_seconds)
+        env["ROUTETECH_LOG_SEARCH_PROGRESS"] = "0"
+        subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "src" / "optimization.py")],
+            cwd=str(PROJECT_ROOT),
+            check=True,
+            env=env,
+        )
+        optimization_result = {
+            "results_txt": PROJECT_ROOT / "results" / "optimization_results.txt",
+            "decisions_csv": PROJECT_ROOT / "results" / "optimization_decisions.csv",
+        }
+
     return {
         "forecast": forecast,
         "route_distances": route_distances,
         "stopover_candidates": stopover_candidates,
         "paths": paths,
+        "optimization": optimization_result,
     }
 
 
@@ -67,8 +95,19 @@ def main() -> None:
         action="store_true",
         help="Do not run predict_model; reuse src/predict_model/alns_payload.json",
     )
+    parser.add_argument(
+        "--skip-optimization",
+        action="store_true",
+        help="Only prepare optimization inputs; do not run the OR-Tools solver",
+    )
+    parser.add_argument(
+        "--max-time-seconds",
+        type=float,
+        default=120.0,
+        help="Maximum OR-Tools solve time in seconds",
+    )
     args = parser.parse_args()
-    run(args.forecast_json, args.skip_predict)
+    run(args.forecast_json, args.skip_predict, args.skip_optimization, args.max_time_seconds)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,6 @@
 from pathlib import Path
+import json
+import os
 import pandas as pd
 from ortools.sat.python import cp_model
 
@@ -104,9 +106,59 @@ kiralik_stok_gunluk = {
 arac_parametreleri = {
     "Tir":      {"sabit_kira": 7000,  "kiralik_km_maliyet": 13, "spot_sabit_maliyet": 11700, "spot_km_maliyet": 25, "kapasite_desi": 22400},
     "Kamyon":   {"sabit_kira": 5000,  "kiralik_km_maliyet": 10, "spot_sabit_maliyet": 7638,  "spot_km_maliyet": 21, "kapasite_desi": 12000},
-    "Hafif Kam":{"sabit_kira": 5000,  "kiralik_km_maliyet": 10, "spot_sabit_maliyet": 8750,  "spot_km_maliyet": 20, "kapasite_desi": 7200},
-    "Kamyonet": {"sabit_kira": 3750,  "kiralik_km_maliyet": 6,  "spot_sabit_maliyet": 4750,  "spot_km_maliyet": 18, "kapasite_desi": 5600},
+    "Hafif Kam":{"sabit_kira": 5000,  "kiralik_km_maliyet": 10, "spot_sabit_maliyet": 8750, "spot_km_maliyet": 20, "kapasite_desi": 7200},
+    "Kamyonet": {"sabit_kira": 3750,  "kiralik_km_maliyet": 6,  "spot_sabit_maliyet": 4750, "spot_km_maliyet": 18, "kapasite_desi": 5600},
 }
+
+# Pipeline çıktısı varsa yukarıdaki örnek verilerin yerine gerçek forecast/mesafe/stok/maliyet verilerini kullan.
+input_json = Path(os.environ.get(
+    "ROUTETECH_OPTIMIZATION_INPUT",
+    Path(__file__).parent.parent / "data" / "outputs" / "optimization_input.json",
+))
+if input_json.exists():
+    with open(input_json, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    forecast_df = pd.DataFrame(payload["forecast"])
+    route_distances_df = pd.DataFrame(payload["route_distances"])
+    vehicle_costs_df = pd.DataFrame(payload["vehicle_costs"])
+    rental_limits_df = pd.DataFrame(payload["rental_limits"])
+
+    forecast_df["date"] = pd.to_datetime(forecast_df["date"]).dt.strftime("%Y-%m-%d")
+    forecast_df["recommended_demand"] = pd.to_numeric(
+        forecast_df["recommended_demand"], errors="coerce"
+    ).fillna(0).clip(lower=0)
+
+    hatlar = [
+        f"{row.source}-{row.destination}"
+        for row in forecast_df[["source", "destination"]].drop_duplicates().itertuples(index=False)
+    ]
+    gunler = sorted(forecast_df["date"].unique().tolist())
+    arac_turleri = vehicle_costs_df["vehicle_type"].drop_duplicates().tolist()
+
+    talep_verisi = {
+        (f"{row.source}-{row.destination}", row.date): int(round(row.recommended_demand))
+        for row in forecast_df[["source", "destination", "date", "recommended_demand"]].itertuples(index=False)
+    }
+    mesafe_verisi = {
+        f"{row.source}-{row.destination}": float(row.distance_km)
+        for row in route_distances_df.itertuples(index=False)
+    }
+    kiralik_stok_gunluk = {
+        (f"{row.source}-{row.destination}", row.vehicle_type): int(row.vehicle_count)
+        for row in rental_limits_df.itertuples(index=False)
+        if int(row.vehicle_count) > 0
+    }
+    arac_parametreleri = {
+        row.vehicle_type: {
+            "sabit_kira": float(row.rental_fixed),
+            "kiralik_km_maliyet": float(row.rental_km),
+            "spot_sabit_maliyet": float(row.spot_fixed),
+            "spot_km_maliyet": float(row.spot_km),
+            "kapasite_desi": int(row.capacity),
+        }
+        for row in vehicle_costs_df.itertuples(index=False)
+    }
 
 SLA_GECIKME_CEZA_TL_PER_DESI = 0.5
 
@@ -189,15 +241,18 @@ model.Minimize(cp_model.LinearExpr.Sum(maliyet_kalemleri))
 
 # --- OPTİMİZASYON 4: Solver Parametreleri ---
 solver = cp_model.CpSolver()
-solver.parameters.max_time_in_seconds = 120.0
+solver.parameters.max_time_in_seconds = float(os.environ.get("ROUTETECH_MAX_TIME_SECONDS", "120.0"))
 solver.parameters.num_search_workers = 8      # çok çekirdekli paralel arama
-solver.parameters.log_search_progress = True  # ilerlemeyi terminalde görmek için
+solver.parameters.log_search_progress = os.environ.get("ROUTETECH_LOG_SEARCH_PROGRESS", "1") == "1"  # ilerlemeyi terminalde görmek için
 
 status = solver.Solve(model)
 
 # --- SONUÇLARI DOSYAYA YAZDIR ---
 output_file = Path(__file__).parent.parent / "results" / "optimization_results.txt"
 output_file.parent.mkdir(parents=True, exist_ok=True)
+
+decision_rows = []
+decisions_file = Path(__file__).parent.parent / "results" / "optimization_decisions.csv"
 
 with open(output_file, "w", encoding="utf-8") as f:
     if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
@@ -217,6 +272,16 @@ with open(output_file, "w", encoding="utf-8") as f:
                         kap = arac_parametreleri[a]["kapasite_desi"]
                         f.write(f"{g} | {h} | {a}: Kiralık={k_adet}, Spot={s_adet} "
                               f"(Toplam {k_adet * kap + s_adet * kap} desi)\n")
+                        source, destination = h.split("-", 1)
+                        decision_rows.append({
+                            "date": g,
+                            "source": source,
+                            "destination": destination,
+                            "vehicle_type": a,
+                            "rental_count": k_adet,
+                            "spot_count": s_adet,
+                            "capacity_desi": k_adet * kap + s_adet * kap,
+                        })
 
                 ert = solver.Value(ertelenen_talep[(h, g)])
                 if ert > 0:
@@ -246,4 +311,6 @@ with open(output_file, "w", encoding="utf-8") as f:
     else:
         f.write("Çözüm bulunamadı! Kısıtları kontrol edin.\n")
 
+pd.DataFrame(decision_rows).to_csv(decisions_file, index=False, encoding="utf-8-sig")
 print(f"Sonuçlar {output_file} dosyasına yazıldı.")
+print(f"Karar tablosu {decisions_file} dosyasına yazıldı.")

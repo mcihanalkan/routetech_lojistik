@@ -73,6 +73,24 @@ def _to_polars(df: pd.DataFrame) -> pl.DataFrame:
     pyarrow kurulu olduğunda sıfır kopya ile çalışır.
     Kurulu değilse seri seri numpy üzerinden dönüştürür.
     """
+    data = {}
+    for col in df.columns:
+        s = df[col]
+        if pd.api.types.is_datetime64_any_dtype(s):
+            data[col] = pl.Series(col, list(pd.to_datetime(s).dt.to_pydatetime()))
+        elif pd.api.types.is_string_dtype(s) or pd.api.types.is_object_dtype(s):
+            data[col] = pl.Series(col, s.astype("object").where(s.notna(), None).tolist())
+        elif pd.api.types.is_bool_dtype(s):
+            data[col] = pl.Series(col, s.astype("boolean").where(s.notna(), None).tolist())
+        elif pd.api.types.is_integer_dtype(s):
+            values = pd.to_numeric(s, errors="coerce").astype("float64").tolist()
+            data[col] = pl.Series(col, values)
+        elif pd.api.types.is_float_dtype(s):
+            data[col] = pl.Series(col, pd.to_numeric(s, errors="coerce").tolist())
+        else:
+            data[col] = pl.Series(col, s.astype("object").where(s.notna(), None).tolist())
+    return pl.DataFrame(data)
+
     try:
         return pl.from_pandas(df)
     except ImportError:
@@ -832,7 +850,12 @@ def build_feature_matrix(
             )
 
     # --- Adım 8: Polars → Pandas (CatBoost / sklearn uyumluluğu için) ---
-    result: pd.DataFrame = pl_df.to_pandas()
+    try:
+        result: pd.DataFrame = pl_df.to_pandas()
+    except ModuleNotFoundError as exc:
+        if exc.name != "pyarrow":
+            raise
+        result = pd.DataFrame(pl_df.to_dicts())
 
     logger.info(
         f"✅ Feature matrix hazır (Polars backend): "

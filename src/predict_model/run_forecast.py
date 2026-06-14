@@ -222,6 +222,12 @@ def run(save_json: bool = True) -> Dict[str, Any]:
         group_key   = GROUP_COL,
     )
     # --- 5. CSV Kaydet (OR-Tools doğrudan bu dosyayı okuyacak) ---
+    payload = band.to_alns_payload()
+    if save_json:
+        with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        logger.info(f"ALNS payload kaydedildi: {OUTPUT_JSON}")
+
     OUTPUT_CSV = "ortools_payload.csv"
     df_ortools.to_csv(OUTPUT_CSV, index=False)
     logger.info(f"💾 OR-Tools payload kaydedildi: {OUTPUT_CSV}")
