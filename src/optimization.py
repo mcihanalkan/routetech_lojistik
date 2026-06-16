@@ -131,14 +131,14 @@ else:
 # Teknofest Kural #1: SLA ceza ağırlığı — spot araç maliyetiyle rekabetçi tutuldu.
 # En ucuz spot araç (Kamyonet, 5600 desi): ~4750 TL sabit.
 # Desi başı ~0.85 TL. Erteleme caydırıcı ama imkânsız kılmıyor.
-SLA_GECIKME_CEZA_TL_PER_DESI = 50
+SLA_GECIKME_CEZA_TL_PER_DESI = 2
 
 # =============================================================================
 # 5. ÜST SINIR HESAPLARI
 # =============================================================================
 # FIX #6: max_talep_hatta üst sınırı — teorik maksimum toplam talep
 max_talep_hatta = sum(talep_verisi.values()) if talep_verisi else 0
-max_spot = 50
+max_spot = 500
 
 # =============================================================================
 # 6. UĞRAMA ROTALARINI ÖN-İŞLEME
@@ -156,8 +156,8 @@ for a in centers:
                 continue
             if is_city_between(
                 source=a, destination=b, candidate=c,
-                center_matrix=center_matrix_df, tolerance=0.30
-            ):
+                center_matrix=center_matrix_df
+            ) and f"{a}-{c}" in hatlar and f"{c}-{b}" in hatlar:
                 ugrama_rotalari.append((a, c, b))
 
 print(f"ℹ️  Toplam uğrama rotası sayısı: {len(ugrama_rotalari)}")

@@ -2,39 +2,62 @@
 OPTİMİZASYON BAŞARILI — UYGUN 300.0
 ================================================================================
 
-🚛 DİREKT ROTA | 15_Mayis | Balıkesir-Bilecik | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 11_Mayis | Balıkesir-Eskişehir | Kamyon -> Kiralık: 0, Spot: 1
 🚛 DİREKT ROTA | 12_Mayis | Balıkesir-Eskişehir | Kamyon -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 14_Mayis | Balıkesir-Tekirdağ | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 15_Mayis | Balıkesir-Tekirdağ | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 16_Mayis | Balıkesir-Tekirdağ | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 12_Mayis | Balıkesir-Yalova | Kamyon -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 13_Mayis | Balıkesir-Yalova | Kamyon -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 14_Mayis | Balıkesir-Yalova | Kamyon -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 14_Mayis | Balıkesir-İstanbul | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 15_Mayis | Balıkesir-İstanbul | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 16_Mayis | Balıkesir-İstanbul | Kamyonet -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 13_Mayis | Balıkesir-Eskişehir | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 13_Mayis | Balıkesir-Eskişehir → 1701 desi
+🚛 DİREKT ROTA | 15_Mayis | Balıkesir-Eskişehir | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 16_Mayis | Balıkesir-Eskişehir → 2120 desi
+🚛 DİREKT ROTA | 17_Mayis | Balıkesir-Eskişehir | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 13_Mayis | Balıkesir-Tekirdağ → 1641 desi
+  ⚠️  ERTELEME | 12_Mayis | Balıkesir-Yalova → 2 desi
+🚛 DİREKT ROTA | 15_Mayis | Balıkesir-Yalova | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 15_Mayis | Balıkesir-Yalova → 256 desi
+🚛 DİREKT ROTA | 12_Mayis | Balıkesir-İstanbul | Kamyon -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 16_Mayis | Balıkesir-İstanbul → 1722 desi
+🚛 DİREKT ROTA | 11_Mayis | Eskişehir-Balıkesir | Kamyon -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 12_Mayis | Eskişehir-Balıkesir → 1579 desi
+🚛 DİREKT ROTA | 14_Mayis | Eskişehir-Balıkesir | Kamyonet -> Kiralık: 0, Spot: 1
 🚛 DİREKT ROTA | 15_Mayis | Eskişehir-Balıkesir | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 17_Mayis | Eskişehir-Balıkesir | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 17_Mayis | Eskişehir-Erzincan | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 17_Mayis | Eskişehir-Isparta | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 14_Mayis | Eskişehir-Kütahya | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 13_Mayis | Eskişehir-Mersin | Kamyonet -> Kiralık: 0, Spot: 1
-  ⚠️  ERTELEME | 11_Mayis | Eskişehir-Tekirdağ → 1 desi
-🚛 DİREKT ROTA | 11_Mayis | Eskişehir-Şanlıurfa | Kamyon -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 16_Mayis | Eskişehir-Balıkesir → 2051 desi
+🚛 DİREKT ROTA | 12_Mayis | Eskişehir-Bilecik | Kamyonet -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 13_Mayis | Eskişehir-Bilecik | Kamyonet -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 14_Mayis | Eskişehir-Bilecik | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 16_Mayis | Eskişehir-Bilecik → 1004 desi
+🚛 DİREKT ROTA | 17_Mayis | Eskişehir-Bilecik | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 16_Mayis | Eskişehir-Erzincan → 193 desi
+  ⚠️  ERTELEME | 14_Mayis | Eskişehir-Isparta → 854 desi
+  ⚠️  ERTELEME | 16_Mayis | Eskişehir-Isparta → 395 desi
+  ⚠️  ERTELEME | 13_Mayis | Eskişehir-Kütahya → 3 desi
+🚛 DİREKT ROTA | 13_Mayis | Eskişehir-Manisa | Kamyon -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 15_Mayis | Eskişehir-Manisa | Kamyonet -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 17_Mayis | Eskişehir-Manisa | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 14_Mayis | Eskişehir-Mardin → 904 desi
+  ⚠️  ERTELEME | 16_Mayis | Eskişehir-Mardin → 397 desi
+  ⚠️  ERTELEME | 13_Mayis | Eskişehir-Mersin → 3324 desi
+  ⚠️  ERTELEME | 14_Mayis | Eskişehir-Mersin → 1 desi
+🚛 DİREKT ROTA | 14_Mayis | Eskişehir-Tekirdağ | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 14_Mayis | Eskişehir-Tekirdağ → 199 desi
+🚛 DİREKT ROTA | 17_Mayis | Eskişehir-Yalova | Kamyonet -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 15_Mayis | Eskişehir-İstanbul | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 11_Mayis | Eskişehir-Şanlıurfa → 2738 desi
+🚛 DİREKT ROTA | 11_Mayis | Kocaeli-Balıkesir | Tir -> Kiralık: 0, Spot: 1
 🚛 DİREKT ROTA | 11_Mayis | Kocaeli-Balıkesir | Kamyon -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 12_Mayis | Kocaeli-Balıkesir | Kamyon -> Kiralık: 1, Spot: 0
-🚛 DİREKT ROTA | 13_Mayis | Kocaeli-Balıkesir | Tir -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 13_Mayis | Kocaeli-Balıkesir | Kamyon -> Kiralık: 1, Spot: 0
-🚛 DİREKT ROTA | 14_Mayis | Kocaeli-Balıkesir | Kamyon -> Kiralık: 1, Spot: 1
+🚛 DİREKT ROTA | 13_Mayis | Kocaeli-Balıkesir | Kamyon -> Kiralık: 1, Spot: 1
+🚛 DİREKT ROTA | 14_Mayis | Kocaeli-Balıkesir | Kamyon -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 15_Mayis | Kocaeli-Balıkesir | Kamyon -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 16_Mayis | Kocaeli-Balıkesir | Kamyon -> Kiralık: 1, Spot: 0
+  ⚠️  ERTELEME | 16_Mayis | Kocaeli-Balıkesir → 1396 desi
 🚛 DİREKT ROTA | 17_Mayis | Kocaeli-Balıkesir | Kamyon -> Kiralık: 1, Spot: 0
-🚛 DİREKT ROTA | 13_Mayis | Kocaeli-Bilecik | Kamyon -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 12_Mayis | Kocaeli-Erzincan | Kamyon -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 13_Mayis | Kocaeli-Erzincan | Kamyon -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 14_Mayis | Kocaeli-Erzincan | Kamyon -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 16_Mayis | Kocaeli-Erzincan | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 11_Mayis | Kocaeli-Bilecik → 1 desi
+🚛 DİREKT ROTA | 12_Mayis | Kocaeli-Bilecik | Kamyon -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 14_Mayis | Kocaeli-Bilecik | Kamyon -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 15_Mayis | Kocaeli-Bilecik → 436 desi
+🚛 DİREKT ROTA | 17_Mayis | Kocaeli-Bilecik | Kamyon -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 13_Mayis | Kocaeli-Erzincan → 1104 desi
+  ⚠️  ERTELEME | 14_Mayis | Kocaeli-Erzincan → 45 desi
+🚛 DİREKT ROTA | 15_Mayis | Kocaeli-Erzincan | Kamyon -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 16_Mayis | Kocaeli-Erzincan → 5809 desi
 🚛 DİREKT ROTA | 11_Mayis | Kocaeli-Eskişehir | Kamyon -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 12_Mayis | Kocaeli-Eskişehir | Kamyon -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 13_Mayis | Kocaeli-Eskişehir | Kamyon -> Kiralık: 1, Spot: 0
@@ -43,24 +66,41 @@ OPTİMİZASYON BAŞARILI — UYGUN 300.0
 🚛 DİREKT ROTA | 16_Mayis | Kocaeli-Eskişehir | Kamyon -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 17_Mayis | Kocaeli-Eskişehir | Kamyon -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 11_Mayis | Kocaeli-Isparta | Kamyon -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 13_Mayis | Kocaeli-Isparta | Kamyon -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 12_Mayis | Kocaeli-Isparta | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 12_Mayis | Kocaeli-Isparta → 683 desi
+  ⚠️  ERTELEME | 14_Mayis | Kocaeli-Isparta → 971 desi
 🚛 DİREKT ROTA | 15_Mayis | Kocaeli-Isparta | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 16_Mayis | Kocaeli-Isparta | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 17_Mayis | Kocaeli-Isparta | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 16_Mayis | Kocaeli-Isparta → 2112 desi
+  ⚠️  ERTELEME | 13_Mayis | Kocaeli-Kütahya → 1718 desi
+🚛 DİREKT ROTA | 14_Mayis | Kocaeli-Kütahya | Kamyon -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 17_Mayis | Kocaeli-Kütahya | Kamyonet -> Kiralık: 0, Spot: 1
 🚛 DİREKT ROTA | 11_Mayis | Kocaeli-Manisa | Tir -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 13_Mayis | Kocaeli-Manisa | Kamyon -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 15_Mayis | Kocaeli-Mardin | Kamyon -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 17_Mayis | Kocaeli-Mardin | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 13_Mayis | Kocaeli-Mersin | Tir -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 16_Mayis | Kocaeli-Mersin | Kamyon -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 12_Mayis | Kocaeli-Mardin | Kamyon -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 13_Mayis | Kocaeli-Mardin → 1833 desi
+  ⚠️  ERTELEME | 16_Mayis | Kocaeli-Mardin → 4552 desi
+🚛 DİREKT ROTA | 11_Mayis | Kocaeli-Mersin | Tir -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 11_Mayis | Kocaeli-Mersin → 7582 desi
+🚛 DİREKT ROTA | 12_Mayis | Kocaeli-Mersin | Tir -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 12_Mayis | Kocaeli-Mersin | Kamyon -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 13_Mayis | Kocaeli-Mersin | Kamyon -> Kiralık: 0, Spot: 2
+  ⚠️  ERTELEME | 14_Mayis | Kocaeli-Mersin → 572 desi
+🚛 DİREKT ROTA | 17_Mayis | Kocaeli-Mersin | Kamyon -> Kiralık: 0, Spot: 1
 🚛 DİREKT ROTA | 11_Mayis | Kocaeli-Sivas | Kamyon -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 11_Mayis | Kocaeli-Tekirdağ | Tir -> Kiralık: 1, Spot: 0
-  ⚠️  ERTELEME | 11_Mayis | Kocaeli-Tekirdağ → 7 desi
+  ⚠️  ERTELEME | 12_Mayis | Kocaeli-Sivas → 6636 desi
+🚛 DİREKT ROTA | 13_Mayis | Kocaeli-Sivas | Kamyon -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 13_Mayis | Kocaeli-Sivas → 639 desi
+🚛 DİREKT ROTA | 14_Mayis | Kocaeli-Sivas | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 14_Mayis | Kocaeli-Sivas → 202 desi
+🚛 DİREKT ROTA | 15_Mayis | Kocaeli-Sivas | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 16_Mayis | Kocaeli-Sivas → 1465 desi
+🚛 DİREKT ROTA | 17_Mayis | Kocaeli-Sivas | Kamyonet -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 11_Mayis | Kocaeli-Tekirdağ | Tir -> Kiralık: 1, Spot: 1
 🚛 DİREKT ROTA | 12_Mayis | Kocaeli-Tekirdağ | Tir -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 12_Mayis | Kocaeli-Tekirdağ | Kamyon -> Kiralık: 0, Spot: 1
 🚛 DİREKT ROTA | 13_Mayis | Kocaeli-Tekirdağ | Tir -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 14_Mayis | Kocaeli-Tekirdağ | Tir -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 15_Mayis | Kocaeli-Tekirdağ | Tir -> Kiralık: 1, Spot: 0
+  ⚠️  ERTELEME | 15_Mayis | Kocaeli-Tekirdağ → 1254 desi
 🚛 DİREKT ROTA | 16_Mayis | Kocaeli-Tekirdağ | Tir -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 17_Mayis | Kocaeli-Tekirdağ | Tir -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 11_Mayis | Kocaeli-Yalova | Tir -> Kiralık: 1, Spot: 0
@@ -70,79 +110,158 @@ OPTİMİZASYON BAŞARILI — UYGUN 300.0
 🚛 DİREKT ROTA | 15_Mayis | Kocaeli-Yalova | Tir -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 16_Mayis | Kocaeli-Yalova | Tir -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 17_Mayis | Kocaeli-Yalova | Tir -> Kiralık: 1, Spot: 0
-🚛 DİREKT ROTA | 11_Mayis | Kocaeli-İstanbul | Tir -> Kiralık: 1, Spot: 0
+🚛 DİREKT ROTA | 11_Mayis | Kocaeli-İstanbul | Tir -> Kiralık: 1, Spot: 1
 🚛 DİREKT ROTA | 12_Mayis | Kocaeli-İstanbul | Tir -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 13_Mayis | Kocaeli-İstanbul | Tir -> Kiralık: 1, Spot: 0
+🚛 DİREKT ROTA | 13_Mayis | Kocaeli-İstanbul | Kamyonet -> Kiralık: 0, Spot: 1
 🚛 DİREKT ROTA | 14_Mayis | Kocaeli-İstanbul | Tir -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 15_Mayis | Kocaeli-İstanbul | Tir -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 16_Mayis | Kocaeli-İstanbul | Tir -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 17_Mayis | Kocaeli-İstanbul | Tir -> Kiralık: 1, Spot: 0
-🚛 DİREKT ROTA | 11_Mayis | Kocaeli-Şanlıurfa | Tir -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 13_Mayis | Kocaeli-Şanlıurfa | Kamyonet -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 12_Mayis | Kocaeli-Şanlıurfa | Tir -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 13_Mayis | Kocaeli-Şanlıurfa | Kamyon -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 13_Mayis | Kocaeli-Şanlıurfa → 1378 desi
 🚛 DİREKT ROTA | 14_Mayis | Kocaeli-Şanlıurfa | Kamyon -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 11_Mayis | Kütahya-Eskişehir | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 16_Mayis | Kocaeli-Şanlıurfa → 6655 desi
+🚛 DİREKT ROTA | 17_Mayis | Kocaeli-Şanlıurfa | Tir -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 14_Mayis | Manisa-Bilecik | Kamyon -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 17_Mayis | Manisa-Bilecik | Kamyonet -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 11_Mayis | Manisa-Denizli | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 11_Mayis | Manisa-Denizli → 789 desi
 🚛 DİREKT ROTA | 12_Mayis | Manisa-Denizli | Kamyonet -> Kiralık: 0, Spot: 1
 🚛 DİREKT ROTA | 13_Mayis | Manisa-Denizli | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 11_Mayis | Manisa-Eskişehir | Tir -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 12_Mayis | Manisa-Eskişehir | Kamyon -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 12_Mayis | Manisa-Isparta | Tir -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 14_Mayis | Manisa-Denizli | Kamyonet -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 15_Mayis | Manisa-Denizli | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 16_Mayis | Manisa-Denizli → 562 desi
+🚛 DİREKT ROTA | 17_Mayis | Manisa-Denizli | Kamyonet -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 11_Mayis | Manisa-Eskişehir | Kamyon -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 12_Mayis | Manisa-Eskişehir → 356 desi
+  ⚠️  ERTELEME | 16_Mayis | Manisa-Eskişehir → 1042 desi
+🚛 DİREKT ROTA | 11_Mayis | Manisa-Isparta | Tir -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 12_Mayis | Manisa-Isparta | Kamyon -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 13_Mayis | Manisa-Isparta | Kamyon -> Kiralık: 0, Spot: 1
 🚛 DİREKT ROTA | 14_Mayis | Manisa-Isparta | Kamyon -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 11_Mayis | Manisa-Kütahya | Tir -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 12_Mayis | Manisa-Kütahya | Tir -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 14_Mayis | Manisa-Kütahya | Kamyon -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 15_Mayis | Manisa-Kütahya | Kamyon -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 15_Mayis | Manisa-Isparta | Kamyon -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 16_Mayis | Manisa-Isparta → 2961 desi
+🚛 DİREKT ROTA | 17_Mayis | Manisa-Isparta | Kamyonet -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 12_Mayis | Manisa-Kütahya | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 12_Mayis | Manisa-Kütahya → 1 desi
+🚛 DİREKT ROTA | 13_Mayis | Manisa-Kütahya | Kamyonet -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 11_Mayis | Manisa-Mersin | Kamyon -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 11_Mayis | Manisa-Mersin → 895 desi
+🚛 DİREKT ROTA | 12_Mayis | Manisa-Mersin | Kamyon -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 13_Mayis | Manisa-Mersin | Kamyon -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 14_Mayis | Manisa-Mersin | Kamyon -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 15_Mayis | Manisa-Mersin | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 15_Mayis | Manisa-Mersin → 732 desi
+  ⚠️  ERTELEME | 16_Mayis | Manisa-Mersin → 3319 desi
+🚛 DİREKT ROTA | 17_Mayis | Manisa-Mersin | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 11_Mayis | Manisa-Sivas → 7284 desi
+🚛 DİREKT ROTA | 12_Mayis | Manisa-Sivas | Kamyon -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 12_Mayis | Manisa-Sivas → 126 desi
+  ⚠️  ERTELEME | 13_Mayis | Manisa-Sivas → 4354 desi
+🚛 DİREKT ROTA | 14_Mayis | Manisa-Sivas | Kamyon -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 15_Mayis | Manisa-Sivas → 3384 desi
+🚛 DİREKT ROTA | 16_Mayis | Manisa-Sivas | Kamyonet -> Kiralık: 0, Spot: 1
 🚛 DİREKT ROTA | 11_Mayis | Manisa-Tekirdağ | Tir -> Kiralık: 0, Spot: 1
-  ⚠️  ERTELEME | 11_Mayis | Manisa-Tekirdağ → 40 desi
-🚛 DİREKT ROTA | 11_Mayis | Manisa-İstanbul | Tir -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 12_Mayis | Manisa-Tekirdağ | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 13_Mayis | Manisa-Tekirdağ → 868 desi
+🚛 DİREKT ROTA | 11_Mayis | Manisa-Yalova | Tir -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 11_Mayis | Manisa-Yalova | Kamyon -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 14_Mayis | Manisa-Yalova → 1698 desi
+  ⚠️  ERTELEME | 12_Mayis | Manisa-İstanbul → 1061 desi
+🚛 DİREKT ROTA | 13_Mayis | Manisa-İstanbul | Kamyon -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 15_Mayis | Manisa-İstanbul | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 16_Mayis | Manisa-İstanbul → 54 desi
+  ⚠️  ERTELEME | 12_Mayis | Mersin-Eskişehir → 2682 desi
+🚛 DİREKT ROTA | 13_Mayis | Mersin-Eskişehir | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 14_Mayis | Mersin-Eskişehir → 1874 desi
+  ⚠️  ERTELEME | 15_Mayis | Mersin-Eskişehir → 3589 desi
+🚛 DİREKT ROTA | 11_Mayis | Mersin-Manisa | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 12_Mayis | Mersin-Manisa → 1965 desi
 🚛 DİREKT ROTA | 13_Mayis | Mersin-Manisa | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 12_Mayis | Sivas-Eskişehir | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 14_Mayis | Tekirdağ-Balıkesir | Kamyon -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 15_Mayis | Tekirdağ-Balıkesir | Kamyon -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 16_Mayis | Tekirdağ-Balıkesir | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 15_Mayis | Tekirdağ-Bilecik | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 16_Mayis | Tekirdağ-Eskişehir | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 11_Mayis | Tekirdağ-Karaman | Kamyon -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 12_Mayis | Tekirdağ-Karaman | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 12_Mayis | Tekirdağ-Manisa | Kamyon -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 12_Mayis | Tekirdağ-Yalova | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 16_Mayis | Tekirdağ-Yalova | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 17_Mayis | Tekirdağ-Yalova | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 14_Mayis | Tekirdağ-Zonguldak | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 13_Mayis | Tekirdağ-Şanlıurfa | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 15_Mayis | Tekirdağ-Şanlıurfa | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 16_Mayis | Tekirdağ-Şanlıurfa | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 12_Mayis | Yalova-Balıkesir | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 14_Mayis | Yalova-Balıkesir | Kamyon -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 16_Mayis | Yalova-Balıkesir | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 14_Mayis | Mersin-Manisa → 924 desi
+  ⚠️  ERTELEME | 15_Mayis | Mersin-Manisa → 1437 desi
+🚛 DİREKT ROTA | 16_Mayis | Mersin-Manisa | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 16_Mayis | Sivas-Eskişehir → 1504 desi
+🚛 DİREKT ROTA | 11_Mayis | Tekirdağ-Balıkesir | Tir -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 12_Mayis | Tekirdağ-Balıkesir | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 12_Mayis | Tekirdağ-Bilecik → 1 desi
+🚛 DİREKT ROTA | 11_Mayis | Tekirdağ-Denizli | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 12_Mayis | Tekirdağ-Denizli → 2857 desi
+🚛 DİREKT ROTA | 13_Mayis | Tekirdağ-Denizli | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 14_Mayis | Tekirdağ-Denizli → 2639 desi
+🚛 DİREKT ROTA | 15_Mayis | Tekirdağ-Denizli | Kamyonet -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 11_Mayis | Tekirdağ-Isparta | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 11_Mayis | Tekirdağ-Isparta → 980 desi
+🚛 DİREKT ROTA | 12_Mayis | Tekirdağ-Isparta | Kamyonet -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 13_Mayis | Tekirdağ-Isparta | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 14_Mayis | Tekirdağ-Isparta → 1347 desi
+  ⚠️  ERTELEME | 15_Mayis | Tekirdağ-Isparta → 2260 desi
+🚛 DİREKT ROTA | 16_Mayis | Tekirdağ-Isparta | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 11_Mayis | Tekirdağ-Karaman → 2234 desi
+  ⚠️  ERTELEME | 14_Mayis | Tekirdağ-Karaman → 600 desi
+  ⚠️  ERTELEME | 12_Mayis | Tekirdağ-Kütahya → 533 desi
+🚛 DİREKT ROTA | 14_Mayis | Tekirdağ-Kütahya | Kamyonet -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 11_Mayis | Tekirdağ-Manisa | Tir -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 12_Mayis | Tekirdağ-Manisa → 531 desi
+🚛 DİREKT ROTA | 13_Mayis | Tekirdağ-Manisa | Kamyonet -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 15_Mayis | Tekirdağ-Mersin | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 16_Mayis | Tekirdağ-Mersin → 1315 desi
+  ⚠️  ERTELEME | 12_Mayis | Tekirdağ-Yalova → 177 desi
+🚛 DİREKT ROTA | 11_Mayis | Tekirdağ-Zonguldak | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 11_Mayis | Tekirdağ-Zonguldak → 22 desi
+  ⚠️  ERTELEME | 12_Mayis | Tekirdağ-Zonguldak → 3126 desi
+  ⚠️  ERTELEME | 14_Mayis | Tekirdağ-Zonguldak → 2682 desi
+  ⚠️  ERTELEME | 16_Mayis | Tekirdağ-Zonguldak → 422 desi
+🚛 DİREKT ROTA | 14_Mayis | Tekirdağ-İstanbul | Kamyon -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 11_Mayis | Tekirdağ-Şanlıurfa → 2263 desi
+  ⚠️  ERTELEME | 13_Mayis | Tekirdağ-Şanlıurfa → 4235 desi
+  ⚠️  ERTELEME | 15_Mayis | Tekirdağ-Şanlıurfa → 207 desi
+🚛 DİREKT ROTA | 11_Mayis | Yalova-Eskişehir | Tir -> Kiralık: 0, Spot: 1
 🚛 DİREKT ROTA | 11_Mayis | Yalova-Eskişehir | Kamyon -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 12_Mayis | Yalova-Eskişehir | Kamyon -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 13_Mayis | Yalova-Eskişehir | Kamyon -> Kiralık: 1, Spot: 0
+🚛 DİREKT ROTA | 13_Mayis | Yalova-Eskişehir | Kamyonet -> Kiralık: 0, Spot: 1
 🚛 DİREKT ROTA | 14_Mayis | Yalova-Eskişehir | Kamyon -> Kiralık: 1, Spot: 0
+🚛 DİREKT ROTA | 14_Mayis | Yalova-Eskişehir | Kamyonet -> Kiralık: 0, Spot: 1
 🚛 DİREKT ROTA | 15_Mayis | Yalova-Eskişehir | Kamyon -> Kiralık: 1, Spot: 0
+  ⚠️  ERTELEME | 15_Mayis | Yalova-Eskişehir → 1070 desi
 🚛 DİREKT ROTA | 16_Mayis | Yalova-Eskişehir | Kamyon -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 17_Mayis | Yalova-Eskişehir | Kamyon -> Kiralık: 1, Spot: 0
-🚛 DİREKT ROTA | 11_Mayis | Yalova-Kütahya | Kamyon -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 11_Mayis | Yalova-Manisa | Tir -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 13_Mayis | Yalova-Mersin | Kamyon -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 16_Mayis | Yalova-Manisa → 762 desi
+  ⚠️  ERTELEME | 15_Mayis | Yalova-Mersin → 1 desi
+  ⚠️  ERTELEME | 16_Mayis | Yalova-Mersin → 2100 desi
 🚛 DİREKT ROTA | 11_Mayis | Yalova-Tekirdağ | Kamyon -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 12_Mayis | Yalova-Tekirdağ | Kamyon -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 13_Mayis | Yalova-Tekirdağ | Kamyon -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 14_Mayis | Yalova-Tekirdağ | Kamyon -> Kiralık: 1, Spot: 0
-  ⚠️  ERTELEME | 14_Mayis | Yalova-Tekirdağ → 25 desi
 🚛 DİREKT ROTA | 15_Mayis | Yalova-Tekirdağ | Kamyon -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 16_Mayis | Yalova-Tekirdağ | Kamyon -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 17_Mayis | Yalova-Tekirdağ | Kamyon -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 11_Mayis | İstanbul-Balıkesir | Tir -> Kiralık: 1, Spot: 0
+  ⚠️  ERTELEME | 11_Mayis | İstanbul-Balıkesir → 1 desi
 🚛 DİREKT ROTA | 12_Mayis | İstanbul-Balıkesir | Tir -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 13_Mayis | İstanbul-Balıkesir | Tir -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 14_Mayis | İstanbul-Balıkesir | Tir -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 15_Mayis | İstanbul-Balıkesir | Tir -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 16_Mayis | İstanbul-Balıkesir | Tir -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 17_Mayis | İstanbul-Balıkesir | Tir -> Kiralık: 1, Spot: 0
-🚛 DİREKT ROTA | 11_Mayis | İstanbul-Bilecik | Kamyon -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 12_Mayis | İstanbul-Bilecik | Kamyonet -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 11_Mayis | İstanbul-Bilecik | Tir -> Kiralık: 0, Spot: 1
 🚛 DİREKT ROTA | 13_Mayis | İstanbul-Bilecik | Tir -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 14_Mayis | İstanbul-Bilecik | Tir -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 11_Mayis | İstanbul-Denizli | Kamyon -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 12_Mayis | İstanbul-Denizli | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 12_Mayis | İstanbul-Denizli → 1678 desi
+🚛 DİREKT ROTA | 13_Mayis | İstanbul-Denizli | Kamyon -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 14_Mayis | İstanbul-Denizli | Kamyonet -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 15_Mayis | İstanbul-Denizli | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 16_Mayis | İstanbul-Denizli → 1941 desi
 🚛 DİREKT ROTA | 17_Mayis | İstanbul-Denizli | Kamyonet -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 13_Mayis | İstanbul-Erzincan | Kamyon -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 13_Mayis | İstanbul-Erzincan → 129 desi
+🚛 DİREKT ROTA | 14_Mayis | İstanbul-Erzincan | Kamyon -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 17_Mayis | İstanbul-Erzincan | Kamyonet -> Kiralık: 0, Spot: 1
 🚛 DİREKT ROTA | 11_Mayis | İstanbul-Eskişehir | Tir -> Kiralık: 2, Spot: 0
 🚛 DİREKT ROTA | 12_Mayis | İstanbul-Eskişehir | Tir -> Kiralık: 2, Spot: 0
 🚛 DİREKT ROTA | 13_Mayis | İstanbul-Eskişehir | Tir -> Kiralık: 2, Spot: 0
@@ -150,22 +269,47 @@ OPTİMİZASYON BAŞARILI — UYGUN 300.0
 🚛 DİREKT ROTA | 15_Mayis | İstanbul-Eskişehir | Tir -> Kiralık: 2, Spot: 0
 🚛 DİREKT ROTA | 16_Mayis | İstanbul-Eskişehir | Tir -> Kiralık: 2, Spot: 0
 🚛 DİREKT ROTA | 17_Mayis | İstanbul-Eskişehir | Tir -> Kiralık: 2, Spot: 0
-🚛 DİREKT ROTA | 11_Mayis | İstanbul-Isparta | Tir -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 12_Mayis | İstanbul-Isparta | Kamyon -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 13_Mayis | İstanbul-Isparta | Kamyon -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 14_Mayis | İstanbul-Isparta | Kamyon -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 16_Mayis | İstanbul-Isparta → 2796 desi
+🚛 DİREKT ROTA | 17_Mayis | İstanbul-Isparta | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 11_Mayis | İstanbul-Karaman → 1 desi
+  ⚠️  ERTELEME | 14_Mayis | İstanbul-Karaman → 3727 desi
+  ⚠️  ERTELEME | 16_Mayis | İstanbul-Karaman → 1113 desi
+🚛 DİREKT ROTA | 17_Mayis | İstanbul-Karaman | Kamyonet -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 12_Mayis | İstanbul-Kütahya | Tir -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 13_Mayis | İstanbul-Kütahya | Kamyon -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 13_Mayis | İstanbul-Kütahya → 1068 desi
+🚛 DİREKT ROTA | 16_Mayis | İstanbul-Kütahya | Kamyonet -> Kiralık: 0, Spot: 1
 🚛 DİREKT ROTA | 11_Mayis | İstanbul-Manisa | Tir -> Kiralık: 1, Spot: 0
+  ⚠️  ERTELEME | 11_Mayis | İstanbul-Manisa → 495 desi
 🚛 DİREKT ROTA | 12_Mayis | İstanbul-Manisa | Tir -> Kiralık: 1, Spot: 0
+🚛 DİREKT ROTA | 12_Mayis | İstanbul-Manisa | Kamyon -> Kiralık: 0, Spot: 1
 🚛 DİREKT ROTA | 13_Mayis | İstanbul-Manisa | Tir -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 14_Mayis | İstanbul-Manisa | Tir -> Kiralık: 1, Spot: 0
+🚛 DİREKT ROTA | 14_Mayis | İstanbul-Manisa | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 14_Mayis | İstanbul-Manisa → 358 desi
 🚛 DİREKT ROTA | 15_Mayis | İstanbul-Manisa | Tir -> Kiralık: 1, Spot: 0
+  ⚠️  ERTELEME | 15_Mayis | İstanbul-Manisa → 4093 desi
 🚛 DİREKT ROTA | 16_Mayis | İstanbul-Manisa | Tir -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 17_Mayis | İstanbul-Manisa | Tir -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 11_Mayis | İstanbul-Mardin | Tir -> Kiralık: 0, Spot: 1
 🚛 DİREKT ROTA | 11_Mayis | İstanbul-Mersin | Tir -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 12_Mayis | İstanbul-Mersin | Kamyon -> Kiralık: 0, Spot: 1
 🚛 DİREKT ROTA | 13_Mayis | İstanbul-Mersin | Tir -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 11_Mayis | İstanbul-Sivas | Kamyon -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 16_Mayis | İstanbul-Sivas | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 13_Mayis | İstanbul-Mersin → 1716 desi
+  ⚠️  ERTELEME | 15_Mayis | İstanbul-Mersin → 108 desi
+  ⚠️  ERTELEME | 16_Mayis | İstanbul-Mersin → 254 desi
+🚛 DİREKT ROTA | 17_Mayis | İstanbul-Mersin | Kamyonet -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 12_Mayis | İstanbul-Sivas | Kamyon -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 13_Mayis | İstanbul-Sivas | Kamyon -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 14_Mayis | İstanbul-Sivas | Kamyon -> Kiralık: 0, Spot: 1
+🚛 DİREKT ROTA | 15_Mayis | İstanbul-Sivas | Kamyon -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 16_Mayis | İstanbul-Sivas → 3296 desi
+🚛 DİREKT ROTA | 17_Mayis | İstanbul-Sivas | Kamyon -> Kiralık: 0, Spot: 1
 🚛 DİREKT ROTA | 11_Mayis | İstanbul-Tekirdağ | Tir -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 12_Mayis | İstanbul-Tekirdağ | Tir -> Kiralık: 1, Spot: 0
-🚛 DİREKT ROTA | 12_Mayis | İstanbul-Tekirdağ | Kamyonet -> Kiralık: 0, Spot: 1
 🚛 DİREKT ROTA | 13_Mayis | İstanbul-Tekirdağ | Tir -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 14_Mayis | İstanbul-Tekirdağ | Tir -> Kiralık: 1, Spot: 0
 🚛 DİREKT ROTA | 15_Mayis | İstanbul-Tekirdağ | Tir -> Kiralık: 1, Spot: 0
@@ -178,280 +322,217 @@ OPTİMİZASYON BAŞARILI — UYGUN 300.0
 🚛 DİREKT ROTA | 15_Mayis | İstanbul-Yalova | Tir -> Kiralık: 2, Spot: 0
 🚛 DİREKT ROTA | 16_Mayis | İstanbul-Yalova | Tir -> Kiralık: 2, Spot: 0
 🚛 DİREKT ROTA | 17_Mayis | İstanbul-Yalova | Tir -> Kiralık: 2, Spot: 0
-🚛 DİREKT ROTA | 11_Mayis | İstanbul-Şanlıurfa | Tir -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 15_Mayis | Şanlıurfa-Eskişehir | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 11_Mayis | Şanlıurfa-Tekirdağ | Kamyon -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 13_Mayis | İstanbul-Zonguldak → 2293 desi
+  ⚠️  ERTELEME | 11_Mayis | İstanbul-Şanlıurfa → 810 desi
+🚛 DİREKT ROTA | 12_Mayis | İstanbul-Şanlıurfa | Kamyon -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 12_Mayis | İstanbul-Şanlıurfa → 3347 desi
+  ⚠️  ERTELEME | 15_Mayis | İstanbul-Şanlıurfa → 987 desi
+  ⚠️  ERTELEME | 16_Mayis | İstanbul-Şanlıurfa → 4802 desi
+🚛 DİREKT ROTA | 17_Mayis | İstanbul-Şanlıurfa | Kamyon -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 13_Mayis | Şanlıurfa-Eskişehir → 2850 desi
+  ⚠️  ERTELEME | 15_Mayis | Şanlıurfa-Eskişehir → 1426 desi
+  ⚠️  ERTELEME | 11_Mayis | Şanlıurfa-Manisa → 6120 desi
+  ⚠️  ERTELEME | 13_Mayis | Şanlıurfa-Manisa → 2925 desi
+  ⚠️  ERTELEME | 15_Mayis | Şanlıurfa-Manisa → 1033 desi
+  ⚠️  ERTELEME | 11_Mayis | Şanlıurfa-Tekirdağ → 1204 desi
 🚛 DİREKT ROTA | 12_Mayis | Şanlıurfa-Tekirdağ | Kamyonet -> Kiralık: 0, Spot: 1
-🚛 DİREKT ROTA | 13_Mayis | Şanlıurfa-Tekirdağ | Kamyonet -> Kiralık: 0, Spot: 1
+  ⚠️  ERTELEME | 13_Mayis | Şanlıurfa-Tekirdağ → 3091 desi
+  ⚠️  ERTELEME | 14_Mayis | Şanlıurfa-Tekirdağ → 4153 desi
+  ⚠️  ERTELEME | 15_Mayis | Şanlıurfa-Tekirdağ → 4985 desi
+🚛 DİREKT ROTA | 16_Mayis | Şanlıurfa-Tekirdağ | Kamyonet -> Kiralık: 0, Spot: 1
 ------------------------------------------------------------
-🌟 UĞRAMA ROTASI | 16_Mayis | Mersin → Eskişehir → Kütahya | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | Mersin → Kütahya → Eskişehir | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 16_Mayis | Mersin → Eskişehir → İstanbul | Kamyonet: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 11_Mayis | Mersin → Eskişehir → Bilecik | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Mersin → Eskişehir → Bilecik | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Mersin → Eskişehir → Bilecik | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Mersin → Eskişehir → Balıkesir | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Mersin → Eskişehir → Tekirdağ | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Mersin → Balıkesir → Manisa | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Kütahya → Eskişehir → İstanbul | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Kütahya → Eskişehir → Şanlıurfa | Hafif Kam: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Kütahya → Eskişehir → Şanlıurfa | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Kütahya → Eskişehir → Erzincan | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Kocaeli → Eskişehir → Mersin | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | Kocaeli → Eskişehir → Mersin | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Kocaeli → Isparta → Mersin | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 14_Mayis | Kocaeli → Eskişehir → Mersin | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | Kocaeli → Eskişehir → Mersin | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 16_Mayis | Kocaeli → Eskişehir → Mersin | Kamyon: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 11_Mayis | Kocaeli → Eskişehir → Kütahya | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Kocaeli → Eskişehir → Kütahya | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Kocaeli → Eskişehir → Kütahya | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | Kocaeli → Eskişehir → Kütahya | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | Kocaeli → Bilecik → Kütahya | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Kocaeli → Yalova → Kütahya | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Kocaeli → Yalova → Kütahya | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Kocaeli → Bilecik → Eskişehir | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Kocaeli → Bilecik → Eskişehir | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Kocaeli → İstanbul → Balıkesir | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 12_Mayis | Kocaeli → Eskişehir → Kütahya | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 13_Mayis | Kocaeli → Eskişehir → Kütahya | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | Kocaeli → Eskişehir → Kütahya | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 16_Mayis | Kocaeli → Eskişehir → Kütahya | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 13_Mayis | Kocaeli → Bilecik → Eskişehir | Kamyon: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 12_Mayis | Kocaeli → İstanbul → Balıkesir | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Kocaeli → İstanbul → Balıkesir | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Kocaeli → Yalova → Balıkesir | Tir: 2 Spot Araç
+🌟 UĞRAMA ROTASI | 14_Mayis | Kocaeli → İstanbul → Balıkesir | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | Kocaeli → İstanbul → Balıkesir | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | Kocaeli → Yalova → Balıkesir | Tir: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 12_Mayis | Kocaeli → Yalova → Balıkesir | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Kocaeli → Yalova → Balıkesir | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Kocaeli → Eskişehir → Şanlıurfa | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | Kocaeli → Bilecik → Şanlıurfa | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Kocaeli → Yalova → Tekirdağ | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Kocaeli → Yalova → Tekirdağ | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Kocaeli → Yalova → Tekirdağ | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Kocaeli → Yalova → Tekirdağ | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | Kocaeli → Zonguldak → Sivas | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Kocaeli → Kütahya → Manisa | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 13_Mayis | Kocaeli → Yalova → Balıkesir | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 17_Mayis | Kocaeli → Yalova → Balıkesir | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | Kocaeli → Eskişehir → Şanlıurfa | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | Kocaeli → Eskişehir → Şanlıurfa | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 13_Mayis | Kocaeli → İstanbul → Tekirdağ | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 14_Mayis | Kocaeli → Yalova → Tekirdağ | Kamyon: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 11_Mayis | Kocaeli → Bilecik → Manisa | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Kocaeli → Bilecik → Manisa | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Kocaeli → Bilecik → Manisa | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 12_Mayis | Kocaeli → Bilecik → Manisa | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 13_Mayis | Kocaeli → Bilecik → Manisa | Kamyonet: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 14_Mayis | Kocaeli → Bilecik → Manisa | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Kocaeli → Balıkesir → Manisa | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | Kocaeli → Yalova → Manisa | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | Kocaeli → Bilecik → Manisa | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 16_Mayis | Kocaeli → Bilecik → Manisa | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | Kocaeli → Yalova → Manisa | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 12_Mayis | Kocaeli → Yalova → Manisa | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 13_Mayis | Kocaeli → Yalova → Manisa | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 14_Mayis | Kocaeli → Yalova → Manisa | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | Kocaeli → Yalova → Manisa | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 17_Mayis | Kocaeli → Yalova → Manisa | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 13_Mayis | Kocaeli → Eskişehir → Isparta | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 14_Mayis | Kocaeli → Eskişehir → Isparta | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 17_Mayis | Kocaeli → Eskişehir → Isparta | Kamyonet: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 11_Mayis | Kocaeli → Eskişehir → Mardin | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Kocaeli → Şanlıurfa → Mardin | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Kocaeli → Sivas → Mardin | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 13_Mayis | Kocaeli → Eskişehir → Mardin | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 14_Mayis | Kocaeli → Eskişehir → Mardin | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | Kocaeli → Eskişehir → Mardin | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 17_Mayis | Kocaeli → Eskişehir → Mardin | Kamyon: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 11_Mayis | Kocaeli → Eskişehir → Erzincan | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Kocaeli → Bilecik → Erzincan | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | Kocaeli → Sivas → Erzincan | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Eskişehir → Isparta → Mersin | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Eskişehir → Bilecik → İstanbul | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Eskişehir → Yalova → İstanbul | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 12_Mayis | Kocaeli → Eskişehir → Erzincan | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 13_Mayis | Kocaeli → Eskişehir → Erzincan | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 14_Mayis | Kocaeli → Eskişehir → Erzincan | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 17_Mayis | Kocaeli → Eskişehir → Erzincan | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 13_Mayis | Eskişehir → Yalova → İstanbul | Kamyon: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 14_Mayis | Eskişehir → Yalova → İstanbul | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | Eskişehir → Yalova → İstanbul | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | Eskişehir → Bilecik → Balıkesir | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | Eskişehir → Isparta → Şanlıurfa | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Eskişehir → Kütahya → Tekirdağ | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | Eskişehir → İstanbul → Tekirdağ | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 12_Mayis | Eskişehir → İstanbul → Tekirdağ | Kamyon: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 17_Mayis | Eskişehir → İstanbul → Tekirdağ | Kamyonet: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 11_Mayis | Eskişehir → Yalova → Tekirdağ | Tir: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 12_Mayis | Eskişehir → Yalova → Tekirdağ | Tir: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 13_Mayis | Eskişehir → Yalova → Tekirdağ | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Eskişehir → Bilecik → Yalova | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | Eskişehir → Bilecik → Yalova | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Eskişehir → Bilecik → Manisa | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | Eskişehir → Bilecik → Manisa | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Eskişehir → Balıkesir → Manisa | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Eskişehir → Balıkesir → Manisa | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Eskişehir → Balıkesir → Manisa | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Eskişehir → Kütahya → Isparta | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Eskişehir → Şanlıurfa → Mardin | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | Eskişehir → Şanlıurfa → Mardin | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | İstanbul → Kütahya → Mersin | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | İstanbul → Kocaeli → Mersin | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | İstanbul → Kocaeli → Mersin | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | İstanbul → Kocaeli → Mersin | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | İstanbul → Eskişehir → Mersin | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | İstanbul → Karaman → Mersin | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | İstanbul → Karaman → Mersin | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | İstanbul → Bilecik → Kütahya | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | İstanbul → Bilecik → Eskişehir | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | Eskişehir → Yalova → Tekirdağ | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 16_Mayis | Eskişehir → Yalova → Tekirdağ | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 14_Mayis | İstanbul → Yalova → Mersin | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | İstanbul → Yalova → Mersin | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | İstanbul → Yalova → Kütahya | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 14_Mayis | İstanbul → Yalova → Kütahya | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | İstanbul → Yalova → Kütahya | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 17_Mayis | İstanbul → Yalova → Kütahya | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 12_Mayis | İstanbul → Bilecik → Eskişehir | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | İstanbul → Bilecik → Eskişehir | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 16_Mayis | İstanbul → Bilecik → Eskişehir | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | İstanbul → Yalova → Bilecik | Tir: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 17_Mayis | İstanbul → Yalova → Bilecik | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | İstanbul → Kocaeli → Şanlıurfa | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | İstanbul → Kocaeli → Şanlıurfa | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | İstanbul → Kocaeli → Şanlıurfa | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | İstanbul → Karaman → Şanlıurfa | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | İstanbul → Kocaeli → Sivas | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | İstanbul → Tekirdağ → Manisa | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | İstanbul → Yalova → Manisa | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | İstanbul → Yalova → Manisa | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | İstanbul → Kütahya → Isparta | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | İstanbul → Kütahya → Isparta | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | İstanbul → Balıkesir → Isparta | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | İstanbul → Kocaeli → Mardin | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | İstanbul → Kocaeli → Mardin | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | İstanbul → Şanlıurfa → Mardin | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | İstanbul → Tekirdağ → Mardin | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | İstanbul → Isparta → Mardin | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | İstanbul → Zonguldak → Mardin | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | İstanbul → Zonguldak → Mardin | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | İstanbul → Kütahya → Erzincan | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | İstanbul → Eskişehir → Erzincan | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | İstanbul → Eskişehir → Erzincan | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | İstanbul → Sivas → Erzincan | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | İstanbul → Sivas → Erzincan | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | İstanbul → Sivas → Erzincan | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | İstanbul → Sivas → Erzincan | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | İstanbul → Kütahya → Karaman | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | İstanbul → Bilecik → Karaman | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | İstanbul → Bilecik → Karaman | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | İstanbul → Isparta → Karaman | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | İstanbul → Isparta → Karaman | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | İstanbul → Kütahya → Denizli | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | İstanbul → Bilecik → Denizli | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Bilecik → Eskişehir → Manisa | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | Bilecik → Eskişehir → Manisa | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | Bilecik → Balıkesir → Manisa | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Balıkesir → Bilecik → Eskişehir | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Balıkesir → Yalova → İstanbul | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | Balıkesir → Yalova → İstanbul | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Balıkesir → Kocaeli → Sivas | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | Balıkesir → Eskişehir → Mardin | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Balıkesir → Eskişehir → Erzincan | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Balıkesir → İstanbul → Zonguldak | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Şanlıurfa → Sivas → Eskişehir | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | Şanlıurfa → Sivas → Eskişehir | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Şanlıurfa → Eskişehir → İstanbul | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Şanlıurfa → Eskişehir → Tekirdağ | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | Şanlıurfa → Eskişehir → Tekirdağ | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Şanlıurfa → Manisa → Tekirdağ | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | Şanlıurfa → Manisa → Tekirdağ | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Şanlıurfa → Mersin → Manisa | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Şanlıurfa → Mersin → Manisa | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Şanlıurfa → Mersin → Manisa | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | Şanlıurfa → Mersin → Manisa | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Şanlıurfa → Eskişehir → Manisa | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Tekirdağ → Kocaeli → Mersin | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 13_Mayis | İstanbul → Eskişehir → Şanlıurfa | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | İstanbul → Balıkesir → Manisa | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 13_Mayis | İstanbul → Balıkesir → Manisa | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | İstanbul → Yalova → Manisa | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | İstanbul → Eskişehir → Isparta | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | İstanbul → Eskişehir → Isparta | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 12_Mayis | İstanbul → Eskişehir → Mardin | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | İstanbul → Eskişehir → Erzincan | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | Balıkesir → Bilecik → Eskişehir | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 14_Mayis | Balıkesir → Bilecik → Eskişehir | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | Balıkesir → Yalova → İstanbul | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | Balıkesir → İstanbul → Sivas | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 13_Mayis | Balıkesir → İstanbul → Mardin | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 14_Mayis | Balıkesir → İstanbul → Mardin | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | Balıkesir → İstanbul → Mardin | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | Şanlıurfa → Eskişehir → Tekirdağ | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 12_Mayis | Şanlıurfa → Eskişehir → Manisa | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 14_Mayis | Şanlıurfa → Eskişehir → Manisa | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 16_Mayis | Şanlıurfa → Eskişehir → Manisa | Kamyonet: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 11_Mayis | Tekirdağ → Eskişehir → Mersin | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Tekirdağ → Eskişehir → Mersin | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Tekirdağ → Balıkesir → Mersin | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Tekirdağ → Yalova → Mersin | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Tekirdağ → Manisa → Mersin | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | Tekirdağ → Manisa → Mersin | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Tekirdağ → Karaman → Mersin | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | Tekirdağ → Karaman → Mersin | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Tekirdağ → İstanbul → Kütahya | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Tekirdağ → İstanbul → Kütahya | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | Tekirdağ → İstanbul → Kütahya | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | Tekirdağ → İstanbul → Mersin | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 12_Mayis | Tekirdağ → İstanbul → Mersin | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 16_Mayis | Tekirdağ → İstanbul → Mersin | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | Tekirdağ → Yalova → Mersin | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 13_Mayis | Tekirdağ → Yalova → Mersin | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 14_Mayis | Tekirdağ → Yalova → Mersin | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 17_Mayis | Tekirdağ → Yalova → Mersin | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | Tekirdağ → Yalova → Kütahya | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 12_Mayis | Tekirdağ → Yalova → Kütahya | Kamyon: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 13_Mayis | Tekirdağ → Yalova → Kütahya | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Tekirdağ → Yalova → Kütahya | Kamyon: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 15_Mayis | Tekirdağ → Yalova → Kütahya | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Tekirdağ → Bilecik → Eskişehir | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 16_Mayis | Tekirdağ → Yalova → Kütahya | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | Tekirdağ → Bilecik → Eskişehir | Tir: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 17_Mayis | Tekirdağ → Bilecik → Eskişehir | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Tekirdağ → Yalova → Eskişehir | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Tekirdağ → Yalova → Eskişehir | Tir: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 13_Mayis | Tekirdağ → Yalova → Eskişehir | Tir: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 15_Mayis | Tekirdağ → Yalova → Eskişehir | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Tekirdağ → Kocaeli → Bilecik | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | Tekirdağ → İstanbul → Bilecik | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Tekirdağ → Yalova → Bilecik | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Tekirdağ → İstanbul → Şanlıurfa | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | Tekirdağ → İstanbul → Şanlıurfa | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Tekirdağ → Bilecik → Şanlıurfa | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Tekirdağ → Zonguldak → Şanlıurfa | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Tekirdağ → Balıkesir → Manisa | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 12_Mayis | Tekirdağ → Yalova → Bilecik | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 13_Mayis | Tekirdağ → Yalova → Bilecik | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 14_Mayis | Tekirdağ → Yalova → Bilecik | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | Tekirdağ → Yalova → Bilecik | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 16_Mayis | Tekirdağ → Yalova → Bilecik | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 12_Mayis | Tekirdağ → Eskişehir → Şanlıurfa | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 14_Mayis | Tekirdağ → Eskişehir → Şanlıurfa | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 16_Mayis | Tekirdağ → Eskişehir → Şanlıurfa | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | Tekirdağ → İstanbul → Şanlıurfa | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | Tekirdağ → İstanbul → Şanlıurfa | Kamyon: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 12_Mayis | Tekirdağ → Balıkesir → Manisa | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Tekirdağ → Kütahya → Isparta | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Tekirdağ → Kocaeli → Isparta | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Tekirdağ → Eskişehir → Isparta | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Tekirdağ → Manisa → Isparta | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | Tekirdağ → Manisa → Isparta | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | Tekirdağ → Manisa → Isparta | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Tekirdağ → Eskişehir → Mardin | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Tekirdağ → Eskişehir → Mardin | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Tekirdağ → Kocaeli → Zonguldak | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Tekirdağ → İstanbul → Zonguldak | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 13_Mayis | Tekirdağ → Balıkesir → Manisa | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 14_Mayis | Tekirdağ → Balıkesir → Manisa | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | Tekirdağ → Balıkesir → Manisa | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 16_Mayis | Tekirdağ → Balıkesir → Manisa | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 17_Mayis | Tekirdağ → Balıkesir → Manisa | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 13_Mayis | Tekirdağ → İstanbul → Zonguldak | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | Tekirdağ → İstanbul → Zonguldak | Kamyon: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 17_Mayis | Tekirdağ → İstanbul → Zonguldak | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Tekirdağ → Kütahya → Karaman | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | Tekirdağ → Kütahya → Karaman | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Tekirdağ → Isparta → Karaman | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Tekirdağ → Kütahya → Denizli | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Tekirdağ → İstanbul → Denizli | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Tekirdağ → İstanbul → Denizli | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Tekirdağ → İstanbul → Denizli | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | Tekirdağ → İstanbul → Denizli | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | Tekirdağ → Balıkesir → Denizli | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Tekirdağ → Yalova → Denizli | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Tekirdağ → Manisa → Denizli | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Tekirdağ → Manisa → Denizli | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Tekirdağ → Manisa → Denizli | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Sivas → Eskişehir → İstanbul | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | Sivas → Eskişehir → İstanbul | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Sivas → Eskişehir → Isparta | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Sivas → Eskişehir → Isparta | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | Yalova → Kütahya → Mersin | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Yalova → Eskişehir → Mersin | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Yalova → Eskişehir → Mersin | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Yalova → İstanbul → Mersin | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | Yalova → Bilecik → Mersin | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | Yalova → Bilecik → Kütahya | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Yalova → Bilecik → Eskişehir | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Yalova → İstanbul → Manisa | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Yalova → İstanbul → Manisa | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Yalova → İstanbul → Manisa | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Yalova → İstanbul → Manisa | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | Tekirdağ → İstanbul → Karaman | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 12_Mayis | Tekirdağ → İstanbul → Karaman | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 13_Mayis | Tekirdağ → İstanbul → Karaman | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | Tekirdağ → İstanbul → Karaman | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 14_Mayis | Sivas → Eskişehir → Kütahya | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | Sivas → Eskişehir → Bilecik | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 12_Mayis | Sivas → Eskişehir → Balıkesir | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 13_Mayis | Sivas → Eskişehir → Balıkesir | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 17_Mayis | Sivas → Eskişehir → Balıkesir | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | Sivas → Eskişehir → Manisa | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 12_Mayis | Yalova → Eskişehir → Mersin | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 14_Mayis | Yalova → İstanbul → Şanlıurfa | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 13_Mayis | Yalova → İstanbul → Tekirdağ | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | Yalova → Balıkesir → Manisa | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 12_Mayis | Yalova → Balıkesir → Manisa | Tir: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 13_Mayis | Yalova → Balıkesir → Manisa | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | Yalova → Balıkesir → Manisa | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Yalova → Eskişehir → Mardin | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Yalova → İstanbul → Erzincan | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Manisa → Isparta → Mersin | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Manisa → Isparta → Mersin | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | Manisa → Denizli → Mersin | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Manisa → Balıkesir → Kütahya | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 14_Mayis | Yalova → Balıkesir → Manisa | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | Yalova → Balıkesir → Manisa | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 16_Mayis | Yalova → Balıkesir → Manisa | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 12_Mayis | Yalova → Eskişehir → Isparta | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 16_Mayis | Yalova → İstanbul → Mardin | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 17_Mayis | Yalova → İstanbul → Mardin | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | Yalova → İstanbul → Erzincan | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 12_Mayis | Yalova → İstanbul → Erzincan | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 16_Mayis | Yalova → İstanbul → Erzincan | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | Manisa → Kütahya → Eskişehir | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 12_Mayis | Manisa → Kütahya → Eskişehir | Tir: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 13_Mayis | Manisa → Kütahya → Eskişehir | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | Manisa → Kütahya → Eskişehir | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Manisa → Balıkesir → Eskişehir | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Manisa → Balıkesir → Eskişehir | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | Manisa → Balıkesir → Eskişehir | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Manisa → Balıkesir → İstanbul | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Manisa → Tekirdağ → İstanbul | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Manisa → Tekirdağ → İstanbul | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Manisa → Tekirdağ → İstanbul | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 14_Mayis | Manisa → Kütahya → Eskişehir | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | Manisa → Kütahya → Eskişehir | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 16_Mayis | Manisa → Kütahya → Eskişehir | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 17_Mayis | Manisa → Kütahya → Eskişehir | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 17_Mayis | Manisa → Balıkesir → İstanbul | Kamyonet: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 12_Mayis | Manisa → Yalova → İstanbul | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Manisa → Yalova → İstanbul | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | Manisa → Yalova → İstanbul | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 13_Mayis | Manisa → Yalova → İstanbul | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | Manisa → Yalova → İstanbul | Tir: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 11_Mayis | Manisa → Balıkesir → Bilecik | Tir: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 12_Mayis | Manisa → Balıkesir → Bilecik | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Manisa → Balıkesir → Bilecik | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | Manisa → Balıkesir → Bilecik | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | Manisa → Balıkesir → Bilecik | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Manisa → Yalova → Bilecik | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Manisa → Yalova → Bilecik | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Manisa → Yalova → Bilecik | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Manisa → Yalova → Bilecik | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Manisa → Balıkesir → Tekirdağ | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Manisa → Balıkesir → Tekirdağ | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 13_Mayis | Manisa → Balıkesir → Bilecik | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | Manisa → Balıkesir → Bilecik | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 16_Mayis | Manisa → Balıkesir → Bilecik | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | Manisa → Balıkesir → Tekirdağ | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 12_Mayis | Manisa → Balıkesir → Tekirdağ | Tir: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 13_Mayis | Manisa → Balıkesir → Tekirdağ | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 14_Mayis | Manisa → Balıkesir → Tekirdağ | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 15_Mayis | Manisa → Balıkesir → Tekirdağ | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 16_Mayis | Manisa → Balıkesir → Tekirdağ | Kamyon: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 17_Mayis | Manisa → Balıkesir → Tekirdağ | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Manisa → Mersin → Sivas | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 13_Mayis | Manisa → Mersin → Sivas | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | Manisa → Kütahya → Sivas | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Manisa → Kocaeli → Sivas | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Manisa → Eskişehir → Sivas | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Manisa → İstanbul → Sivas | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 14_Mayis | Manisa → Yalova → Sivas | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | Manisa → Denizli → Sivas | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Manisa → Balıkesir → Yalova | Tir: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Manisa → Balıkesir → Yalova | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 12_Mayis | Manisa → Balıkesir → Yalova | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 13_Mayis | Manisa → Balıkesir → Yalova | Tir: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 14_Mayis | Manisa → Balıkesir → Yalova | Tir: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 16_Mayis | Manisa → Balıkesir → Yalova | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 11_Mayis | Manisa → Denizli → Isparta | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 12_Mayis | Manisa → Eskişehir → Erzincan | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 17_Mayis | Manisa → Balıkesir → Yalova | Kamyonet: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 11_Mayis | Manisa → İstanbul → Zonguldak | Tir: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 12_Mayis | Manisa → İstanbul → Zonguldak | Kamyon: 1 Spot Araç
+🌟 UĞRAMA ROTASI | 14_Mayis | Manisa → İstanbul → Zonguldak | Kamyon: 1 Spot Araç
 🌟 UĞRAMA ROTASI | 16_Mayis | Manisa → İstanbul → Zonguldak | Kamyonet: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 15_Mayis | Manisa → Tekirdağ → Zonguldak | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 16_Mayis | Manisa → Tekirdağ → Zonguldak | Kamyon: 1 Spot Araç
-🌟 UĞRAMA ROTASI | 17_Mayis | Zonguldak → Kocaeli → Manisa | Kamyonet: 1 Spot Araç
 
 ================================================================================
 ÖZET İSTATİSTİKLER  (Teknofest Kural #5 — Toplam Maliyet)
 ================================================================================
   Kiralık Araç Sabit Maliyeti :         802,704 TL  (her zaman ödenir)
-  Spot Araç Maliyeti (Direkt) :       1,479,045 TL
-  Spot Araç Maliyeti (Uğrama) :       5,109,744 TL
-  SLA Gecikme Cezası          :           3,650 TL
+  Spot Araç Maliyeti (Direkt) :       2,165,950 TL
+  Spot Araç Maliyeti (Uğrama) :       3,539,790 TL
+  SLA Gecikme Cezası          :         413,504 TL
 ────────────────────────────────────────────────────────────────────────────────
-  TOPLAM MALİYET              :       7,395,143 TL
+  TOPLAM MALİYET              :       6,921,948 TL
 ================================================================================
-  Toplam Ertelenen Yük        :              73 desi
-  Çözücü Süre                 :          308.17 sn
-  Objective Value (optimizer) :       6,592,439
+  Toplam Ertelenen Yük        :         206,752 desi
+  Çözücü Süre                 :          300.74 sn
+  Objective Value (optimizer) :       6,119,244
 ================================================================================
