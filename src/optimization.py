@@ -131,7 +131,7 @@ else:
 # Teknofest Kural #1: SLA ceza ağırlığı — spot araç maliyetiyle rekabetçi tutuldu.
 # En ucuz spot araç (Kamyonet, 5600 desi): ~4750 TL sabit.
 # Desi başı ~0.85 TL. Erteleme caydırıcı ama imkânsız kılmıyor.
-SLA_GECIKME_CEZA_TL_PER_DESI = 1.5
+SLA_GECIKME_CEZA_TL_PER_DESI = 50
 
 # =============================================================================
 # 5. ÜST SINIR HESAPLARI
@@ -345,7 +345,7 @@ for (a, c, b) in ugrama_rotalari:
             ])
             
             # DÜZELTME 2: Hiçbir karmaşık index bulucu kullanmadan direkt listeyi topluyoruz
-            model.Add(toplam_ugrama_yuk == cp_model.LinearExpr.Sum(u_tasinan_net_listesi))
+            # model.Add(toplam_ugrama_yuk == cp_model.LinearExpr.Sum(u_tasinan_net_listesi))
 # ---------------------------------------------------------------
 # KISIT E — Teknofest: Son Gün Erteleme Yasağı
 # ---------------------------------------------------------------
