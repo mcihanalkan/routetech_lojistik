@@ -1,0 +1,13 @@
+route,vehicle_type,quantity
+İstanbul-Yalova,Tir,2
+İstanbul-Eskişehir,Tir,2
+Kocaeli-Yalova,Tir,1
+İstanbul-Manisa,Tir,1
+İstanbul-Balıkesir,Tir,1
+İstanbul-Tekirdağ,Tir,1
+Kocaeli-İstanbul,Tir,1
+Kocaeli-Tekirdağ,Tir,1
+Yalova-Eskişehir,Kamyon,1
+Kocaeli-Balıkesir,Kamyon,1
+Kocaeli-Eskişehir,Kamyon,1
+Yalova-Tekirdağ,Kamyon,1
