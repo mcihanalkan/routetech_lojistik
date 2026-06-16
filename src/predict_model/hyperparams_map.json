@@ -2,17 +2,17 @@
     "small": {
         "row_count": 10770,
         "gamma": 2.0,
-        "best_hybrid_score": 0.382386,
-        "best_wape": 0.27106,
-        "underprediction_rate": 0.05577,
-        "optimization_time_minutes": 15.06,
+        "best_hybrid_score": 0.382345,
+        "best_wape": 0.255388,
+        "underprediction_rate": 0.063499,
+        "optimization_time_minutes": 15.28,
         "params": {
-            "iterations": 349,
-            "alpha": 0.8123,
-            "depth": 6,
-            "learning_rate": 0.037805530819230944,
-            "l2_leaf_reg": 35.22489545111236,
-            "bagging_temperature": 0.48574429451724266
+            "iterations": 424,
+            "alpha": 0.8071,
+            "depth": 7,
+            "learning_rate": 0.02739058137917401,
+            "l2_leaf_reg": 35.239523443149,
+            "bagging_temperature": 0.2802223006403889
         }
     }
 }

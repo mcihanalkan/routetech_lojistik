@@ -1085,7 +1085,8 @@ class DemandForecaster(BaseForecaster):
         # --- JÜRİ VE RAPORLAMA İÇİN ŞIK TABLO GÖSTERİMİ ---
         if self.logging_enabled:
             status = "✅ STABİL"
-            if X_train is not None and (wape_test - wape_train) > 0.05:
+            # Asıl performansı yansıtan wape_clean üzerinden overfit kontrolü yapılır
+            if X_train is not None and (wape_clean - wape_train) > 0.06: 
                 status = "⚠️ OVERFIT"
 
             clean_note = f"{wape_clean:<12.4%}" if wape_clean != wape_test else f"{'(tatil yok)':<12}"

@@ -11,11 +11,18 @@ Performans Mimarisi:
   - Dönüşüm maliyeti (Polars → Pandas) benchmark'ta < 50ms — ihmal edilebilir.
 
 Strateji:
-  Zaman özellikleri  : weekday, month, quarter, is_weekend, week_of_year
-  Lag özellikleri    : lag_1, lag_7, lag_14, lag_30   (leakage riski sıfır)
-  Tatil özellikleri  : `holidays` kütüphanesi — TR resmi + dini bayram
-  Spatio-temporal    : TM_ID × weekday etkileşimi
-  Rolling stats      : rolling_mean_7/14, rolling_std_7/14
+  Zaman özellikleri      : weekday, month, quarter, is_weekend, week_of_year
+  Lag özellikleri        : lag_1, lag_7, lag_14, lag_30   (leakage riski sıfır)
+  Tatil özellikleri      : `holidays` kütüphanesi — TR resmi + dini bayram
+  Spatio-temporal        : TM_ID × weekday etkileşimi
+  Rolling stats          : rolling_mean_7/14, rolling_std_7/14
+  Ağ/Çizge özellikleri   : Pressure Ratio, Hub Centrality, K-dereceli komşuluk
+                            (KDD Cup 2020 şampiyonluk mekanizması — PDF Bölüm 1)
+  Hiyerarşik özellikler  : Hub-to-Route Ratio Lags, Çapraz-Grup Max/Mean/Std
+                            (M5 & Grupo Bimbo şampiyonluk mekanizması — PDF Bölüm 2.3)
+  Ekstrem olay özellikleri: Pencere Eğrisi (Backlog Window Intensity),
+                            SHOS Hurdle Skoru, Log Dönüşümü Sinyali
+                            (M5 Uncertainty & RSNA şampiyonluk — PDF Bölüm 3)
 
 Kural:
   OHE YOK → kategorik kolonlar string kalır, CatBoost cat_features ile alır.
@@ -73,24 +80,6 @@ def _to_polars(df: pd.DataFrame) -> pl.DataFrame:
     pyarrow kurulu olduğunda sıfır kopya ile çalışır.
     Kurulu değilse seri seri numpy üzerinden dönüştürür.
     """
-    data = {}
-    for col in df.columns:
-        s = df[col]
-        if pd.api.types.is_datetime64_any_dtype(s):
-            data[col] = pl.Series(col, list(pd.to_datetime(s).dt.to_pydatetime()))
-        elif pd.api.types.is_string_dtype(s) or pd.api.types.is_object_dtype(s):
-            data[col] = pl.Series(col, s.astype("object").where(s.notna(), None).tolist())
-        elif pd.api.types.is_bool_dtype(s):
-            data[col] = pl.Series(col, s.astype("boolean").where(s.notna(), None).tolist())
-        elif pd.api.types.is_integer_dtype(s):
-            values = pd.to_numeric(s, errors="coerce").astype("float64").tolist()
-            data[col] = pl.Series(col, values)
-        elif pd.api.types.is_float_dtype(s):
-            data[col] = pl.Series(col, pd.to_numeric(s, errors="coerce").tolist())
-        else:
-            data[col] = pl.Series(col, s.astype("object").where(s.notna(), None).tolist())
-    return pl.DataFrame(data)
-
     try:
         return pl.from_pandas(df)
     except ImportError:
@@ -759,6 +748,13 @@ def build_feature_matrix(
       4. Spatio-temporal       (grup × zaman etkileşimi)
       5. Lag özellikleri       (shift() ile, leakage yok)
       6. Rolling istatistikler (shift(1) + rolling, leakage yok)
+      6.5 Hub özellikleri      (hub_lag_1 — kaynak merkezi yığılma)
+      6.6 Ağ/Çizge özellikleri (KDD Cup şampiyonluk — Pressure Ratio,
+                                 Centrality, K-dereceli komşuluk)
+      6.7 Hiyerarşik özellikler (M5/Grupo Bimbo — Hub-to-Route Ratio,
+                                 Çapraz-Grup agregasyonları)
+      6.8 Ekstrem olay özellikleri (Tweedie/SHOS — pencere eğrisi,
+                                    ekstrem aday skoru, log sinyal)
       7. NaN satır temizliği   (lag'den gelen ilk N satır boş olur)
       8. Polars → Pandas dönüşümü (CatBoost için)
 
@@ -838,6 +834,46 @@ def build_feature_matrix(
     # --- Adım 6.5: Hub Özellikleri ---
     pl_df = add_hub_features(pl_df, target_column, date_column)
 
+    # --- Adım 6.6: Ağ / Çizge Özellikleri (KDD Cup Şampiyonluk Mekanizması) ---
+    # Kaynak ve hedef hub sütunlarını otomatik tespit et
+    _graph_source = next(
+        (c for c in ["kaynak_tm", "source_hub", "kaynak"] if c in pl_df.columns), None
+    )
+    _graph_dest = next(
+        (c for c in ["varis_tm", "hedef_tm", "dest_hub", "hedef"] if c in pl_df.columns), None
+    )
+    if _graph_source and _graph_dest:
+        pl_df = add_graph_network_features(
+            pl_df,
+            target_column=target_column,
+            date_column=date_column,
+            source_col=_graph_source,
+            dest_col=_graph_dest,
+        )
+    else:
+        logger.debug(
+            "ℹ️  Graph/Network özellikleri atlandı: kaynak/hedef hub sütunları bulunamadı. "
+            "Veri setinde 'kaynak_tm' ve 'hedef_tm' sütunları varsa otomatik aktif olur."
+        )
+
+    # --- Adım 6.7: Hiyerarşik Özellikler (M5 / Grupo Bimbo Şampiyonluk Mekanizması) ---
+    if _graph_source:
+        pl_df = add_hierarchical_features(
+            pl_df,
+            target_column=target_column,
+            date_column=date_column,
+            source_col=_graph_source,
+            dest_col=_graph_dest or "",
+        )
+
+    # --- Adım 6.8: Ekstrem Olay Özellikleri (Tweedie / SHOS / Pencere Eğrisi) ---
+    pl_df = add_extreme_event_features(
+        pl_df,
+        target_column=target_column,
+        date_column=date_column,
+        group_column=group_column,
+    )
+
     # --- Adım 7: NaN temizliği ---
     rows_before = pl_df.height
     if drop_na:
@@ -850,12 +886,7 @@ def build_feature_matrix(
             )
 
     # --- Adım 8: Polars → Pandas (CatBoost / sklearn uyumluluğu için) ---
-    try:
-        result: pd.DataFrame = pl_df.to_pandas()
-    except ModuleNotFoundError as exc:
-        if exc.name != "pyarrow":
-            raise
-        result = pd.DataFrame(pl_df.to_dicts())
+    result: pd.DataFrame = pl_df.to_pandas()
 
     logger.info(
         f"✅ Feature matrix hazır (Polars backend): "
@@ -886,6 +917,495 @@ def add_hub_features(df: pl.DataFrame, target_column: str, date_column: str) -> 
     # 3. Sızıntı yapmaması için bugünün toplam bilgisini sil
     df = df.drop("hub_daily_total")
     logger.debug("✅ Hub (Kaynak) geçişkenlik özellikleri eklendi (Polars).")
+    return df
+
+
+# ---------------------------------------------------------------------------
+# 6. Ağ / Çizge (Graph Network) Özellikleri — KDD Cup Şampiyonluk Mekanizması
+# ---------------------------------------------------------------------------
+
+def add_graph_network_features(
+    df: pl.DataFrame,
+    target_column: str,
+    date_column: str,
+    source_col: str = "kaynak_tm",
+    dest_col: str = "hedef_tm",
+    pressure_windows: List[int] = [1, 7],
+    neighbor_order: int = 2,
+) -> pl.DataFrame:
+    """
+    Rotaları izole satırlar olarak değil, ağ düğümleri olarak modeller.
+
+    Motivasyon (PDF Bölüm 1):
+        Karar ağaçları veriyi izole satırlar (tabular data) halinde işler.
+        Bu nedenle A→B rotasındaki birikim, B→C ve C→D'ye olan şelale etkisini
+        (ripple effect) içsel olarak göremez. KDD Cup 2020 şampiyonları bu körlüğü
+        üç tür çizge özelliğiyle aşmıştır: Pressure Ratio, dinamik PageRank
+        benzeri merkez ağırlığı ve K-dereceli komşuluk hacimleri.
+
+    Çıktı sütunlar
+    --------------
+    hub_pressure_ratio_{w}d    : Hub'ın son {w} günlük giriş/çıkış hacim oranı.
+                                  Pressure_Ratio = Σ(k→i)_vol / (Σ(i→j)_vol + ε)
+                                  1'den büyükse hub'a girenden fazla yük giriyor
+                                  → backlog başlangıcının matematiksel göstergesi.
+    hub_in_vol_{w}d            : Hub'a giren toplam hacim (w günlük rolling).
+    hub_out_vol_{w}d           : Hub'dan çıkan toplam hacim (w günlük rolling).
+    hub_centrality_{w}d        : Kaynak hub'ın ağdaki ağırlık merkezi skoru.
+                                  (out_vol / toplam_ağ_vol) — dinamik PageRank
+                                  yerine deterministik, sızıntısız vekil.
+    neighbor_vol_1st_order     : Kaynak hub'ın 1. derece komşularındaki (hedef
+                                  hariç) gecikmeli toplam hacim. Birinci Derece
+                                  Şelale Etkisi.
+    neighbor_vol_2nd_order     : 2. derece komşulardaki gecikmeli toplam hacim.
+                                  Eğer 2. derece komşularda %30 artış varsa ağaç
+                                  bunu erken sinyal olarak kullanır.
+
+    ⚠️  Data Leakage Güvencesi:
+        Tüm rolling işlemler shift(1) ile bugünün verisi pencereye dahil
+        edilmeden hesaplanır.
+
+    Parameters
+    ----------
+    df               : Polars DataFrame
+    target_column    : Hacim / hedef sütunu
+    date_column      : Tarih sütunu
+    source_col       : Kaynak hub sütunu (varsayılan: "kaynak_tm")
+    dest_col         : Hedef hub sütunu (varsayılan: "hedef_tm")
+    pressure_windows : Pressure Ratio hesabı için pencere boyutları (gün)
+    neighbor_order   : Komşuluk derecesi (1 veya 2)
+
+    Returns
+    -------
+    pl.DataFrame
+    """
+    if source_col not in df.columns or dest_col not in df.columns:
+        logger.warning(
+            f"⚠️  Graph özellikleri atlandı: '{source_col}' veya '{dest_col}' "
+            "sütunu bulunamadı."
+        )
+        return df
+
+    # ------------------------------------------------------------------
+    # Pressure Ratio: In/Out Degree Imbalance
+    #   Pressure_Ratio_{i,t} = Σ_k Volume(k→i)_{t-1} / (Σ_j Volume(i→j)_{t-1} + ε)
+    # ------------------------------------------------------------------
+    EPS = 1e-5
+
+    # Günlük hub bazında giriş ve çıkış toplamları (bugünün verisi dahil değil — shift sonra)
+    # Giriş: bu hub hedef konumunda olan tüm rotaların hacmi
+    # Çıkış: bu hub kaynak konumunda olan tüm rotaların hacmi
+
+    df = df.with_columns([
+        pl.col(target_column).alias("_vol_for_graph")
+    ])
+
+    for w in pressure_windows:
+        # Kaynak hub'ın o gün çıkış hacmi (shift=1 → leakage yok)
+        out_vol_expr = (
+            pl.col("_vol_for_graph")
+            .shift(1)
+            .rolling_mean(window_size=w, min_samples=1)
+            .over(source_col)
+            .alias(f"hub_out_vol_{w}d")
+        )
+
+        # Hedef hub'a giriş hacmi — dest_col bazında rolling (kaynak bakışından)
+        # Aynı dest_col değerine sahip satırlardaki hacim = o hub'a gelen yük
+        in_vol_expr = (
+            pl.col("_vol_for_graph")
+            .shift(1)
+            .rolling_mean(window_size=w, min_samples=1)
+            .over(dest_col)
+            .alias(f"hub_in_vol_{w}d")
+        )
+
+        df = df.with_columns([out_vol_expr, in_vol_expr])
+
+        # Pressure Ratio = in / (out + ε)
+        df = df.with_columns([
+            (pl.col(f"hub_in_vol_{w}d") / (pl.col(f"hub_out_vol_{w}d") + EPS))
+            .alias(f"hub_pressure_ratio_{w}d")
+        ])
+
+        # Hub Centrality: kaynak hub'ın ağ içindeki ağırlık payı
+        # = hub_out_vol / (tüm rotaların o günkü ortalama out vol)
+        # shift(1) uygulanmış out_vol zaten var → toplam ağ ortalamasını bölüyoruz
+        total_net_vol = (
+            pl.col("_vol_for_graph")
+            .shift(1)
+            .rolling_mean(window_size=w, min_samples=1)
+            .mean()  # scalar — tüm satırlarda aynı (global)
+        )
+        df = df.with_columns([
+            (pl.col(f"hub_out_vol_{w}d") / (total_net_vol + EPS))
+            .alias(f"hub_centrality_{w}d")
+        ])
+
+    # ------------------------------------------------------------------
+    # K-Dereceli Komşuluk Hacimleri (Extended Neighborhood Volume)
+    # 1. Derece: Kaynak hub'ın komşularındaki (hedef hariç) hacim
+    # ------------------------------------------------------------------
+    if neighbor_order >= 1:
+        # Her kaynak hub için, farklı hedeflere giden toplam hacim
+        # (hedef sütununa göre değil kaynak sütununa göre grupluyoruz)
+        # shift(1) → leakage yok
+        df = df.with_columns([
+            pl.col("_vol_for_graph")
+            .shift(1)
+            .sum()
+            .over(source_col)
+            .alias("_source_total_vol_lag1")
+        ])
+        # 1. derece komşu = kaynak hub'ın tüm çıkış rotaları toplamı - bu rotanın kendi hacmi
+        df = df.with_columns([
+            (pl.col("_source_total_vol_lag1") - pl.col("_vol_for_graph").shift(1))
+            .clip(lower_bound=0)
+            .alias("neighbor_vol_1st_order")
+        ])
+
+    if neighbor_order >= 2:
+        # 2. Derece: Hedef hub'un kendi çıkış hacmi (kaynak hub'ın komşusunun komşusu)
+        # dest_col bazında toplam çıkış hacmi → 2. derece komşuluk birikimi
+        df = df.with_columns([
+            pl.col("_vol_for_graph")
+            .shift(1)
+            .sum()
+            .over(dest_col)
+            .alias("neighbor_vol_2nd_order")
+        ])
+
+    # Ara sütunları temizle
+    cols_to_drop = ["_vol_for_graph"]
+    if "_source_total_vol_lag1" in df.columns:
+        cols_to_drop.append("_source_total_vol_lag1")
+    df = df.drop(cols_to_drop)
+
+    logger.debug(
+        f"✅ Graph/Network özellikleri eklendi: "
+        f"Pressure Ratio ({pressure_windows}), "
+        f"Centrality, {neighbor_order}. derece komşuluk (Polars)."
+    )
+    return df
+
+
+# ---------------------------------------------------------------------------
+# 7. Hiyerarşik Özellik Mühendisliği — M5 & Grupo Bimbo Şampiyonluk Mekanizması
+# ---------------------------------------------------------------------------
+
+def add_hierarchical_features(
+    df: pl.DataFrame,
+    target_column: str,
+    date_column: str,
+    source_col: str = "kaynak_tm",
+    dest_col: str = "hedef_tm",
+    hub_ratio_lags: List[int] = [7, 14, 21],
+    cross_group_keys: Optional[List[str]] = None,
+) -> pl.DataFrame:
+    """
+    Alt rotaların üst Hub hiyerarşisini içselleştirmesini sağlar.
+
+    Motivasyon (PDF Bölüm 2.3):
+        M5 ve Grupo Bimbo şampiyonları, post-processing uzlaştırma yerine
+        rotaya doğrudan Hub'ın statüsünü sayısal özellik olarak vermiştir.
+        Bu sayede CatBoost, "Hub bugün 10.000 kapasitede çalışıyor ve bu
+        rotanın tarihsel payı %5 ise tahminim 500 olmalı" çıkarımını
+        ağaç bölünmelerinde (splits) bağımsız öğrenir.
+
+    Çıktı sütunlar
+    --------------
+    hub_to_route_ratio_lag_{X} : A→B rotasının, A Hub'ının toplam günlük
+                                  hacmine oranının X günlük gecikmesi.
+                                  Rotanın sistem içindeki "pazar payını"
+                                  (Hub_to_Route_Ratio_Lag_X) modele öğretir.
+    cross_group_max_{key}      : Çapraz-grup hedef maksimumu — belirtilen
+                                  gruplama anahtarına göre (örn. Hub + Tatil Tipi)
+                                  tarihsel maksimum hacim. Extrapolation körlüğünü
+                                  "içdeğerleme" (interpolation) ile aşar.
+    cross_group_mean_{key}     : Çapraz-grup tarihsel ortalama hacim.
+    cross_group_std_{key}      : Çapraz-grup tarihsel standart sapma.
+
+    Parameters
+    ----------
+    df               : Polars DataFrame
+    target_column    : Hacim / hedef sütunu
+    date_column      : Tarih sütunu
+    source_col       : Kaynak hub sütunu
+    dest_col         : Hedef hub sütunu
+    hub_ratio_lags   : Hub payı gecikme günleri (varsayılan: [7, 14, 21])
+    cross_group_keys : Çapraz-grup için ek sütun listesi (örn. ["is_holiday", "is_campaign_day"])
+
+    Returns
+    -------
+    pl.DataFrame
+    """
+    if source_col not in df.columns:
+        logger.warning(
+            f"⚠️  Hiyerarşik özellikler atlandı: '{source_col}' sütunu bulunamadı."
+        )
+        return df
+
+    EPS = 1e-5
+
+    # ------------------------------------------------------------------
+    # Hub-to-Route Ratio Lags: rotanın hub içindeki pazar payı
+    # Formül: route_vol / hub_total_vol (her iki değer de shift(1) ile leakage önlenir)
+    # ------------------------------------------------------------------
+
+    # Hub günlük toplam çıkış hacmi (kaynak bazında)
+    df = df.with_columns([
+        pl.col(target_column)
+        .shift(1)
+        .sum()
+        .over([date_column, source_col])
+        .alias("_hub_daily_total_lag1")
+    ])
+
+    # Rotanın kendi gecikmeli değeri / hub toplamı = pazar payı
+    # Ardından bu oranın X günlük gecikmesi alınır
+    df = df.with_columns([
+        (pl.col(target_column).shift(1) / (pl.col("_hub_daily_total_lag1") + EPS))
+        .alias("_route_hub_ratio_base")
+    ])
+
+    route_key = [source_col, dest_col] if dest_col in df.columns else [source_col]
+    for lag in hub_ratio_lags:
+        df = df.with_columns([
+            pl.col("_route_hub_ratio_base")
+            .shift(lag - 1)  # zaten shift(1) uygulandı, toplam lag = lag
+            .over(route_key)
+            .alias(f"hub_to_route_ratio_lag_{lag}")
+        ])
+
+    # ------------------------------------------------------------------
+    # Çapraz-Grup Hedef Agregasyonları ("Sihirli Özellikler")
+    # PDF Bölüm 3.2: Extrapolation körlüğünü interpolation ile aşar.
+    # Grup: kaynak_hub + tatil_tipi kombinasyonu üzerinden tarihsel
+    # max/mean/std hesaplanır — model "Bayram Dönüşü + İstanbul Hub"
+    # kombinasyonunu daha önce görmüş maksimum değerden interpolate eder.
+    # ------------------------------------------------------------------
+    if cross_group_keys is None:
+        cross_group_keys = []
+
+    # Varsayılan olarak mevcut sütunlardan uygun olanları ekle
+    auto_keys = ["is_holiday", "is_campaign_day", "is_weekend"]
+    available_auto = [k for k in auto_keys if k in df.columns]
+    combined_keys = list(dict.fromkeys(cross_group_keys + available_auto))  # deduplicate
+
+    if combined_keys:
+        for extra_key in combined_keys:
+            group_keys = [source_col, extra_key]
+            agg_col_prefix = f"cross_group_{extra_key}"
+
+            # shift(1) + expanding stats — geçmişe dönük, leakage yok
+            df = df.with_columns([
+                pl.col(target_column)
+                .shift(1)
+                .max()
+                .over(group_keys)
+                .alias(f"{agg_col_prefix}_max"),
+
+                pl.col(target_column)
+                .shift(1)
+                .mean()
+                .over(group_keys)
+                .alias(f"{agg_col_prefix}_mean"),
+
+                pl.col(target_column)
+                .shift(1)
+                .std()
+                .fill_null(0.0)
+                .over(group_keys)
+                .alias(f"{agg_col_prefix}_std"),
+            ])
+
+    # Ara sütunları temizle
+    df = df.drop(["_hub_daily_total_lag1", "_route_hub_ratio_base"])
+
+    logger.debug(
+        f"✅ Hiyerarşik özellikler eklendi: "
+        f"Hub-to-Route Ratio ({hub_ratio_lags}), "
+        f"Çapraz-Grup Agregasyonları ({combined_keys}) (Polars)."
+    )
+    return df
+
+
+# ---------------------------------------------------------------------------
+# 8. Ekstrem Olay Özellikleri — Tweedie / SHOS / Pencere Eğrisi Dönüşümü
+# ---------------------------------------------------------------------------
+
+def add_extreme_event_features(
+    df: pl.DataFrame,
+    target_column: str,
+    date_column: str,
+    group_column: Optional[str] = None,
+    backlog_clearance_rate: float = 0.35,
+    extreme_threshold_quantile: float = 0.90,
+) -> pl.DataFrame:
+    """
+    Ağaç tabanlı modellerin extrapolation körlüğünü ve ekstrem olayları
+    kaçırma (clipping) sorununu çözen özellik seti.
+
+    Motivasyon (PDF Bölüm 3):
+        CatBoost/LightGBM gibi GBDT algoritmaları yaprak ortalaması ürettiği
+        için eğitim setindeki maksimum değerin ötesine geçemez. Lojistik
+        ağlarındaki bayram dönüşü / kampanya patlamaları bu sınırı aşar ve
+        model "güvenli" ancak operasyonel olarak yetersiz tahminler üretir.
+        Kaggle M5 Uncertainty ve Grupo Bimbo şampiyonları bu sorunu üç
+        yöntemle aşmıştır:
+          1. Pencere (Window) Eğrisi: Tatil etkisini statik 0/1 yerine
+             üstel sönüm eğrisi ile sürekli değişken olarak modellemek.
+          2. SHOS (Statistical Hurdle and Occurrence Size): Ekstrem olayı
+             "olacak mı?" ve "ne büyüklükte?" olarak ikiye bölmek.
+          3. Log Dönüşümü Sinyali: Gradient explosion riskini sayısal
+             özellik olarak raporlamak.
+
+    Çıktı sütunlar
+    --------------
+    backlog_window_intensity   : Tatil/kampanya sonrası birikimin üstel
+                                  sönüm eğrisi değeri.
+                                  Formül: max(0, α · exp(-β · (t - t0)))
+                                  α = tatil öncesi beklenen yük (accumulated_closed_days
+                                  varsa kullanılır, yoksa backlog_release_index).
+                                  β = backlog_clearance_rate (ağın eritme hızı).
+    is_extreme_event_candidate : Tarihsel grup medyanının extreme_threshold_quantile
+                                  katını aşan gün sinyali (Int8, 0/1).
+                                  SHOS Hurdle Modeli için "oluşma" hedefi.
+    extreme_event_prob_score   : Grup × tatil/kampanya kombinasyonunun geçmişte
+                                  ekstrem olaya dönüşme oranı (0–1 arası Float).
+                                  Model 1 (Sınıflandırma) çıktısını taklit eder;
+                                  Model 2 (Regresyon) için sayısal girdi olarak kullanılır.
+    log_transform_signal       : Anlık rolling_std / rolling_mean oranı
+                                  (varyasyon katsayısı). Yüksekse Tweedie
+                                  kayıp fonksiyonu veya log1p dönüşümü gerektirir.
+
+    Parameters
+    ----------
+    df                        : Polars DataFrame
+    target_column             : Hedef sütun
+    date_column               : Tarih sütunu
+    group_column              : Hub/rota grubu (None ise tek seri)
+    backlog_clearance_rate    : Tatil birikiminin günlük erime hızı β (varsayılan: 0.35)
+    extreme_threshold_quantile: Ekstrem eşiği için quantile (varsayılan: 0.90)
+
+    Returns
+    -------
+    pl.DataFrame
+
+    Not
+    ---
+    Gerçek SHOS mimarisi için, is_extreme_event_candidate'i hedef olarak
+    CatBoost sınıflandırma modeli eğitin; ardından bu modelin predict_proba()
+    çıktısını regresyon modelinin özellik setine ekleyin.
+    Bu fonksiyon, o olasılık skorunun tarihsel veri tabanlı vekil (proxy)
+    sürümünü üretir.
+    """
+    EPS = 1e-5
+    over_keys = [group_column] if group_column and group_column in df.columns else None
+
+    def _over(expr: pl.Expr) -> pl.Expr:
+        return expr.over(over_keys) if over_keys else expr
+
+    # ------------------------------------------------------------------
+    # 1. Tatil/Kampanya Pencere Eğrisi (Window Intensity)
+    # PDF 3.4: Backlog_Intensity_t = max(0, α · exp(-β · (t - t0)))
+    # Mevcut backlog_release_index sütunundan türetilir (varsa)
+    # ------------------------------------------------------------------
+    if "backlog_release_index" in df.columns and "days_since_resumption" in df.columns:
+        # backlog_release_index zaten α · exp(-d/alpha) formunda
+        # Bunu clearance_rate ile yeniden ölçeklendir (daha ayarlanabilir β)
+        df = df.with_columns([
+            pl.when(
+                (pl.col("is_closed") == 0) &
+                (pl.col("days_since_resumption") > 0) &
+                (pl.col("days_since_resumption") <= 6)
+            )
+            .then(
+                pl.col("accumulated_closed_days").shift(1).fill_null(0.0) *
+                (-pl.col("days_since_resumption") * backlog_clearance_rate).exp()
+            )
+            .otherwise(0.0)
+            .alias("backlog_window_intensity")
+        ] if "is_closed" in df.columns and "accumulated_closed_days" in df.columns
+        else [pl.lit(0.0).alias("backlog_window_intensity")])
+    else:
+        # Fallback: campaign_eve veya holiday sinyalinden türet
+        if "is_campaign_eve" in df.columns:
+            df = df.with_columns([
+                pl.when(pl.col("is_campaign_eve") == 1)
+                .then((-pl.col("is_campaign_eve").cum_sum().over(over_keys or []) * backlog_clearance_rate).exp())
+                .otherwise(0.0)
+                .alias("backlog_window_intensity")
+            ])
+        else:
+            df = df.with_columns([pl.lit(0.0).alias("backlog_window_intensity")])
+
+    # ------------------------------------------------------------------
+    # 2. Ekstrem Olay Adayı (SHOS Hurdle — "Oluşma" Sinyali)
+    # Eğitim setindeki grup medyanının Q90 katını aşan günler → potansiyel ekstrem
+    # ------------------------------------------------------------------
+    if "rolling_mean_7" in df.columns and "rolling_std_7" in df.columns:
+        # Anlık kayan ortalama ve std mevcut — eşiği dinamik tut
+        threshold_expr = (
+            pl.col("rolling_mean_7") +
+            2.0 * pl.col("rolling_std_7")
+        )
+        df = df.with_columns([
+            pl.when(
+                pl.col(target_column).shift(1) > threshold_expr
+            ).then(1).otherwise(0).cast(pl.Int8)
+            .alias("is_extreme_event_candidate")
+        ])
+    else:
+        # Statik grup quantile — leakage riski düşük (tüm geçmiş kullanılır)
+        q_expr = _over(pl.col(target_column).quantile(extreme_threshold_quantile))
+        df = df.with_columns([
+            pl.when(pl.col(target_column).shift(1) > q_expr)
+            .then(1).otherwise(0).cast(pl.Int8)
+            .alias("is_extreme_event_candidate")
+        ])
+
+    # ------------------------------------------------------------------
+    # 3. Ekstrem Olay Olasılık Skoru (SHOS Proxy)
+    # Grup × tatil kombinasyonunda geçmişte ekstrem olay oranı
+    # Gerçek SHOS'ta bu, ayrı bir CatBoost sınıflandırma modelinin
+    # predict_proba() çıktısıdır. Burada tarihsel oran vekil olarak kullanılır.
+    # ------------------------------------------------------------------
+    prob_group_keys = ([group_column] if group_column and group_column in df.columns else [])
+    if "is_holiday" in df.columns:
+        prob_group_keys.append("is_holiday")
+    if "is_campaign_day" in df.columns:
+        prob_group_keys.append("is_campaign_day")
+
+    if prob_group_keys and "is_extreme_event_candidate" in df.columns:
+        df = df.with_columns([
+            pl.col("is_extreme_event_candidate")
+            .shift(1)
+            .mean()
+            .over(prob_group_keys)
+            .fill_null(0.0)
+            .alias("extreme_event_prob_score")
+        ])
+    else:
+        df = df.with_columns([pl.lit(0.0).alias("extreme_event_prob_score")])
+
+    # ------------------------------------------------------------------
+    # 4. Log Dönüşümü Sinyali (Tweedie / RMSLE ihtiyaç göstergesi)
+    # Varyasyon katsayısı (CoV) = std / mean; yüksekse (>1.5) Tweedie önerilir
+    # ------------------------------------------------------------------
+    if "rolling_std_7" in df.columns and "rolling_mean_7" in df.columns:
+        df = df.with_columns([
+            (pl.col("rolling_std_7") / (pl.col("rolling_mean_7") + EPS))
+            .alias("log_transform_signal")
+        ])
+    else:
+        df = df.with_columns([pl.lit(0.0).alias("log_transform_signal")])
+
+    logger.debug(
+        "✅ Ekstrem Olay özellikleri eklendi: "
+        "backlog_window_intensity, is_extreme_event_candidate, "
+        "extreme_event_prob_score, log_transform_signal (Polars)."
+    )
     return df
 
 
@@ -1046,7 +1566,7 @@ def compute_target_skewness(
             f"  (iyileşme: {result['skewness_raw'] - result['skewness_log1p']:+.4f})"
         )
     if result["recommend_log"] and not log_transform:
-        log_line += "\n   💡 Öneri: log_transform_enabled=True ile modeli yeniden eğitin"
+        log_line += "\n   💡 Not: MultiQuantile kullanıldığı için log dönüşümü bilinçli olarak kapalı tutulmuştur."
     logger.info(log_line)
 
     return result
