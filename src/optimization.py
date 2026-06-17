@@ -36,7 +36,8 @@ if payload_csv.exists():
             dest = row.iloc[2]
 
         date_str = str(row['date']) if 'date' in row else str(row.iloc[0])
-        q50 = float(row.get('q50', 0))
+        # YZ modelimizin risk tamponlu "Önerilen" talebini alıyoruz, dümdüz q50'yi değil!
+        recommended = float(row.get('recommended_demand', row.get('q50', 0)))
 
         # FIX #7: dict.fromkeys() ile sıra koruyarak tekil hat listesi
         hat = f"{str(source).strip()}-{str(dest).strip()}"
@@ -46,7 +47,7 @@ if payload_csv.exists():
         gun_adi = f"{tarih_obj.day:02d}_Mayis"
 
         gecici_gunler.add(gun_adi)
-        talep_verisi[(hat, gun_adi)] = int(q50)
+        talep_verisi[(hat, gun_adi)] = int(recommended) # <--- Zeka buraya entegre oldu!
 
     # FIX #7: set() yerine dict.fromkeys() — sıra korunur, tekrarlar temizlenir
     hatlar = list(dict.fromkeys(hatlar_sirali))
