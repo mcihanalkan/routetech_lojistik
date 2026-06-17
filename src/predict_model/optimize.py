@@ -412,7 +412,7 @@ Gamma kalibrasyonu:
   Asimetrik ceza kapalı   →  --gamma 0
         """
     )
-    parser.add_argument("--data",    default="data/Desi_talep.xlsx", help="Veri dosyası")
+    parser.add_argument("--data",    default=str(_PROJECT_ROOT / "data" / "raw" / "Desi_talep.xlsx"), help="Veri dosyası")
     parser.add_argument("--trials",  type=int,   default=50,           help="Optuna trial sayısı")
     parser.add_argument("--timeout", type=int,   default=900,          help="Timeout (saniye) — 0 = sınırsız")
     parser.add_argument("--gamma",   type=float, default=DEFAULT_GAMMA,

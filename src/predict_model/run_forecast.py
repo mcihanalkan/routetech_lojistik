@@ -34,10 +34,14 @@ logger = logging.getLogger(__name__)
 # Sabitler
 # ---------------------------------------------------------------------------
 
-DATA_PATH      = "data/Desi_talep.xlsx"
+# Proje kökü: run_forecast.py — src/predict_model/ içinde
+_HERE          = Path(__file__).resolve().parent          # src/predict_model/
+_PROJECT_ROOT  = _HERE.parent.parent                      # routetech_lojistik/
+
+DATA_PATH      = str(_PROJECT_ROOT / "data" / "raw" / "Desi_talep.xlsx")
 PREDICT_START  = "2026-05-11"
 PREDICT_END    = "2026-05-17"
-OUTPUT_JSON    = "alns_payload.json"   # debug için; ALNS motoru RAM'den alır
+OUTPUT_JSON    = str(_PROJECT_ROOT / "alns_payload.json")  # debug için; ALNS motoru RAM'den alır
 
 TARGET_COL  = "desi_hacmi"
 DATE_COL    = "tarih"
@@ -187,8 +191,6 @@ def run(save_json: bool = True) -> Dict[str, Any]:
         rolling_windows  = [7, 14],
         logging_enabled  = True,
         random_state     = 42,
-        outlier_clip_multiplier = 2.5,   # 1.5→2.5: gerçek talep zirveleri artık kırpılmıyor
-        log_transform_enabled   = False,
     )
     forecaster.fit(full_df)
 
@@ -228,7 +230,7 @@ def run(save_json: bool = True) -> Dict[str, Any]:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         logger.info(f"ALNS payload kaydedildi: {OUTPUT_JSON}")
 
-    OUTPUT_CSV = "ortools_payload.csv"
+    OUTPUT_CSV = str(_PROJECT_ROOT / "ortools_payload.csv")
     df_ortools.to_csv(OUTPUT_CSV, index=False)
     logger.info(f"💾 OR-Tools payload kaydedildi: {OUTPUT_CSV}")
     logger.info(
