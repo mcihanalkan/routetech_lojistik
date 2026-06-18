@@ -68,7 +68,7 @@ arac_turleri = ["Tir", "Kamyon", "Hafif Kam", "Kamyonet"]
 distances_2d = GetDistanceMatrixAsList()
 
 print(f"centers: {centers}")
-print(f"distanced_2d: {distances_2d}")
+print(f"distances_2d: {distances_2d}")
 
 tm_index = {tm: idx for idx, tm in enumerate(centers)} # Key = tm -> value = index
 center_matrix_df = pd.DataFrame(distances_2d, index=centers, columns=centers)
@@ -419,17 +419,12 @@ for h in hatlar:
                 p = arac_parametreleri[a]
                 gun_maliyet = adet * int(p["sabit_kira"] + dist * p["kiralik_km_maliyet"])
                 kiralik_sabit_toplam += gun_maliyet
-        #         maliyet_kalemleri.append(kiralik_x[(h,g,a)] * kiralik_gunluk_birim_maliyet)
 
         # --- Spot araç değişken maliyeti ---
         for a in arac_turleri:
             p = arac_parametreleri[a]
-            # FIX #5: Maliyet katsayısı tamsayı (CP-SAT integer gerektirir)
             spot_maliyet_katsayi = int(p["spot_sabit_maliyet"] + dist * p["spot_km_maliyet"])
             maliyet_kalemleri.append(spot_y[(h, g, a)] * spot_maliyet_katsayi)
-
-            # kiralik_km_maliyet = int(dist * p["kiralik_km_maliyet"])
-            # maliyet_kalemleri.append(kiralik_x[(h, g, a)] * kiralik_km_maliyet)
 
         # --- SLA Gecikme Cezası ---
         # FIX #5: Ceza ağırlığı spot araçlarla rekabetçi seviyede
@@ -497,6 +492,7 @@ with open(output_file, "w", encoding="utf-8") as f:
         toplam_ertelenen_desi = 0
         spot_toplam_maliyet = 0
         ugrama_toplam_maliyet = 0
+        kiralik_ugrama_ekstra_km_toplam = 0
 
         # --- Direkt Rota Sonuçları ---
         print("=" * 80)
@@ -604,11 +600,14 @@ with open(output_file, "w", encoding="utf-8") as f:
                     
                     if u_k_adet > 0:
                         araç_maliyet = int(p["sabit_kira"] + dist_toplam * p["kiralik_km_maliyet"])
+                        dist_direkt_ab = distances_2d[tm_index[a]][tm_index[b]]
+                        ekstra_km_maliyet = int((dist_toplam - dist_direkt_ab) * p["kiralik_km_maliyet"])
                         for i in range(u_k_adet):
+                            kiralik_ugrama_ekstra_km_toplam += ekstra_km_maliyet
                             metin = f"{g} | Kiralık {arac} | {a}→{c}→{b} | {kapasite} | {araç_maliyet}\n"
                             f.write(metin)
                             print(metin.strip())
-                            
+
                             csv_records.append({
                                 "Tarih": g,
                                 "Araç_Tipi": f"Kiralık {arac}",
@@ -644,7 +643,7 @@ with open(output_file, "w", encoding="utf-8") as f:
 
         # --- Teknofest Kural #5: Toplam Maliyet Özeti ---
         sla_ceza_toplam = int(toplam_ertelenen_desi * SLA_GECIKME_CEZA_TL_PER_DESI)
-        degisken_toplam = spot_toplam_maliyet + ugrama_toplam_maliyet + sla_ceza_toplam
+        degisken_toplam = spot_toplam_maliyet + ugrama_toplam_maliyet + kiralik_ugrama_ekstra_km_toplam + sla_ceza_toplam
         genel_toplam = kiralik_sabit_toplam + degisken_toplam
 
         ozet = f"""
@@ -652,6 +651,7 @@ with open(output_file, "w", encoding="utf-8") as f:
             ÖZET İSTATİSTİKLER (Teknofest Kural #5 — Toplam Maliyet)
             {'=' * 80}
               Kiralık Araç Sabit Maliyeti : {kiralik_sabit_toplam:>15,.0f} TL  (her zaman ödenir)
+              Kiralık Uğrama Ekstra KM    : {kiralik_ugrama_ekstra_km_toplam:>15,.0f} TL
               Spot Araç Maliyeti (Direkt) : {spot_toplam_maliyet:>15,.0f} TL
               Spot Araç Maliyeti (Uğrama) : {ugrama_toplam_maliyet:>15,.0f} TL
               SLA Gecikme Cezası          : {sla_ceza_toplam:>15,.0f} TL
