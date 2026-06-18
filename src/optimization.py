@@ -417,7 +417,7 @@ for h in hatlar:
             adet = kiralik_stok_gunluk.get((h, a), 0)
             if adet > 0:
                 p = arac_parametreleri[a]
-                gun_maliyet = adet * int(p["sabit_kira"])
+                gun_maliyet = adet * int(p["sabit_kira"] + dist * p["kiralik_km_maliyet"])
                 kiralik_sabit_toplam += gun_maliyet
         #         maliyet_kalemleri.append(kiralik_x[(h,g,a)] * kiralik_gunluk_birim_maliyet)
 
