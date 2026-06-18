@@ -1,0 +1,21 @@
+1. Modele verileri ve karar değişkenlerini tanıt:
+    1a. kiralık_x = O günde o hattaki o araç türü için kaç adet spot araç yola çıkacak? (h,g,a) -> x
+    1b. spot_y = O günde o hattaki o araç türü için kaç adet kiralık araç yola çıkacak? (h,g,a) -> y
+2. modele kısıtları ekle
+    2a. Bir plana Spot Araç eklenebilmesi için, o aracın toplam desi kapasitesinin en az %10’unun dolu olması zorunludur.
+    2b. Spot araçlar kiralık araçlardan sonra kullanılamaz. Kiralık araçlar o hatta çalışması kesinleşmiş ve sabitlenmiş ana filodur.
+    2c. 7 gün içerisinde tüm desilerin teslimi zorunludur. Son gün desi erteleme yapılamaz.
+    2d. Desi erteleme yapılabilir. Desi başına belirli bir SLA ceza maliyeti vardır
+    2e. uğrama yapılabilir. Uğrama (Serbest): Bir aracın A noktasından çıkıp son varış yeri olan B noktasına giderken, yol üzerindeki C noktasına da girerek elindeki yükün bir kısmını bırakması veya güzergaha uygun yeni yük almasıdır. (Multi-stop routing). Modelin çalışma süresinin etkilenmemesi için uğramayı sadece 1 tm'ye yapıcaz.
+3. Modeli çalıştır.
+4. Excel çıktısı al (csv)
+
+Yapmamız gerekenler:
+-Kiralık araçları olabildiğince verimli kullanmak. Olabildiğince uğrama yapmaya çalışmak.
+-Kiralık araç yola çıkmadan önce spot aracın çıkmamasını sağlamak.
+-
+
+excel çıktı formatı: Tarih, Araç tipi, Çıkış TM, Varış TM, Atanan Desi, Maliyet
+örneğin: 
+01.01.2026, kiralık tır, istanbul, ankara, 4800, 2340
+01.01.2026, spot kamyonet, istanbul, ankara, 450, 890

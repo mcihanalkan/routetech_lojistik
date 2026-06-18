@@ -1,0 +1,479 @@
+Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliyet_TL,Rota_Tipi
+11_Mayis,Kamyon,Balıkesir,Eskişehir,1,12000,12385,Direkt
+12_Mayis,Kamyon,Balıkesir,Eskişehir,1,12000,12385,Direkt
+13_Mayis,Kamyon,Balıkesir,Eskişehir,1,12000,12385,Direkt
+15_Mayis,Kamyonet,Balıkesir,Eskişehir,1,5600,8819,Direkt
+16_Mayis,Kamyonet,Balıkesir,Eskişehir,1,5600,8819,Direkt
+17_Mayis,Kamyonet,Balıkesir,Eskişehir,1,5600,8819,Direkt
+12_Mayis,Kamyon,Balıkesir,Yalova,1,12000,11039,Direkt
+11_Mayis,Kamyon,Balıkesir,İstanbul,1,12000,11364,Direkt
+12_Mayis,Kamyonet,Bilecik,Manisa,1,5600,9745,Direkt
+13_Mayis,Kamyonet,Bilecik,Manisa,1,5600,9745,Direkt
+11_Mayis,Kamyon,Eskişehir,Balıkesir,1,12000,12385,Direkt
+12_Mayis,Kamyon,Eskişehir,Balıkesir,1,12000,12385,Direkt
+13_Mayis,Kamyon,Eskişehir,Balıkesir,1,12000,12385,Direkt
+14_Mayis,Kamyonet,Eskişehir,Balıkesir,1,5600,8819,Direkt
+15_Mayis,Kamyonet,Eskişehir,Balıkesir,1,5600,8819,Direkt
+16_Mayis,Kamyonet,Eskişehir,Balıkesir,1,5600,8819,Direkt
+17_Mayis,Kamyonet,Eskişehir,Balıkesir,1,5600,8819,Direkt
+11_Mayis,Kamyon,Eskişehir,Bilecik,1,12000,8942,Direkt
+12_Mayis,Kamyonet,Eskişehir,Bilecik,1,5600,5867,Direkt
+13_Mayis,Kamyonet,Eskişehir,Bilecik,1,5600,5867,Direkt
+14_Mayis,Kamyonet,Eskişehir,Bilecik,1,5600,5867,Direkt
+15_Mayis,Kamyonet,Eskişehir,Bilecik,1,5600,5867,Direkt
+17_Mayis,Kamyonet,Eskişehir,Bilecik,1,5600,5867,Direkt
+13_Mayis,Kamyon,Eskişehir,Manisa,1,12000,13851,Direkt
+15_Mayis,Kamyonet,Eskişehir,Manisa,1,5600,10075,Direkt
+17_Mayis,Kamyonet,Eskişehir,Manisa,1,5600,10075,Direkt
+17_Mayis,Kamyonet,Eskişehir,Yalova,1,5600,7343,Direkt
+11_Mayis,Kamyon,Kocaeli,Balıkesir,1,12000,7161,Direkt
+12_Mayis,Kamyon,Kocaeli,Balıkesir,1,12000,7161,Direkt
+13_Mayis,Kamyon,Kocaeli,Balıkesir,1,12000,7161,Direkt
+13_Mayis,Kamyon,Kocaeli,Balıkesir,1,12000,12177,Direkt
+14_Mayis,Kamyon,Kocaeli,Balıkesir,1,12000,7161,Direkt
+15_Mayis,Kamyon,Kocaeli,Balıkesir,1,12000,7161,Direkt
+16_Mayis,Kamyon,Kocaeli,Balıkesir,1,12000,7161,Direkt
+16_Mayis,Kamyonet,Kocaeli,Balıkesir,1,5600,8640,Direkt
+17_Mayis,Kamyon,Kocaeli,Balıkesir,1,12000,7161,Direkt
+12_Mayis,Tir,Kocaeli,Bilecik,1,22400,13664,Direkt
+12_Mayis,Kamyon,Kocaeli,Erzincan,1,12000,24950,Direkt
+13_Mayis,Kamyon,Kocaeli,Erzincan,1,12000,24950,Direkt
+15_Mayis,Kamyon,Kocaeli,Erzincan,1,12000,24950,Direkt
+16_Mayis,Kamyonet,Kocaeli,Erzincan,1,5600,19589,Direkt
+17_Mayis,Kamyonet,Kocaeli,Erzincan,1,5600,19589,Direkt
+11_Mayis,Kamyon,Kocaeli,Eskişehir,1,12000,6314,Direkt
+12_Mayis,Kamyon,Kocaeli,Eskişehir,1,12000,6314,Direkt
+13_Mayis,Kamyon,Kocaeli,Eskişehir,1,12000,6314,Direkt
+14_Mayis,Kamyon,Kocaeli,Eskişehir,1,12000,6314,Direkt
+15_Mayis,Kamyon,Kocaeli,Eskişehir,1,12000,6314,Direkt
+16_Mayis,Kamyon,Kocaeli,Eskişehir,1,12000,6314,Direkt
+17_Mayis,Kamyon,Kocaeli,Eskişehir,1,12000,6314,Direkt
+14_Mayis,Kamyonet,Kocaeli,Isparta,1,5600,11019,Direkt
+15_Mayis,Kamyonet,Kocaeli,Isparta,1,5600,11019,Direkt
+17_Mayis,Kamyonet,Kocaeli,Isparta,1,5600,11019,Direkt
+17_Mayis,Kamyonet,Kocaeli,Kütahya,1,5600,7629,Direkt
+12_Mayis,Tir,Kocaeli,Manisa,1,22400,19827,Direkt
+13_Mayis,Tir,Kocaeli,Manisa,1,22400,19827,Direkt
+11_Mayis,Kamyon,Kocaeli,Mardin,1,12000,28931,Direkt
+14_Mayis,Kamyon,Kocaeli,Mardin,1,12000,28931,Direkt
+17_Mayis,Kamyonet,Kocaeli,Mardin,1,5600,23001,Direkt
+11_Mayis,Tir,Kocaeli,Mersin,1,22400,26954,Direkt
+12_Mayis,Tir,Kocaeli,Mersin,1,22400,26954,Direkt
+12_Mayis,Kamyonet,Kocaeli,Mersin,1,5600,15733,Direkt
+13_Mayis,Tir,Kocaeli,Mersin,1,22400,26954,Direkt
+14_Mayis,Tir,Kocaeli,Mersin,1,22400,26954,Direkt
+16_Mayis,Kamyon,Kocaeli,Mersin,1,12000,20451,Direkt
+17_Mayis,Kamyon,Kocaeli,Mersin,1,12000,20451,Direkt
+11_Mayis,Kamyon,Kocaeli,Sivas,1,12000,20602,Direkt
+12_Mayis,Kamyon,Kocaeli,Sivas,1,12000,20602,Direkt
+13_Mayis,Kamyon,Kocaeli,Sivas,1,12000,20602,Direkt
+14_Mayis,Kamyonet,Kocaeli,Sivas,1,5600,15862,Direkt
+15_Mayis,Kamyonet,Kocaeli,Sivas,1,5600,15862,Direkt
+17_Mayis,Kamyonet,Kocaeli,Sivas,1,5600,15862,Direkt
+11_Mayis,Tir,Kocaeli,Tekirdağ,1,22400,9595,Direkt
+12_Mayis,Tir,Kocaeli,Tekirdağ,1,22400,9595,Direkt
+13_Mayis,Tir,Kocaeli,Tekirdağ,1,22400,9595,Direkt
+14_Mayis,Tir,Kocaeli,Tekirdağ,1,22400,9595,Direkt
+15_Mayis,Tir,Kocaeli,Tekirdağ,1,22400,9595,Direkt
+16_Mayis,Tir,Kocaeli,Tekirdağ,1,22400,9595,Direkt
+17_Mayis,Tir,Kocaeli,Tekirdağ,1,22400,9595,Direkt
+11_Mayis,Tir,Kocaeli,Yalova,1,22400,7734,Direkt
+12_Mayis,Tir,Kocaeli,Yalova,1,22400,7734,Direkt
+13_Mayis,Tir,Kocaeli,Yalova,1,22400,7734,Direkt
+14_Mayis,Tir,Kocaeli,Yalova,1,22400,7734,Direkt
+15_Mayis,Tir,Kocaeli,Yalova,1,22400,7734,Direkt
+16_Mayis,Tir,Kocaeli,Yalova,1,22400,7734,Direkt
+17_Mayis,Tir,Kocaeli,Yalova,1,22400,7734,Direkt
+11_Mayis,Tir,Kocaeli,İstanbul,1,22400,8011,Direkt
+12_Mayis,Tir,Kocaeli,İstanbul,1,22400,8011,Direkt
+13_Mayis,Tir,Kocaeli,İstanbul,1,22400,8011,Direkt
+14_Mayis,Tir,Kocaeli,İstanbul,1,22400,8011,Direkt
+15_Mayis,Tir,Kocaeli,İstanbul,1,22400,8011,Direkt
+16_Mayis,Tir,Kocaeli,İstanbul,1,22400,8011,Direkt
+17_Mayis,Tir,Kocaeli,İstanbul,1,22400,8011,Direkt
+15_Mayis,Kamyon,Kocaeli,Şanlıurfa,1,12000,25958,Direkt
+16_Mayis,Kamyon,Kocaeli,Şanlıurfa,1,12000,25958,Direkt
+14_Mayis,Kamyon,Manisa,Bilecik,1,12000,13466,Direkt
+17_Mayis,Kamyonet,Manisa,Bilecik,1,5600,9745,Direkt
+11_Mayis,Kamyon,Manisa,Denizli,1,12000,11260,Direkt
+12_Mayis,Kamyonet,Manisa,Denizli,1,5600,7854,Direkt
+13_Mayis,Kamyonet,Manisa,Denizli,1,5600,7854,Direkt
+14_Mayis,Kamyonet,Manisa,Denizli,1,5600,7854,Direkt
+15_Mayis,Kamyonet,Manisa,Denizli,1,5600,7854,Direkt
+17_Mayis,Kamyonet,Manisa,Denizli,1,5600,7854,Direkt
+11_Mayis,Kamyon,Manisa,Eskişehir,1,12000,13851,Direkt
+11_Mayis,Tir,Manisa,Isparta,1,22400,18933,Direkt
+12_Mayis,Kamyon,Manisa,Isparta,1,12000,13714,Direkt
+13_Mayis,Kamyon,Manisa,Isparta,1,12000,13714,Direkt
+14_Mayis,Kamyon,Manisa,Isparta,1,12000,13714,Direkt
+15_Mayis,Kamyon,Manisa,Isparta,1,12000,13714,Direkt
+16_Mayis,Kamyonet,Manisa,Isparta,1,5600,9958,Direkt
+17_Mayis,Kamyonet,Manisa,Isparta,1,5600,9958,Direkt
+12_Mayis,Kamyon,Manisa,Kütahya,1,12000,12632,Direkt
+13_Mayis,Kamyonet,Manisa,Kütahya,1,5600,9030,Direkt
+11_Mayis,Kamyon,Manisa,Mersin,1,12000,21603,Direkt
+12_Mayis,Kamyon,Manisa,Mersin,1,12000,21603,Direkt
+13_Mayis,Kamyon,Manisa,Mersin,1,12000,21603,Direkt
+14_Mayis,Kamyon,Manisa,Mersin,1,12000,21603,Direkt
+15_Mayis,Kamyon,Manisa,Mersin,1,12000,21603,Direkt
+17_Mayis,Kamyonet,Manisa,Mersin,1,5600,16720,Direkt
+11_Mayis,Kamyon,Manisa,Sivas,1,12000,25184,Direkt
+12_Mayis,Kamyonet,Manisa,Sivas,1,5600,19789,Direkt
+13_Mayis,Kamyonet,Manisa,Sivas,1,5600,19789,Direkt
+14_Mayis,Kamyonet,Manisa,Sivas,1,5600,19789,Direkt
+16_Mayis,Kamyonet,Manisa,Sivas,1,5600,19789,Direkt
+11_Mayis,Tir,Manisa,Tekirdağ,1,22400,18260,Direkt
+12_Mayis,Tir,Manisa,Tekirdağ,1,22400,18260,Direkt
+13_Mayis,Kamyon,Manisa,Tekirdağ,1,12000,13148,Direkt
+11_Mayis,Tir,Manisa,Yalova,1,22400,18580,Direkt
+12_Mayis,Tir,Manisa,Yalova,1,22400,18580,Direkt
+13_Mayis,Tir,Manisa,Yalova,1,22400,18580,Direkt
+14_Mayis,Tir,Manisa,Yalova,1,22400,18580,Direkt
+11_Mayis,Tir,Manisa,İstanbul,1,22400,19119,Direkt
+13_Mayis,Tir,Manisa,İstanbul,1,22400,19119,Direkt
+11_Mayis,Kamyonet,Mersin,Eskişehir,1,5600,13536,Direkt
+12_Mayis,Kamyonet,Mersin,Eskişehir,1,5600,13536,Direkt
+14_Mayis,Kamyonet,Mersin,Eskişehir,1,5600,13536,Direkt
+16_Mayis,Kamyonet,Mersin,Eskişehir,1,5600,13536,Direkt
+11_Mayis,Kamyonet,Mersin,Manisa,1,5600,16720,Direkt
+13_Mayis,Kamyonet,Mersin,Manisa,1,5600,16720,Direkt
+16_Mayis,Kamyonet,Mersin,Manisa,1,5600,16720,Direkt
+11_Mayis,Kamyon,Sivas,Eskişehir,1,12000,19298,Direkt
+12_Mayis,Kamyonet,Sivas,Eskişehir,1,5600,14744,Direkt
+13_Mayis,Kamyonet,Sivas,Eskişehir,1,5600,14744,Direkt
+14_Mayis,Kamyonet,Sivas,Eskişehir,1,5600,14744,Direkt
+15_Mayis,Kamyonet,Sivas,Eskişehir,1,5600,14744,Direkt
+17_Mayis,Kamyonet,Sivas,Eskişehir,1,5600,14744,Direkt
+11_Mayis,Tir,Tekirdağ,Balıkesir,1,22400,15479,Direkt
+12_Mayis,Kamyon,Tekirdağ,Balıkesir,1,12000,10812,Direkt
+13_Mayis,Kamyonet,Tekirdağ,Balıkesir,1,5600,7470,Direkt
+13_Mayis,Kamyon,Tekirdağ,Bilecik,1,12000,12422,Direkt
+11_Mayis,Kamyonet,Tekirdağ,Denizli,1,5600,11605,Direkt
+12_Mayis,Kamyonet,Tekirdağ,Denizli,1,5600,11605,Direkt
+13_Mayis,Kamyonet,Tekirdağ,Denizli,1,5600,11605,Direkt
+14_Mayis,Kamyonet,Tekirdağ,Denizli,1,5600,11605,Direkt
+16_Mayis,Kamyonet,Tekirdağ,Denizli,1,5600,11605,Direkt
+11_Mayis,Tir,Tekirdağ,Eskişehir,1,22400,18893,Direkt
+12_Mayis,Tir,Tekirdağ,Eskişehir,1,22400,18893,Direkt
+13_Mayis,Tir,Tekirdağ,Eskişehir,1,22400,18893,Direkt
+16_Mayis,Kamyonet,Tekirdağ,Eskişehir,1,5600,9929,Direkt
+11_Mayis,Kamyon,Tekirdağ,Isparta,1,12000,16937,Direkt
+12_Mayis,Kamyonet,Tekirdağ,Isparta,1,5600,12721,Direkt
+13_Mayis,Kamyonet,Tekirdağ,Isparta,1,5600,12721,Direkt
+16_Mayis,Kamyonet,Tekirdağ,Isparta,1,5600,12721,Direkt
+13_Mayis,Kamyonet,Tekirdağ,Kütahya,1,5600,9653,Direkt
+11_Mayis,Tir,Tekirdağ,Manisa,1,22400,18260,Direkt
+13_Mayis,Kamyon,Tekirdağ,Mersin,1,12000,23837,Direkt
+13_Mayis,Tir,Tekirdağ,Yalova,1,22400,15503,Direkt
+17_Mayis,Kamyonet,Tekirdağ,Yalova,1,5600,7488,Direkt
+11_Mayis,Kamyonet,Tekirdağ,Zonguldak,1,5600,11274,Direkt
+13_Mayis,Kamyonet,Tekirdağ,Şanlıurfa,1,5600,23861,Direkt
+13_Mayis,Kamyonet,Yalova,Bilecik,1,5600,6225,Direkt
+11_Mayis,Kamyon,Yalova,Eskişehir,1,12000,6441,Direkt
+12_Mayis,Kamyon,Yalova,Eskişehir,1,12000,6441,Direkt
+13_Mayis,Kamyon,Yalova,Eskişehir,1,12000,6441,Direkt
+14_Mayis,Kamyon,Yalova,Eskişehir,1,12000,6441,Direkt
+15_Mayis,Kamyon,Yalova,Eskişehir,1,12000,6441,Direkt
+16_Mayis,Kamyon,Yalova,Eskişehir,1,12000,6441,Direkt
+17_Mayis,Kamyon,Yalova,Eskişehir,1,12000,6441,Direkt
+13_Mayis,Kamyon,Yalova,Mersin,1,12000,20914,Direkt
+11_Mayis,Kamyon,Yalova,Tekirdağ,1,12000,6521,Direkt
+12_Mayis,Kamyon,Yalova,Tekirdağ,1,12000,6521,Direkt
+13_Mayis,Kamyon,Yalova,Tekirdağ,1,12000,6521,Direkt
+14_Mayis,Kamyon,Yalova,Tekirdağ,1,12000,6521,Direkt
+15_Mayis,Kamyon,Yalova,Tekirdağ,1,12000,6521,Direkt
+16_Mayis,Kamyon,Yalova,Tekirdağ,1,12000,6521,Direkt
+17_Mayis,Kamyon,Yalova,Tekirdağ,1,12000,6521,Direkt
+11_Mayis,Tir,İstanbul,Balıkesir,1,22400,9306,Direkt
+12_Mayis,Tir,İstanbul,Balıkesir,1,22400,9306,Direkt
+13_Mayis,Tir,İstanbul,Balıkesir,1,22400,9306,Direkt
+14_Mayis,Tir,İstanbul,Balıkesir,1,22400,9306,Direkt
+15_Mayis,Tir,İstanbul,Balıkesir,1,22400,9306,Direkt
+16_Mayis,Tir,İstanbul,Balıkesir,1,22400,9306,Direkt
+17_Mayis,Tir,İstanbul,Balıkesir,1,22400,9306,Direkt
+11_Mayis,Tir,İstanbul,Bilecik,1,22400,14885,Direkt
+11_Mayis,Kamyon,İstanbul,Denizli,1,12000,15186,Direkt
+12_Mayis,Kamyon,İstanbul,Denizli,1,12000,15186,Direkt
+13_Mayis,Kamyon,İstanbul,Denizli,1,12000,15186,Direkt
+14_Mayis,Kamyonet,İstanbul,Denizli,1,5600,11220,Direkt
+15_Mayis,Kamyonet,İstanbul,Denizli,1,5600,11220,Direkt
+17_Mayis,Kamyonet,İstanbul,Denizli,1,5600,11220,Direkt
+11_Mayis,Tir,İstanbul,Erzincan,1,22400,34239,Direkt
+14_Mayis,Kamyon,İstanbul,Erzincan,1,12000,26571,Direkt
+17_Mayis,Kamyonet,İstanbul,Erzincan,1,5600,20978,Direkt
+11_Mayis,Tir,İstanbul,Eskişehir,2,44800,18918,Direkt
+12_Mayis,Tir,İstanbul,Eskişehir,2,44800,18918,Direkt
+13_Mayis,Tir,İstanbul,Eskişehir,2,44800,18918,Direkt
+14_Mayis,Tir,İstanbul,Eskişehir,2,44800,18918,Direkt
+15_Mayis,Tir,İstanbul,Eskişehir,2,44800,18918,Direkt
+16_Mayis,Tir,İstanbul,Eskişehir,2,44800,18918,Direkt
+17_Mayis,Tir,İstanbul,Eskişehir,2,44800,18918,Direkt
+12_Mayis,Kamyon,İstanbul,Isparta,1,12000,15729,Direkt
+13_Mayis,Kamyon,İstanbul,Isparta,1,12000,15729,Direkt
+17_Mayis,Kamyonet,İstanbul,Isparta,1,5600,11685,Direkt
+17_Mayis,Kamyonet,İstanbul,Karaman,1,5600,14867,Direkt
+11_Mayis,Tir,İstanbul,Kütahya,1,22400,16611,Direkt
+12_Mayis,Tir,İstanbul,Kütahya,1,22400,16611,Direkt
+14_Mayis,Kamyon,İstanbul,Kütahya,1,12000,11763,Direkt
+16_Mayis,Kamyonet,İstanbul,Kütahya,1,5600,8286,Direkt
+11_Mayis,Tir,İstanbul,Manisa,1,22400,10858,Direkt
+12_Mayis,Tir,İstanbul,Manisa,1,22400,10858,Direkt
+13_Mayis,Tir,İstanbul,Manisa,1,22400,10858,Direkt
+14_Mayis,Tir,İstanbul,Manisa,1,22400,10858,Direkt
+15_Mayis,Tir,İstanbul,Manisa,1,22400,10858,Direkt
+15_Mayis,Kamyonet,İstanbul,Manisa,1,5600,10092,Direkt
+16_Mayis,Tir,İstanbul,Manisa,1,22400,10858,Direkt
+17_Mayis,Tir,İstanbul,Manisa,1,22400,10858,Direkt
+12_Mayis,Tir,İstanbul,Mardin,1,22400,38984,Direkt
+15_Mayis,Kamyon,İstanbul,Mardin,1,12000,30556,Direkt
+16_Mayis,Kamyonet,İstanbul,Mardin,1,5600,24394,Direkt
+17_Mayis,Kamyonet,İstanbul,Mardin,1,5600,24394,Direkt
+11_Mayis,Tir,İstanbul,Mersin,1,22400,28619,Direkt
+12_Mayis,Tir,İstanbul,Mersin,1,22400,28619,Direkt
+13_Mayis,Tir,İstanbul,Mersin,1,22400,28619,Direkt
+14_Mayis,Tir,İstanbul,Mersin,1,22400,28619,Direkt
+15_Mayis,Tir,İstanbul,Mersin,1,22400,28619,Direkt
+11_Mayis,Tir,İstanbul,Sivas,1,22400,29075,Direkt
+12_Mayis,Kamyon,İstanbul,Sivas,1,12000,22233,Direkt
+13_Mayis,Kamyon,İstanbul,Sivas,1,12000,22233,Direkt
+14_Mayis,Kamyon,İstanbul,Sivas,1,12000,22233,Direkt
+15_Mayis,Kamyon,İstanbul,Sivas,1,12000,22233,Direkt
+16_Mayis,Kamyonet,İstanbul,Sivas,1,5600,17260,Direkt
+17_Mayis,Kamyonet,İstanbul,Sivas,1,5600,17260,Direkt
+11_Mayis,Tir,İstanbul,Tekirdağ,1,22400,8601,Direkt
+12_Mayis,Tir,İstanbul,Tekirdağ,1,22400,8601,Direkt
+13_Mayis,Tir,İstanbul,Tekirdağ,1,22400,8601,Direkt
+14_Mayis,Tir,İstanbul,Tekirdağ,1,22400,8601,Direkt
+15_Mayis,Tir,İstanbul,Tekirdağ,1,22400,8601,Direkt
+16_Mayis,Tir,İstanbul,Tekirdağ,1,22400,8601,Direkt
+17_Mayis,Tir,İstanbul,Tekirdağ,1,22400,8601,Direkt
+11_Mayis,Tir,İstanbul,Yalova,2,44800,15212,Direkt
+12_Mayis,Tir,İstanbul,Yalova,2,44800,15212,Direkt
+13_Mayis,Tir,İstanbul,Yalova,2,44800,15212,Direkt
+14_Mayis,Tir,İstanbul,Yalova,2,44800,15212,Direkt
+15_Mayis,Tir,İstanbul,Yalova,2,44800,15212,Direkt
+16_Mayis,Tir,İstanbul,Yalova,2,44800,15212,Direkt
+17_Mayis,Tir,İstanbul,Yalova,2,44800,15212,Direkt
+11_Mayis,Kamyon,İstanbul,Zonguldak,1,12000,12699,Direkt
+17_Mayis,Kamyonet,İstanbul,Zonguldak,1,5600,9088,Direkt
+12_Mayis,Kamyon,İstanbul,Şanlıurfa,1,12000,27558,Direkt
+13_Mayis,Tir,İstanbul,Şanlıurfa,1,22400,35415,Direkt
+17_Mayis,Kamyonet,İstanbul,Şanlıurfa,1,5600,21825,Direkt
+11_Mayis,Kamyon,Şanlıurfa,Tekirdağ,1,12000,29934,Direkt
+14_Mayis,Kamyon,Balıkesir,Eskişehir,1,12000,12876,Uğrama (Bilecik)
+13_Mayis,Tir,Balıkesir,İstanbul,1,22400,16915,Uğrama (Yalova)
+14_Mayis,Kamyon,Balıkesir,İstanbul,1,12000,12019,Uğrama (Yalova)
+16_Mayis,Kamyonet,Balıkesir,İstanbul,1,5600,8505,Uğrama (Yalova)
+14_Mayis,Kamyon,Eskişehir,Tekirdağ,1,12000,14198,Uğrama (İstanbul)
+17_Mayis,Kamyonet,Eskişehir,Tekirdağ,1,5600,10372,Uğrama (İstanbul)
+11_Mayis,Tir,Eskişehir,Tekirdağ,1,22400,19106,Uğrama (Yalova)
+11_Mayis,Tir,Eskişehir,İstanbul,1,22400,16468,Uğrama (Yalova)
+12_Mayis,Tir,Eskişehir,İstanbul,1,22400,16468,Uğrama (Yalova)
+13_Mayis,Tir,Eskişehir,İstanbul,1,22400,16468,Uğrama (Yalova)
+14_Mayis,Kamyon,Eskişehir,İstanbul,1,12000,11643,Uğrama (Yalova)
+15_Mayis,Tir,Eskişehir,İstanbul,1,22400,16468,Uğrama (Yalova)
+16_Mayis,Kamyonet,Eskişehir,İstanbul,1,5600,8183,Uğrama (Yalova)
+11_Mayis,Tir,Kocaeli,Balıkesir,1,22400,18081,Uğrama (İstanbul)
+12_Mayis,Tir,Kocaeli,Balıkesir,1,22400,18081,Uğrama (İstanbul)
+14_Mayis,Tir,Kocaeli,Balıkesir,1,22400,18081,Uğrama (İstanbul)
+14_Mayis,Kamyon,Kocaeli,Balıkesir,1,12000,7552,Uğrama (İstanbul)
+15_Mayis,Kamyon,Kocaeli,Balıkesir,1,12000,7552,Uğrama (İstanbul)
+15_Mayis,Kamyon,Kocaeli,Balıkesir,1,12000,12998,Uğrama (İstanbul)
+11_Mayis,Kamyon,Kocaeli,Balıkesir,1,12000,7184,Uğrama (Yalova)
+11_Mayis,Kamyon,Kocaeli,Balıkesir,1,12000,12226,Uğrama (Yalova)
+12_Mayis,Tir,Kocaeli,Balıkesir,1,22400,17162,Uğrama (Yalova)
+12_Mayis,Kamyon,Kocaeli,Balıkesir,1,12000,7184,Uğrama (Yalova)
+13_Mayis,Tir,Kocaeli,Balıkesir,1,22400,17162,Uğrama (Yalova)
+13_Mayis,Kamyon,Kocaeli,Balıkesir,1,12000,7184,Uğrama (Yalova)
+17_Mayis,Kamyon,Kocaeli,Balıkesir,1,12000,7184,Uğrama (Yalova)
+11_Mayis,Tir,Kocaeli,Erzincan,1,22400,34164,Uğrama (Eskişehir)
+14_Mayis,Kamyon,Kocaeli,Erzincan,1,12000,26508,Uğrama (Eskişehir)
+11_Mayis,Kamyon,Kocaeli,Eskişehir,1,12000,10592,Uğrama (Bilecik)
+13_Mayis,Kamyon,Kocaeli,Eskişehir,1,12000,6406,Uğrama (Bilecik)
+13_Mayis,Kamyon,Kocaeli,Eskişehir,1,12000,10592,Uğrama (Bilecik)
+14_Mayis,Kamyon,Kocaeli,Eskişehir,1,12000,6406,Uğrama (Bilecik)
+14_Mayis,Kamyonet,Kocaeli,Eskişehir,1,5600,7282,Uğrama (Bilecik)
+15_Mayis,Kamyon,Kocaeli,Eskişehir,1,12000,6406,Uğrama (Bilecik)
+15_Mayis,Kamyonet,Kocaeli,Eskişehir,1,5600,7282,Uğrama (Bilecik)
+17_Mayis,Kamyon,Kocaeli,Eskişehir,1,12000,6406,Uğrama (Bilecik)
+11_Mayis,Tir,Kocaeli,Isparta,1,22400,20578,Uğrama (Eskişehir)
+12_Mayis,Kamyon,Kocaeli,Isparta,1,12000,15095,Uğrama (Eskişehir)
+13_Mayis,Kamyon,Kocaeli,Isparta,1,12000,15095,Uğrama (Eskişehir)
+11_Mayis,Tir,Kocaeli,Kütahya,1,22400,16510,Uğrama (Eskişehir)
+12_Mayis,Tir,Kocaeli,Kütahya,1,22400,16510,Uğrama (Eskişehir)
+13_Mayis,Tir,Kocaeli,Kütahya,1,22400,16510,Uğrama (Eskişehir)
+14_Mayis,Kamyon,Kocaeli,Kütahya,1,12000,11678,Uğrama (Eskişehir)
+15_Mayis,Kamyon,Kocaeli,Kütahya,1,12000,11678,Uğrama (Eskişehir)
+16_Mayis,Kamyonet,Kocaeli,Kütahya,1,5600,8213,Uğrama (Eskişehir)
+11_Mayis,Kamyon,Kocaeli,Manisa,1,12000,15116,Uğrama (Bilecik)
+14_Mayis,Tir,Kocaeli,Manisa,1,22400,20602,Uğrama (Bilecik)
+15_Mayis,Tir,Kocaeli,Manisa,1,22400,20602,Uğrama (Bilecik)
+16_Mayis,Tir,Kocaeli,Manisa,1,22400,20602,Uğrama (Bilecik)
+11_Mayis,Tir,Kocaeli,Manisa,1,22400,20127,Uğrama (Balıkesir)
+11_Mayis,Tir,Kocaeli,Manisa,2,44800,39986,Uğrama (Yalova)
+17_Mayis,Kamyon,Kocaeli,Manisa,1,12000,14604,Uğrama (Yalova)
+12_Mayis,Tir,Kocaeli,Mardin,1,22400,38179,Uğrama (Eskişehir)
+13_Mayis,Kamyon,Kocaeli,Mardin,1,12000,29881,Uğrama (Eskişehir)
+15_Mayis,Kamyon,Kocaeli,Mardin,1,12000,29881,Uğrama (Eskişehir)
+16_Mayis,Kamyonet,Kocaeli,Mardin,1,5600,23815,Uğrama (Eskişehir)
+11_Mayis,Tir,Kocaeli,Mersin,1,22400,27188,Uğrama (Eskişehir)
+13_Mayis,Kamyonet,Kocaeli,Mersin,1,5600,15902,Uğrama (Eskişehir)
+15_Mayis,Tir,Kocaeli,Mersin,1,22400,27188,Uğrama (Eskişehir)
+11_Mayis,Tir,Kocaeli,Tekirdağ,1,22400,9612,Uğrama (İstanbul)
+11_Mayis,Tir,Kocaeli,Tekirdağ,1,22400,16723,Uğrama (İstanbul)
+12_Mayis,Tir,Kocaeli,Tekirdağ,1,22400,9612,Uğrama (İstanbul)
+12_Mayis,Tir,Kocaeli,Tekirdağ,1,22400,16723,Uğrama (İstanbul)
+13_Mayis,Tir,Kocaeli,Tekirdağ,1,22400,9612,Uğrama (İstanbul)
+13_Mayis,Tir,Kocaeli,Tekirdağ,1,22400,16723,Uğrama (İstanbul)
+17_Mayis,Tir,Kocaeli,Tekirdağ,1,22400,9612,Uğrama (İstanbul)
+14_Mayis,Tir,Kocaeli,Tekirdağ,1,22400,9712,Uğrama (Yalova)
+14_Mayis,Tir,Kocaeli,Tekirdağ,1,22400,16916,Uğrama (Yalova)
+15_Mayis,Kamyon,Kocaeli,Tekirdağ,1,12000,12019,Uğrama (Yalova)
+11_Mayis,Kamyonet,Kocaeli,İstanbul,1,5600,6606,Uğrama (Yalova)
+17_Mayis,Tir,Kocaeli,İstanbul,1,22400,8340,Uğrama (Yalova)
+11_Mayis,Tir,Kocaeli,Şanlıurfa,1,22400,34402,Uğrama (Eskişehir)
+12_Mayis,Tir,Kocaeli,Şanlıurfa,1,22400,34402,Uğrama (Eskişehir)
+13_Mayis,Tir,Kocaeli,Şanlıurfa,1,22400,34402,Uğrama (Eskişehir)
+14_Mayis,Tir,Kocaeli,Şanlıurfa,1,22400,34402,Uğrama (Eskişehir)
+17_Mayis,Kamyon,Kocaeli,Şanlıurfa,1,12000,26708,Uğrama (Eskişehir)
+11_Mayis,Tir,Manisa,Bilecik,1,22400,19407,Uğrama (Balıkesir)
+12_Mayis,Tir,Manisa,Bilecik,1,22400,19407,Uğrama (Balıkesir)
+13_Mayis,Tir,Manisa,Bilecik,1,22400,19407,Uğrama (Balıkesir)
+15_Mayis,Kamyon,Manisa,Bilecik,1,12000,14112,Uğrama (Balıkesir)
+16_Mayis,Kamyonet,Manisa,Bilecik,1,5600,10299,Uğrama (Balıkesir)
+11_Mayis,Tir,Manisa,Eskişehir,1,22400,19170,Uğrama (Kütahya)
+12_Mayis,Tir,Manisa,Eskişehir,1,22400,19170,Uğrama (Kütahya)
+13_Mayis,Tir,Manisa,Eskişehir,1,22400,19170,Uğrama (Kütahya)
+14_Mayis,Tir,Manisa,Eskişehir,1,22400,19170,Uğrama (Kütahya)
+15_Mayis,Tir,Manisa,Eskişehir,1,22400,19170,Uğrama (Kütahya)
+16_Mayis,Kamyon,Manisa,Eskişehir,1,12000,13913,Uğrama (Kütahya)
+17_Mayis,Kamyon,Manisa,Eskişehir,1,12000,13913,Uğrama (Kütahya)
+11_Mayis,Kamyon,Manisa,Tekirdağ,1,12000,13352,Uğrama (Balıkesir)
+12_Mayis,Kamyon,Manisa,Tekirdağ,1,12000,13352,Uğrama (Balıkesir)
+13_Mayis,Tir,Manisa,Tekirdağ,1,22400,18503,Uğrama (Balıkesir)
+14_Mayis,Tir,Manisa,Tekirdağ,1,22400,18503,Uğrama (Balıkesir)
+15_Mayis,Tir,Manisa,Tekirdağ,1,22400,18503,Uğrama (Balıkesir)
+16_Mayis,Kamyon,Manisa,Tekirdağ,1,12000,13352,Uğrama (Balıkesir)
+17_Mayis,Kamyonet,Manisa,Tekirdağ,1,5600,9648,Uğrama (Balıkesir)
+11_Mayis,Tir,Manisa,Yalova,1,22400,18773,Uğrama (Balıkesir)
+15_Mayis,Tir,Manisa,Yalova,1,22400,18773,Uğrama (Balıkesir)
+17_Mayis,Kamyonet,Manisa,Yalova,1,5600,9843,Uğrama (Balıkesir)
+12_Mayis,Tir,Manisa,İstanbul,1,22400,19160,Uğrama (Balıkesir)
+14_Mayis,Tir,Manisa,İstanbul,1,22400,19160,Uğrama (Balıkesir)
+15_Mayis,Tir,Manisa,İstanbul,1,22400,19160,Uğrama (Balıkesir)
+17_Mayis,Kamyonet,Manisa,İstanbul,1,5600,10121,Uğrama (Balıkesir)
+12_Mayis,Kamyon,Manisa,İstanbul,1,12000,14397,Uğrama (Yalova)
+16_Mayis,Tir,Manisa,İstanbul,1,22400,19746,Uğrama (Yalova)
+11_Mayis,Kamyon,Tekirdağ,Bilecik,1,12000,12900,Uğrama (İstanbul)
+14_Mayis,Tir,Tekirdağ,Bilecik,1,22400,17964,Uğrama (İstanbul)
+11_Mayis,Tir,Tekirdağ,Bilecik,1,22400,17553,Uğrama (Yalova)
+12_Mayis,Tir,Tekirdağ,Bilecik,1,22400,17553,Uğrama (Yalova)
+16_Mayis,Kamyonet,Tekirdağ,Bilecik,1,5600,8964,Uğrama (Yalova)
+15_Mayis,Tir,Tekirdağ,Eskişehir,1,22400,18948,Uğrama (Bilecik)
+17_Mayis,Kamyonet,Tekirdağ,Eskişehir,1,5600,9969,Uğrama (Bilecik)
+11_Mayis,Tir,Tekirdağ,Karaman,1,22400,28831,Uğrama (İstanbul)
+12_Mayis,Kamyon,Tekirdağ,Karaman,1,12000,22028,Uğrama (İstanbul)
+13_Mayis,Kamyon,Tekirdağ,Karaman,1,12000,22028,Uğrama (İstanbul)
+14_Mayis,Kamyonet,Tekirdağ,Karaman,1,5600,17084,Uğrama (İstanbul)
+15_Mayis,Kamyonet,Tekirdağ,Karaman,1,5600,17084,Uğrama (İstanbul)
+11_Mayis,Tir,Tekirdağ,Kütahya,1,22400,19256,Uğrama (Yalova)
+12_Mayis,Kamyon,Tekirdağ,Kütahya,1,12000,13985,Uğrama (Yalova)
+14_Mayis,Tir,Tekirdağ,Kütahya,1,22400,19256,Uğrama (Yalova)
+15_Mayis,Kamyonet,Tekirdağ,Kütahya,1,5600,10190,Uğrama (Yalova)
+16_Mayis,Kamyonet,Tekirdağ,Kütahya,1,5600,10190,Uğrama (Yalova)
+12_Mayis,Tir,Tekirdağ,Manisa,1,22400,18503,Uğrama (Balıkesir)
+13_Mayis,Tir,Tekirdağ,Manisa,1,22400,18503,Uğrama (Balıkesir)
+14_Mayis,Tir,Tekirdağ,Manisa,1,22400,18503,Uğrama (Balıkesir)
+15_Mayis,Tir,Tekirdağ,Manisa,1,22400,18503,Uğrama (Balıkesir)
+16_Mayis,Kamyon,Tekirdağ,Manisa,1,12000,13352,Uğrama (Balıkesir)
+17_Mayis,Kamyonet,Tekirdağ,Manisa,1,5600,9648,Uğrama (Balıkesir)
+14_Mayis,Kamyon,Tekirdağ,Mersin,1,12000,23932,Uğrama (Eskişehir)
+16_Mayis,Kamyon,Tekirdağ,Mersin,1,12000,24436,Uğrama (İstanbul)
+17_Mayis,Kamyonet,Tekirdağ,Mersin,1,5600,19148,Uğrama (İstanbul)
+11_Mayis,Tir,Tekirdağ,Mersin,1,22400,31309,Uğrama (Yalova)
+12_Mayis,Tir,Tekirdağ,Mersin,1,22400,31309,Uğrama (Yalova)
+14_Mayis,Kamyon,Tekirdağ,Mersin,1,12000,24109,Uğrama (Yalova)
+15_Mayis,Tir,Tekirdağ,Mersin,1,22400,31309,Uğrama (Yalova)
+12_Mayis,Tir,Tekirdağ,Zonguldak,1,22400,20804,Uğrama (İstanbul)
+13_Mayis,Tir,Tekirdağ,Zonguldak,1,22400,20804,Uğrama (İstanbul)
+14_Mayis,Kamyon,Tekirdağ,Zonguldak,1,12000,15286,Uğrama (İstanbul)
+15_Mayis,Kamyon,Tekirdağ,Zonguldak,1,12000,15286,Uğrama (İstanbul)
+16_Mayis,Kamyonet,Tekirdağ,Zonguldak,1,5600,11305,Uğrama (İstanbul)
+11_Mayis,Tir,Tekirdağ,Şanlıurfa,1,22400,38494,Uğrama (İstanbul)
+12_Mayis,Kamyon,Tekirdağ,Şanlıurfa,1,12000,30145,Uğrama (İstanbul)
+14_Mayis,Tir,Tekirdağ,Şanlıurfa,1,22400,38494,Uğrama (İstanbul)
+16_Mayis,Kamyon,Tekirdağ,Şanlıurfa,1,12000,30145,Uğrama (İstanbul)
+11_Mayis,Tir,Yalova,Eskişehir,1,22400,15302,Uğrama (Bilecik)
+11_Mayis,Kamyon,Yalova,Eskişehir,1,12000,6441,Uğrama (Bilecik)
+12_Mayis,Tir,Yalova,Eskişehir,1,22400,15302,Uğrama (Bilecik)
+12_Mayis,Kamyon,Yalova,Eskişehir,1,12000,6441,Uğrama (Bilecik)
+13_Mayis,Tir,Yalova,Eskişehir,1,22400,15302,Uğrama (Bilecik)
+13_Mayis,Kamyon,Yalova,Eskişehir,1,12000,6441,Uğrama (Bilecik)
+14_Mayis,Tir,Yalova,Eskişehir,1,22400,15302,Uğrama (Bilecik)
+14_Mayis,Kamyon,Yalova,Eskişehir,1,12000,6441,Uğrama (Bilecik)
+15_Mayis,Kamyon,Yalova,Eskişehir,1,12000,6441,Uğrama (Bilecik)
+15_Mayis,Kamyon,Yalova,Eskişehir,1,12000,10664,Uğrama (Bilecik)
+17_Mayis,Kamyon,Yalova,Eskişehir,1,12000,6441,Uğrama (Bilecik)
+12_Mayis,Tir,Yalova,Manisa,1,22400,18773,Uğrama (Balıkesir)
+14_Mayis,Tir,Yalova,Manisa,1,22400,18773,Uğrama (Balıkesir)
+15_Mayis,Tir,Yalova,Manisa,1,22400,18773,Uğrama (Balıkesir)
+16_Mayis,Kamyon,Yalova,Manisa,1,12000,13579,Uğrama (Balıkesir)
+17_Mayis,Kamyonet,Yalova,Mersin,1,5600,16130,Uğrama (Eskişehir)
+11_Mayis,Tir,Yalova,Tekirdağ,1,22400,15944,Uğrama (İstanbul)
+11_Mayis,Kamyon,Yalova,Tekirdağ,1,12000,6697,Uğrama (İstanbul)
+12_Mayis,Tir,Yalova,Tekirdağ,1,22400,15944,Uğrama (İstanbul)
+12_Mayis,Kamyon,Yalova,Tekirdağ,1,12000,6697,Uğrama (İstanbul)
+13_Mayis,Tir,Yalova,Tekirdağ,1,22400,15944,Uğrama (İstanbul)
+13_Mayis,Kamyon,Yalova,Tekirdağ,1,12000,6697,Uğrama (İstanbul)
+17_Mayis,Kamyon,Yalova,Tekirdağ,1,12000,6697,Uğrama (İstanbul)
+11_Mayis,Tir,İstanbul,Balıkesir,1,22400,9712,Uğrama (Yalova)
+11_Mayis,Tir,İstanbul,Balıkesir,1,22400,16915,Uğrama (Yalova)
+13_Mayis,Kamyonet,İstanbul,Balıkesir,1,5600,8505,Uğrama (Yalova)
+15_Mayis,Kamyon,İstanbul,Balıkesir,1,12000,12019,Uğrama (Yalova)
+16_Mayis,Tir,İstanbul,Balıkesir,1,22400,9712,Uğrama (Yalova)
+16_Mayis,Kamyonet,İstanbul,Balıkesir,1,5600,8505,Uğrama (Yalova)
+17_Mayis,Tir,İstanbul,Balıkesir,1,22400,9712,Uğrama (Yalova)
+12_Mayis,Tir,İstanbul,Erzincan,1,22400,35610,Uğrama (Eskişehir)
+13_Mayis,Tir,İstanbul,Erzincan,1,22400,35610,Uğrama (Eskişehir)
+15_Mayis,Kamyon,İstanbul,Erzincan,1,12000,27722,Uğrama (Eskişehir)
+16_Mayis,Kamyonet,İstanbul,Erzincan,1,5600,21965,Uğrama (Eskişehir)
+12_Mayis,Tir,İstanbul,Eskişehir,1,22400,9463,Uğrama (Bilecik)
+12_Mayis,Kamyon,İstanbul,Eskişehir,1,12000,11618,Uğrama (Bilecik)
+13_Mayis,Tir,İstanbul,Eskişehir,1,22400,9463,Uğrama (Bilecik)
+13_Mayis,Kamyon,İstanbul,Eskişehir,1,12000,11618,Uğrama (Bilecik)
+15_Mayis,Tir,İstanbul,Eskişehir,1,22400,9463,Uğrama (Bilecik)
+15_Mayis,Kamyon,İstanbul,Eskişehir,1,12000,11618,Uğrama (Bilecik)
+16_Mayis,Tir,İstanbul,Eskişehir,1,22400,9463,Uğrama (Bilecik)
+16_Mayis,Kamyonet,İstanbul,Eskişehir,1,5600,8161,Uğrama (Bilecik)
+17_Mayis,Tir,İstanbul,Eskişehir,1,22400,9463,Uğrama (Bilecik)
+11_Mayis,Tir,İstanbul,Isparta,1,22400,22024,Uğrama (Eskişehir)
+14_Mayis,Kamyon,İstanbul,Isparta,1,12000,16310,Uğrama (Eskişehir)
+15_Mayis,Kamyon,İstanbul,Isparta,1,12000,16310,Uğrama (Eskişehir)
+16_Mayis,Kamyonet,İstanbul,Isparta,1,5600,12183,Uğrama (Eskişehir)
+13_Mayis,Tir,İstanbul,Kütahya,1,22400,16618,Uğrama (Yalova)
+15_Mayis,Kamyon,İstanbul,Kütahya,1,12000,11769,Uğrama (Yalova)
+17_Mayis,Kamyonet,İstanbul,Kütahya,1,5600,8291,Uğrama (Yalova)
+11_Mayis,Tir,İstanbul,Manisa,1,22400,10879,Uğrama (Balıkesir)
+11_Mayis,Tir,İstanbul,Manisa,1,22400,19160,Uğrama (Balıkesir)
+13_Mayis,Tir,İstanbul,Manisa,1,22400,19160,Uğrama (Balıkesir)
+17_Mayis,Tir,İstanbul,Manisa,1,22400,10879,Uğrama (Balıkesir)
+12_Mayis,Tir,İstanbul,Manisa,1,22400,11184,Uğrama (Yalova)
+12_Mayis,Tir,İstanbul,Manisa,1,22400,19746,Uğrama (Yalova)
+13_Mayis,Tir,İstanbul,Manisa,1,22400,11184,Uğrama (Yalova)
+13_Mayis,Tir,İstanbul,Manisa,1,22400,19746,Uğrama (Yalova)
+14_Mayis,Tir,İstanbul,Manisa,1,22400,11184,Uğrama (Yalova)
+14_Mayis,Tir,İstanbul,Manisa,1,22400,19746,Uğrama (Yalova)
+11_Mayis,Tir,İstanbul,Mardin,1,22400,39625,Uğrama (Eskişehir)
+13_Mayis,Tir,İstanbul,Mardin,1,22400,39625,Uğrama (Eskişehir)
+14_Mayis,Tir,İstanbul,Mardin,1,22400,39625,Uğrama (Eskişehir)
+11_Mayis,Kamyon,İstanbul,Mersin,1,12000,21863,Uğrama (Eskişehir)
+12_Mayis,Kamyon,İstanbul,Mersin,1,12000,21863,Uğrama (Eskişehir)
+15_Mayis,Kamyon,İstanbul,Şanlıurfa,1,12000,27922,Uğrama (Eskişehir)
+11_Mayis,Tir,Şanlıurfa,Manisa,1,22400,38514,Uğrama (Eskişehir)
+12_Mayis,Kamyon,Şanlıurfa,Manisa,1,12000,30162,Uğrama (Eskişehir)
+14_Mayis,Kamyon,Şanlıurfa,Manisa,1,12000,30162,Uğrama (Eskişehir)
+16_Mayis,Kamyonet,Şanlıurfa,Manisa,1,5600,24056,Uğrama (Eskişehir)
+12_Mayis,Kamyon,Şanlıurfa,Tekirdağ,1,12000,29991,Uğrama (Eskişehir)
+13_Mayis,Kamyon,Şanlıurfa,Tekirdağ,1,12000,29991,Uğrama (Eskişehir)
+15_Mayis,Kamyon,Şanlıurfa,Tekirdağ,1,12000,29991,Uğrama (Eskişehir)
+16_Mayis,Kamyonet,Şanlıurfa,Tekirdağ,1,5600,23910,Uğrama (Eskişehir)
