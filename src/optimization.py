@@ -341,31 +341,31 @@ for (a, c, b) in ugrama_rotalari:
         model.Add(ugrama_yuk_cb[(a, c, b, g)] + ugrama_yuk_ab[(a, c, b, g)] <= u_kap)
 
         # Teknofest Kural #1: Uğrama spot araçlarına %10 doluluk kuralı (İzole Edilmiş)
-        if g != gunler[-1]: # Eğer son günde değilsek.
-            # DÜZELTME 1: Araç bazlı net yükleri tutacağımız temiz bir liste açıyoruz
+        if g != gunler[-1]:
             u_tasinan_net_listesi = []
 
             for arac in arac_turleri:
                 kap = arac_parametreleri[arac]["kapasite_desi"]
-                u_tasinan_net_a = model.NewIntVar(0, max_spot * kap * 2, f'u_net_{a}_{c}_{b}_{g}_{arac}')
-                
-                # Yarattığımız değişkeni listeye ekliyoruz
-                u_tasinan_net_listesi.append(u_tasinan_net_a)
-                
-                # Fiziksel sınır: Bir aracın taşıyabileceği maksimum kümülatif yük
-                model.Add(u_tasinan_net_a <= ugrama_spot_y[(a, c, b, g, arac)] * kap * 2)
-                
-                # Araç türü bazında %10 doluluk kısıtı
-                model.Add(ugrama_spot_y[(a, c, b, g, arac)] * kap <= u_tasinan_net_a * 10)
 
-            # Global uğrama yüklerini, araç türü bazlı izole edilmiş net yüklere bağlama
+                # --- Spot ugrama: %10 doluluk kuralı uygulanır ---
+                u_spot_net_a = model.NewIntVar(0, max_spot * kap * 2, f'u_spot_net_{a}_{c}_{b}_{g}_{arac}')
+                u_tasinan_net_listesi.append(u_spot_net_a)
+                model.Add(u_spot_net_a <= ugrama_spot_y[(a, c, b, g, arac)] * kap * 2)
+                model.Add(ugrama_spot_y[(a, c, b, g, arac)] * kap <= u_spot_net_a * 10)
+
+                # --- Kiralık ugrama: %10 uygulanmaz (zorunlu kalkış, Teknofest Kural #3) ---
+                ugrama_hat = f"{a}-{b}"
+                max_kir = kiralik_stok_gunluk.get((ugrama_hat, arac), 0)
+                if max_kir > 0:
+                    u_kir_net_a = model.NewIntVar(0, max_kir * kap * 2, f'u_kir_net_{a}_{c}_{b}_{g}_{arac}')
+                    u_tasinan_net_listesi.append(u_kir_net_a)
+                    model.Add(u_kir_net_a <= ugrama_kiralik_y[(a, c, b, g, arac)] * kap * 2)
+
             toplam_ugrama_yuk = cp_model.LinearExpr.Sum([
                 ugrama_yuk_ac[(a, c, b, g)],
                 ugrama_yuk_cb[(a, c, b, g)],
                 ugrama_yuk_ab[(a, c, b, g)],
             ])
-            
-            # DÜZELTME 2: Hiçbir karmaşık index bulucu kullanmadan direkt listeyi topluyoruz
             model.Add(toplam_ugrama_yuk == cp_model.LinearExpr.Sum(u_tasinan_net_listesi))
 # ---------------------------------------------------------------
 # KISIT E — Teknofest: Son Gün Erteleme Yasağı

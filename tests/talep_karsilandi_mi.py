@@ -7,7 +7,7 @@ import numpy as np
 # =============================================================================
 BASE_DIR = Path(__file__).parent.parent
 PAYLOAD_CSV = BASE_DIR / "src" / "predict_model" / "ortools_payload.csv"
-SOLUTION_CSV = BASE_DIR / "results" / "example_solution.csv" 
+SOLUTION_CSV = BASE_DIR / "results" / "optimization_results.csv"
 
 print("🔍 TEKNOFEST Lojistik Pipeline Doğrulama Motoru Başlatıldı...\n")
 
@@ -38,7 +38,7 @@ if SOLUTION_CSV.exists():
     print(f"✓ Ahmet'in optimizasyon çıktı dosyası yüklendi: {SOLUTION_CSV}")
 else:
     print(f"⚠️ Uyarı: {SOLUTION_CSV} henüz üretilmemiş. Test amaçlı simüle ediliyor.")
-    df_solution = pd.DataFrame(columns=['date', 'source_tm', 'destination_tm', 'route', 'tasinan_desi'])
+    df_solution = pd.DataFrame(columns=['Tarih', 'Çıkış_TM', 'Varış_TM', 'Teslim_Edilen_Desi'])
 
 # =============================================================================
 # 4. ERAY'IN ÇEKİRDEK TEST FONKSİYONU: talep_karsilandi_mi
@@ -50,10 +50,10 @@ def talep_karsilandi_mi(cikis_tm, varis_tm, yedi_gun_toplam_talep):
     cikis_tm = cikis_tm.strip()
     varis_tm = varis_tm.strip()
     
-    filtre = (df_solution['source_tm'] == cikis_tm) & (df_solution['destination_tm'] == varis_tm)
+    filtre = (df_solution['Çıkış_TM'] == cikis_tm) & (df_solution['Varış_TM'] == varis_tm)
     df_hat_ozel = df_solution[filtre]
-    
-    yedi_gun_toplam_tasinan = int(df_hat_ozel['tasinan_desi'].sum())
+
+    yedi_gun_toplam_tasinan = int(df_hat_ozel['Teslim_Edilen_Desi'].sum())
     
     if yedi_gun_toplam_tasinan >= yedi_gun_toplam_talep:
         return True, yedi_gun_toplam_tasinan
