@@ -2,9 +2,11 @@ from pathlib import Path
 import pandas as pd
 from ortools.sat.python import cp_model
 import sys
-
+from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent.parent / "haversine"))
 from haversine import GetDistanceMatrixAsList, GetCenters
+
+
 
 # =============================================================================
 # 1. MODELİ BAŞLATMA VE VERİ ÇEKİMİ (BASELINE - SAF MODEL)
@@ -85,6 +87,9 @@ for h in hatlar:
 # =============================================================================
 # 3. KISITLAR (SADE VE NET)
 # =============================================================================
+
+kiralik_net_yuk_dict = {}
+spot_net_yuk_dict = {}
 for h in hatlar:
     for g in gunler:
         talep = talep_verisi.get((h, g), 0)
@@ -94,13 +99,25 @@ for h in hatlar:
             kiralik_x[(h, g, a)] * arac_parametreleri[a]["kapasite_desi"] for a in arac_turleri
         ])
         kiralik_tasinan_yuk = model.NewIntVar(0, 500000, f'kiralik_net_yuk_{h}_{g}')
+        kiralik_net_yuk_dict[(h, g)] = kiralik_tasinan_yuk # <-- SÖZLÜĞE ALDIK
         model.Add(kiralik_tasinan_yuk <= kiralik_aktif_kapasite)
+
+        # kiralik_tasinan_yuk_listesi = []
+        # for a in arac_turleri:
+        #     kap = arac_parametreleri[a]["kapasite_desi"]
+        #     kiralik_tasinan_yuk_a = model.NewIntVar(0, kiralik_stok_gunluk.get((h,a)) * kap, f'kiralik_net_yuk_{h}_{g}_{a}')
+        #     kiralik_net_yuk_dict[(h, g, a)] = kiralik_tasinan_yuk_a # <-- SÖZLÜĞE ALDIK
+        #     kiralik_tasinan_yuk_listesi.append(kiralik_tasinan_yuk_a)
+
+        #     # Sınır: Kasa limitini aşamaz
+        #     model.Add(tasinan_yuk_a <= kiralik_x[(h, g, a)] * kap)
 
         # 2. Spot Araç Kapasitesi, Yükü ve %10 Kuralı
         spot_tasinan_yuk_listesi = []
         for a in arac_turleri:
             kap = arac_parametreleri[a]["kapasite_desi"]
             tasinan_yuk_a = model.NewIntVar(0, max_spot * kap, f'spot_net_yuk_{h}_{g}_{a}')
+            spot_net_yuk_dict[(h, g, a)] = tasinan_yuk_a # <-- SÖZLÜĞE ALDIK
             spot_tasinan_yuk_listesi.append(tasinan_yuk_a)
 
             # Sınır: Kasa limitini aşamaz
@@ -112,7 +129,7 @@ for h in hatlar:
 
         # 3. KÜTLE DENGESİ: O günkü talep == Kiralık Taşıma + Spot Taşıma (Erteleme YOK)
         tasinan_toplam = cp_model.LinearExpr.Sum([kiralik_tasinan_yuk] + spot_tasinan_yuk_listesi)
-        model.Add(talep == tasinan_toplam)
+        model.Add(talep == tasinan_toplam) # burada modele aslında bugün bu hatta taşıyacağın toplam yük bu hattaki bugünkü talebe eşit olmak zorunda diyoruz. O yüzden kiralik ve spot karar değişkenleri dolduruluyor.
 
         # 4. Kiralık Araç Zimmet (Stok) Kısıtı
         for a in arac_turleri:
@@ -132,9 +149,11 @@ for h in hatlar:
         for a in arac_turleri:
             adet = kiralik_stok_gunluk.get((h, a), 0)
             if adet > 0:
-                gun_maliyet = adet * int(arac_parametreleri[a]["sabit_kira"] + dist * arac_parametreleri[a]["kiralik_km_maliyet"])
-                kiralik_sabit_toplam += gun_maliyet
-
+                p = arac_parametreleri[a]
+                kiralik_maliyet_katsayi = int(p["sabit_kira"] + dist * p["kiralik_km_maliyet"])
+                # # kiralik_x[h, g, a] * maliyet_katsayi ekle!
+                # maliyet_kalemleri.append(kiralik_x[(h, g, a)] * kiralik_maliyet_katsayi)
+                kiralik_sabit_toplam += kiralik_maliyet_katsayi * adet
         # Spot Araç Faturası (Optimizasyona Giren Kısım)
         for a in arac_turleri:
             p = arac_parametreleri[a]
@@ -152,7 +171,9 @@ solver.parameters.max_time_in_seconds = max_time_to_solve
 solver.parameters.num_search_workers = 4
 solver.parameters.log_search_progress = True
 
+
 status = solver.Solve(model)
+end_time = datetime.now()
 
 output_file = Path(__file__).parent.parent / "results" / "optimization_base_results.txt"
 output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -160,57 +181,75 @@ output_file.parent.mkdir(parents=True, exist_ok=True)
 with open(output_file, "w", encoding="utf-8") as f:
     if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
         durum = "OPTIMAL (Kusursuz)" if status == cp_model.OPTIMAL else "UYGUN (Süre Sınırı)"
-        baslik = f"={'=' * 80}\nBASE MODEL BAŞARILI — {durum}\n={'=' * 80}\n"
+        baslik = f"={'=' * 80}\nBASE MODEL BAŞARILI — {durum}\n MODEL HESAPLAMASI BİTİŞ TARİHİ: {end_time}\n={'=' * 80}\n"
         f.write(baslik + "\n")
         print(baslik)
 
         # Tablo Başlıkları
-        sutun_basliklari = "Tarih | Araç Türü | Hat | Kapasite (Desi) | Maliyet"
+        sutun_basliklari = "Tarih | Araç Türü | Hat | TAŞINAN NET DESİ | Maliyet"
         f.write(sutun_basliklari + "\n")
         f.write("-" * 80 + "\n")
         print(sutun_basliklari)
         print("-" * 80)
 
         spot_toplam_maliyet = 0
-
+        used_rented_count = 0
+        used_spot_count = 0
         for h in hatlar:
             dist = mesafe_verisi.get(h, 0)
             for g in gunler:
+                
+                # 1. O gün o hatta Kiralık araçlara düşen TOPLAM net yükü çek
+                k_yuk_kalan = solver.Value(kiralik_net_yuk_dict[(h, g)])
+
                 for a in arac_turleri:
-                    k_adet = solver.Value(kiralik_x[(h, g, a)])
-                    s_adet = solver.Value(spot_y[(h, g, a)])
                     p = arac_parametreleri[a]
                     kapasite = p["kapasite_desi"]
 
-                    # Kiralık Araçları Tek Tek Yazdır (Her araç için 1 satır)
+                    # --- KİRALIK ARAÇLARIN PAYLAŞTIRILMASI ---
+                    k_adet = solver.Value(kiralik_x[(h, g, a)])
+                    used_rented_count += k_adet
                     for i in range(k_adet):
+                        # Araca ya tam kapasite doldur, ya da elinde kalan son yükü ver
+                        yuk_bu_araca = min(k_yuk_kalan, kapasite)
+                        k_yuk_kalan -= yuk_bu_araca 
+                        
                         maliyet = int(p["sabit_kira"] + dist * p["kiralik_km_maliyet"])
-                        metin = f"{g} | Kiralık {a} | {h} | {kapasite} Desi | {maliyet} TL\n"
+                        metin = f"{g} | Kiralık {a} | {h} | {yuk_bu_araca} Desi | {maliyet} TL\n"
                         f.write(metin)
                         print(metin.strip())
 
-                    # Spot Araçları Tek Tek Yazdır (Her araç için 1 satır)
+                    # --- SPOT ARAÇLARIN PAYLAŞTIRILMASI ---
+                    s_adet = solver.Value(spot_y[(h, g, a)])
+                    used_spot_count += s_adet
+                    # O araç tipindeki spotlara düşen TOPLAM net yük
+                    s_yuk_kalan = solver.Value(spot_net_yuk_dict[(h, g, a)]) 
+
                     for i in range(s_adet):
+                        # Araca ya tam kapasite doldur, ya da elinde kalan son yükü ver
+                        yuk_bu_araca = min(s_yuk_kalan, kapasite)
+                        s_yuk_kalan -= yuk_bu_araca
+                        
                         maliyet = int(p["spot_sabit_maliyet"] + dist * p["spot_km_maliyet"])
                         spot_toplam_maliyet += maliyet
-                        metin = f"{g} | Spot {a} | {h} | {kapasite} Desi | {maliyet} TL\n"
+                        metin = f"{g} | Spot {a} | {h} | {yuk_bu_araca} Desi | {maliyet} TL\n"
                         f.write(metin)
                         print(metin.strip())
 
         genel_toplam = kiralik_sabit_toplam + spot_toplam_maliyet
 
         ozet = f"""
-{'=' * 80}
-BASE MODEL (Uğramasız & Ertelemesiz) İSTATİSTİKLERİ
-{'=' * 80}
-  Kiralık Araç Sabit Maliyeti : {kiralik_sabit_toplam:>15,.0f} TL
-  Spot Araç Maliyeti (Direkt) : {spot_toplam_maliyet:>15,.0f} TL
-{'─' * 80}
-  TOPLAM MALİYET              : {genel_toplam:>15,.0f} TL
-{'=' * 80}
-  Çözücü Süre                 : {solver.WallTime():>15.2f} sn
-{'=' * 80}
-"""
+            {'=' * 80}
+            BASE MODEL (Uğramasız & Ertelemesiz) İSTATİSTİKLERİ
+            {'=' * 80}
+              Kiralık Araç Sabit Maliyeti : {kiralik_sabit_toplam:>15,.0f} TL
+              Spot Araç Maliyeti (Direkt) : {spot_toplam_maliyet:>15,.0f} TL
+              Kullanılan Kiralik Araç Sayısı: {used_rented_count}
+              Kullanılan Spot Araç Sayısı: {used_spot_count}
+            {'─' * 80}
+              TOPLAM MALİYET              : {genel_toplam:>15,.0f} TL
+            {'=' * 80}
+            """
         f.write(ozet)
         print(ozet)
     else:
