@@ -518,6 +518,7 @@ with open(output_file, "w", encoding="utf-8") as f:
             tm1, tm2 = parcalar
 
             for g in gunler:
+                
                 for a in arac_turleri:
                     # Kiralık araçlar: solver'dan gerçek değeri al
                     k_adet = solver.Value(kiralik_x[(h, g, a)])
@@ -540,6 +541,7 @@ with open(output_file, "w", encoding="utf-8") as f:
                                 "Araç_Tipi": f"Kiralık {a}",
                                 "Çıkış_TM": tm1,
                                 "Varış_TM": tm2,
+                                "Araç_Sayısı": 1,
                                 "Teslim_Edilen_Desi": kapasite,
                                 "Maliyet_TL": araç_maliyet,
                                 "Rota_Tipi": "Direkt"
