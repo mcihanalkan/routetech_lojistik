@@ -78,6 +78,20 @@ def run(
             "decisions_csv": PROJECT_ROOT / "results" / "optimization_decisions.csv",
         }
 
+        print("\n" + "=" * 80)
+        print("DOĞRULAMA TESTLERİ BAŞLATILIYOR")
+        print("=" * 80)
+        subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "tests" / "talep_karsilandi_mi.py")],
+            cwd=str(PROJECT_ROOT),
+            env=env,
+        )
+        subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "tests" / "kiralık_arac_limit_asimi.py")],
+            cwd=str(PROJECT_ROOT),
+            env=env,
+        )
+
     return {
         "forecast": forecast,
         "route_distances": route_distances,

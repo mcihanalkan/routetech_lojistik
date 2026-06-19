@@ -68,7 +68,7 @@ arac_turleri = ["Tir", "Kamyon", "Hafif Kam", "Kamyonet"]
 distances_2d = GetDistanceMatrixAsList()
 
 print(f"centers: {centers}")
-print(f"distanced_2d: {distances_2d}")
+print(f"distances_2d: {distances_2d}")
 
 tm_index = {tm: idx for idx, tm in enumerate(centers)} # Key = tm -> value = index
 center_matrix_df = pd.DataFrame(distances_2d, index=centers, columns=centers)
@@ -341,31 +341,31 @@ for (a, c, b) in ugrama_rotalari:
         model.Add(ugrama_yuk_cb[(a, c, b, g)] + ugrama_yuk_ab[(a, c, b, g)] <= u_kap)
 
         # Teknofest Kural #1: Uğrama spot araçlarına %10 doluluk kuralı (İzole Edilmiş)
-        if g != gunler[-1]: # Eğer son günde değilsek.
-            # DÜZELTME 1: Araç bazlı net yükleri tutacağımız temiz bir liste açıyoruz
+        if g != gunler[-1]:
             u_tasinan_net_listesi = []
 
             for arac in arac_turleri:
                 kap = arac_parametreleri[arac]["kapasite_desi"]
-                u_tasinan_net_a = model.NewIntVar(0, max_spot * kap * 2, f'u_net_{a}_{c}_{b}_{g}_{arac}')
-                
-                # Yarattığımız değişkeni listeye ekliyoruz
-                u_tasinan_net_listesi.append(u_tasinan_net_a)
-                
-                # Fiziksel sınır: Bir aracın taşıyabileceği maksimum kümülatif yük
-                model.Add(u_tasinan_net_a <= ugrama_spot_y[(a, c, b, g, arac)] * kap * 2)
-                
-                # Araç türü bazında %10 doluluk kısıtı
-                model.Add(ugrama_spot_y[(a, c, b, g, arac)] * kap <= u_tasinan_net_a * 10)
 
-            # Global uğrama yüklerini, araç türü bazlı izole edilmiş net yüklere bağlama
+                # --- Spot ugrama: %10 doluluk kuralı uygulanır ---
+                u_spot_net_a = model.NewIntVar(0, max_spot * kap * 2, f'u_spot_net_{a}_{c}_{b}_{g}_{arac}')
+                u_tasinan_net_listesi.append(u_spot_net_a)
+                model.Add(u_spot_net_a <= ugrama_spot_y[(a, c, b, g, arac)] * kap * 2)
+                model.Add(ugrama_spot_y[(a, c, b, g, arac)] * kap <= u_spot_net_a * 10)
+
+                # --- Kiralık ugrama: %10 uygulanmaz (zorunlu kalkış, Teknofest Kural #3) ---
+                ugrama_hat = f"{a}-{b}"
+                max_kir = kiralik_stok_gunluk.get((ugrama_hat, arac), 0)
+                if max_kir > 0:
+                    u_kir_net_a = model.NewIntVar(0, max_kir * kap * 2, f'u_kir_net_{a}_{c}_{b}_{g}_{arac}')
+                    u_tasinan_net_listesi.append(u_kir_net_a)
+                    model.Add(u_kir_net_a <= ugrama_kiralik_y[(a, c, b, g, arac)] * kap * 2)
+
             toplam_ugrama_yuk = cp_model.LinearExpr.Sum([
                 ugrama_yuk_ac[(a, c, b, g)],
                 ugrama_yuk_cb[(a, c, b, g)],
                 ugrama_yuk_ab[(a, c, b, g)],
             ])
-            
-            # DÜZELTME 2: Hiçbir karmaşık index bulucu kullanmadan direkt listeyi topluyoruz
             model.Add(toplam_ugrama_yuk == cp_model.LinearExpr.Sum(u_tasinan_net_listesi))
 # ---------------------------------------------------------------
 # KISIT E — Teknofest: Son Gün Erteleme Yasağı
@@ -417,19 +417,14 @@ for h in hatlar:
             adet = kiralik_stok_gunluk.get((h, a), 0)
             if adet > 0:
                 p = arac_parametreleri[a]
-                gun_maliyet = adet * int(p["sabit_kira"])
+                gun_maliyet = adet * int(p["sabit_kira"] + dist * p["kiralik_km_maliyet"])
                 kiralik_sabit_toplam += gun_maliyet
-        #         maliyet_kalemleri.append(kiralik_x[(h,g,a)] * kiralik_gunluk_birim_maliyet)
 
         # --- Spot araç değişken maliyeti ---
         for a in arac_turleri:
             p = arac_parametreleri[a]
-            # FIX #5: Maliyet katsayısı tamsayı (CP-SAT integer gerektirir)
             spot_maliyet_katsayi = int(p["spot_sabit_maliyet"] + dist * p["spot_km_maliyet"])
             maliyet_kalemleri.append(spot_y[(h, g, a)] * spot_maliyet_katsayi)
-
-            # kiralik_km_maliyet = int(dist * p["kiralik_km_maliyet"])
-            # maliyet_kalemleri.append(kiralik_x[(h, g, a)] * kiralik_km_maliyet)
 
         # --- SLA Gecikme Cezası ---
         # FIX #5: Ceza ağırlığı spot araçlarla rekabetçi seviyede
@@ -497,6 +492,7 @@ with open(output_file, "w", encoding="utf-8") as f:
         toplam_ertelenen_desi = 0
         spot_toplam_maliyet = 0
         ugrama_toplam_maliyet = 0
+        kiralik_ugrama_ekstra_km_toplam = 0
 
         # --- Direkt Rota Sonuçları ---
         print("=" * 80)
@@ -602,11 +598,14 @@ with open(output_file, "w", encoding="utf-8") as f:
                     
                     if u_k_adet > 0:
                         araç_maliyet = int(p["sabit_kira"] + dist_toplam * p["kiralik_km_maliyet"])
+                        dist_direkt_ab = distances_2d[tm_index[a]][tm_index[b]]
+                        ekstra_km_maliyet = int((dist_toplam - dist_direkt_ab) * p["kiralik_km_maliyet"])
                         for i in range(u_k_adet):
+                            kiralik_ugrama_ekstra_km_toplam += ekstra_km_maliyet
                             metin = f"{g} | Kiralık {arac} | {a}→{c}→{b} | {kapasite} | {araç_maliyet}\n"
                             f.write(metin)
                             print(metin.strip())
-                            
+
                             csv_records.append({
                                 "Tarih": g,
                                 "Araç_Tipi": f"Kiralık {arac}",
@@ -642,7 +641,7 @@ with open(output_file, "w", encoding="utf-8") as f:
 
         # --- Teknofest Kural #5: Toplam Maliyet Özeti ---
         sla_ceza_toplam = int(toplam_ertelenen_desi * SLA_GECIKME_CEZA_TL_PER_DESI)
-        degisken_toplam = spot_toplam_maliyet + ugrama_toplam_maliyet + sla_ceza_toplam
+        degisken_toplam = spot_toplam_maliyet + ugrama_toplam_maliyet + kiralik_ugrama_ekstra_km_toplam + sla_ceza_toplam
         genel_toplam = kiralik_sabit_toplam + degisken_toplam
 
         ozet = f"""
@@ -650,6 +649,7 @@ with open(output_file, "w", encoding="utf-8") as f:
             ÖZET İSTATİSTİKLER (Teknofest Kural #5 — Toplam Maliyet)
             {'=' * 80}
               Kiralık Araç Sabit Maliyeti : {kiralik_sabit_toplam:>15,.0f} TL  (her zaman ödenir)
+              Kiralık Uğrama Ekstra KM    : {kiralik_ugrama_ekstra_km_toplam:>15,.0f} TL
               Spot Araç Maliyeti (Direkt) : {spot_toplam_maliyet:>15,.0f} TL
               Spot Araç Maliyeti (Uğrama) : {ugrama_toplam_maliyet:>15,.0f} TL
               SLA Gecikme Cezası          : {sla_ceza_toplam:>15,.0f} TL
