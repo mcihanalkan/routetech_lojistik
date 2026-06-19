@@ -47,7 +47,7 @@ if payload_csv.exists():
         gun_adi = f"{tarih_obj.day:02d}_Mayis"
 
         gecici_gunler.add(gun_adi)
-        talep_verisi[(hat, gun_adi)] = int(recommended) # <--- Zeka buraya entegre oldu!
+        talep_verisi[(hat, gun_adi)] = round(recommended) # <--- Zeka buraya entegre oldu!
 
     # FIX #7: set() yerine dict.fromkeys() — sıra korunur, tekrarlar temizlenir
     hatlar = list(dict.fromkeys(hatlar_sirali))
@@ -460,6 +460,7 @@ for (a, c, b) in ugrama_rotalari:
 
 model.Minimize(cp_model.LinearExpr.Sum(maliyet_kalemleri))
 
+
 # =============================================================================
 # 10. ÇÖZÜCÜ PARAMETRELERI
 # =============================================================================
@@ -616,7 +617,7 @@ with open(output_file, "w", encoding="utf-8") as f:
                                 "Maliyet_TL": araç_maliyet,
                                 "Rota_Tipi": f"Uğrama ({c})"
                             })
-                    
+
                     # Spot uğrama — her araç için ayrı satır
                     u_s_adet = solver.Value(ugrama_spot_y[(a, c, b, g, arac)])
                     u_spot_count += u_s_adet
@@ -626,7 +627,7 @@ with open(output_file, "w", encoding="utf-8") as f:
                             metin = f"{g} | Spot {arac} | {a}→{c}→{b} | {kapasite} | {spot_araç_maliyet}\n"
                             f.write(metin)
                             print(metin.strip())
-                            
+
                             ugrama_toplam_maliyet += spot_araç_maliyet
                             csv_records.append({
                                 "Tarih": g,
@@ -638,6 +639,36 @@ with open(output_file, "w", encoding="utf-8") as f:
                                 "Maliyet_TL": spot_araç_maliyet,
                                 "Rota_Tipi": f"Uğrama ({c})"
                             })
+
+        # --- Uğrama Yük Dağılımı: Gerçek teslimatları alt-rotalara ata ---
+        for (a, c, b) in ugrama_rotalari:
+            for g in gunler:
+                yuk_ac = solver.Value(ugrama_yuk_ac[(a, c, b, g)])
+                yuk_cb = solver.Value(ugrama_yuk_cb[(a, c, b, g)])
+                yuk_ab = solver.Value(ugrama_yuk_ab[(a, c, b, g)])
+
+                if yuk_ac > 0:
+                    csv_records.append({
+                        "Tarih": g,
+                        "Araç_Tipi": "Uğrama Teslimat",
+                        "Çıkış_TM": a,
+                        "Varış_TM": c,
+                        "Araç_Sayısı": 0,
+                        "Teslim_Edilen_Desi": yuk_ac,
+                        "Maliyet_TL": 0,
+                        "Rota_Tipi": f"Uğrama Katkısı ({a}→{c}→{b})"
+                    })
+                if yuk_cb > 0:
+                    csv_records.append({
+                        "Tarih": g,
+                        "Araç_Tipi": "Uğrama Teslimat",
+                        "Çıkış_TM": c,
+                        "Varış_TM": b,
+                        "Araç_Sayısı": 0,
+                        "Teslim_Edilen_Desi": yuk_cb,
+                        "Maliyet_TL": 0,
+                        "Rota_Tipi": f"Uğrama Katkısı ({a}→{c}→{b})"
+                    })
 
         # --- Teknofest Kural #5: Toplam Maliyet Özeti ---
         sla_ceza_toplam = int(toplam_ertelenen_desi * SLA_GECIKME_CEZA_TL_PER_DESI)
