@@ -22,13 +22,13 @@ def load_data():
 
 def extract_ugrama_info(rota_tipi):
     """'Uğrama (Eskişehir)' formatından şehri güvenli şekilde çeker."""
-    if pd.isna(rota_tipi): return None
+    if pd.isna(rota_tipi) or str(rota_tipi).strip() == "nan": return None
     match = re.search(r'\((.*?)\)', str(rota_tipi))
     return match.group(1).strip() if match else None
 
 def run_ultimate_testing():
     print("=" * 95)
-    print("🏆 TEKNOFEST DOĞRULAMA SİSTEMİ v2.4 - NİHAİ FORMAT UYUMLU TEST")
+    print("🏆 TEKNOFEST DOĞRULAMA SİSTEMİ v2.5 - NİHAİ FORMAT UYUMLU TEST")
     print("=" * 95)
 
     data = load_data()
@@ -41,8 +41,13 @@ def run_ultimate_testing():
         print("❌ HATA: Gerekli veri dosyaları bulunamadı! Testler iptal edildi.")
         return
 
-    # Sütun isimlerindeki olası boşlukları temizleyelim (Güvenlik için)
+    # Sütun isimlerindeki olası boşlukları temizleyelim
     df_results.columns = df_results.columns.str.strip()
+
+    # 🚨 KRİTİK DÜZELTME: Boş satırları (NaN) temizle ve veri tipini zorla metin (string) yap
+    df_results = df_results.dropna(subset=['Araç_Tipi'])
+    df_results['Araç_Tipi'] = df_results['Araç_Tipi'].astype(str)
+    df_results['Rota_Tipi'] = df_results['Rota_Tipi'].astype(str)
 
     # 1. Altyapı Hazırlıkları
     centers = GetCenters()
@@ -98,10 +103,9 @@ def run_ultimate_testing():
 
         if p is None: continue
 
-        if "Uğrama" in str(rota_tipi):
+        if "Uğrama" in rota_tipi:
             c_center = extract_ugrama_info(rota_tipi)
             if c_center and c_center in tm_index and cikis in tm_index and varis in tm_index:
-                # Kocaeli -> Eskişehir -> Kütahya gibi rotaların kümülatif mesafesi
                 dist = distances_2d[tm_index[cikis]][tm_index[c_center]] + distances_2d[tm_index[c_center]][tm_index[varis]]
                 if not is_spot:
                     dist_direkt = distances_2d[tm_index[cikis]][tm_index[varis]]
@@ -111,11 +115,11 @@ def run_ultimate_testing():
                         if abs(maliyet - beklenen_alt) <= 10:
                             beklenen = beklenen_alt
                         else:
-                            failed_logs.append(f"[Maliyet Hatası] Satır {idx}: Uğrama Kiralık maliyeti uyuşmuyor! Çıktı: {maliyet}, Beklenen: {beklenen}")
+                            failed_logs.append(f"[Maliyet Hatası] Satır {idx}: Uğrama Kiralık maliyeti uyuşmuyor! Çıktı: {maliyet}, Beklenen: {beklenen} veya {beklenen_alt}")
                     toplam_beklenen_maliyet += beklenen
                     continue
             else:
-                dist = 0 # Güvenlik için
+                dist = 0 
         else:
             if cikis in tm_index and varis in tm_index:
                 dist = distances_2d[tm_index[cikis]][tm_index[varis]]
@@ -125,11 +129,11 @@ def run_ultimate_testing():
         beklenen = int(p["spot_sabit_maliyet"] + dist * p["spot_km_maliyet"]) if is_spot else int(p["sabit_kira"] + dist * p["kiralik_km_maliyet"])
         toplam_beklenen_maliyet += beklenen
         
-        if abs(maliyet - beklenen) > 10:  # Yuvarlama farklılıklarına karşı 10 TL esneklik
+        if abs(maliyet - beklenen) > 10:  
             failed_logs.append(f"[Maliyet Hatası] Satır {idx}: {arac_tipi_ham} ({cikis}-{varis}) | Çıktı: {maliyet} TL, Beklenen: {beklenen} TL")
 
     # =========================================================================
-    # KISIM 2: AĞ AKIŞI VE KAPASİTE YETERLİLİĞİ (DÜZELTİLMİŞ UĞRAMA MANTIĞI)
+    # KISIM 2: AĞ AKIŞI VE KAPASİTE YETERLİLİĞİ
     # =========================================================================
     print("🔄 Kısım 2: Ağ Akışı, Multi-Stop Feasibility ve Son Gün Denetimi...")
 
@@ -159,7 +163,6 @@ def run_ultimate_testing():
                 u_desi = u_row['Teslim_Edilen_Desi']
 
                 if (u_src == src_tm and u_mid == dst_tm) or (u_mid == src_tm and u_dst == dst_tm) or (u_src == src_tm and u_dst == dst_tm):
-                    # Kargo şişmesini önleyen kritik mantık: Sadece kalan ihtiyaç kadarını ekle!
                     kalan_ihtiyac = max(0, biriken_talep - (direkt_tasinan + ugrama_katkisi))
                     ugrama_katkisi += min(u_desi, kalan_ihtiyac)
 
