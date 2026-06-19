@@ -527,18 +527,19 @@ with open(output_file, "w", encoding="utf-8") as f:
                 
                 for a in arac_turleri:
                     # Kiralık araçlar: solver'dan gerçek değeri al
-                    k_adet = solver.Value(kiralik_x[(h, g, a)])
-                    s_adet = solver.Value(spot_y[(h, g, a)])
-                    d_rented_count += k_adet
+                    k_adet = solver.Value(kiralik_x[(h, g, a)]) # O gün o hatta o arac türünde bu kadar direkt kiralık araç kullanılmış
+                    s_adet = solver.Value(spot_y[(h, g, a)]) # O gün o hatta o arac türünde bu kadar direkt spot araç kullanılmış
+                    d_rented_count += k_adet 
                     d_spot_count += s_adet
                     p = arac_parametreleri[a]
                     kapasite = p["kapasite_desi"]
 
                     # Kiralık araçlar — her araç için ayrı satır
                     if k_adet > 0:
-                        araç_maliyet = int(p["sabit_kira"] + dist * p["kiralik_km_maliyet"])
+                        arac_maliyet = int(p["sabit_kira"] + dist * p["kiralik_km_maliyet"])
                         for i in range(k_adet):
-                            metin = f"{g} | Kiralık {a} | {h} | {kapasite} | {araç_maliyet}\n"
+                            metin = f"{g} | Kiralık {a} | {h} | {kapasite} | {arac_maliyet}\n" # HATA: taşıdığı desi kısmına aracın kapasitesi yazılmış. Araç %100 dolu olmak zorunda değil! Testlerde hata çıkar burada.
+                            
                             f.write(metin)
                             print(metin.strip())
 
@@ -547,9 +548,9 @@ with open(output_file, "w", encoding="utf-8") as f:
                                 "Araç_Tipi": f"Kiralık {a}",
                                 "Çıkış_TM": tm1,
                                 "Varış_TM": tm2,
-                                "Araç_Sayısı": 1,
+                                "Araç_Sayısı": 1, # Gereksiz.
                                 "Teslim_Edilen_Desi": kapasite,
-                                "Maliyet_TL": araç_maliyet,
+                                "Maliyet_TL": arac_maliyet,
                                 "Rota_Tipi": "Direkt"
                             })
                     
@@ -606,12 +607,12 @@ with open(output_file, "w", encoding="utf-8") as f:
                     u_rented_count += u_k_adet
                     
                     if u_k_adet > 0:
-                        araç_maliyet = int(p["sabit_kira"] + dist_toplam * p["kiralik_km_maliyet"])
+                        arac_maliyet = int(p["sabit_kira"] + dist_toplam * p["kiralik_km_maliyet"])
                         dist_direkt_ab = distances_2d[tm_index[a]][tm_index[b]]
                         ekstra_km_maliyet = int((dist_toplam - dist_direkt_ab) * p["kiralik_km_maliyet"])
                         for i in range(u_k_adet):
                             kiralik_ugrama_ekstra_km_toplam += ekstra_km_maliyet
-                            metin = f"{g} | Kiralık {arac} | {a}→{c}→{b} | {kapasite} | {araç_maliyet}\n"
+                            metin = f"{g} | Kiralık {arac} | {a}→{c}→{b} | {kapasite} | {arac_maliyet}\n"
                             f.write(metin)
                             print(metin.strip())
 
@@ -622,7 +623,7 @@ with open(output_file, "w", encoding="utf-8") as f:
                                 "Varış_TM": b,
                                 "Araç_Sayısı": 1,
                                 "Teslim_Edilen_Desi": kapasite,
-                                "Maliyet_TL": araç_maliyet,
+                                "Maliyet_TL": arac_maliyet,
                                 "Rota_Tipi": f"Uğrama ({c})"
                             })
                     
