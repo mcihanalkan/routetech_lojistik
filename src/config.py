@@ -40,11 +40,10 @@ COST_COLUMNS = {
 }
 
 
-# Dosya yolları
-PAYLOAD_CSV = Path(__file__).parent / "src" / "predict_model" / "ortools_payload.csv"
-RENTED_STOKS_CSV = Path(__file__).parent / "data" / "static_datas" / "rented_stoks.csv"
-CAR_PARAMS_CSV = Path(__file__).parent / "data" / "static_datas" / "car_parameters.csv"
-OUTPUT_DIR = Path(__file__).parent / "results"
+# Dosya yolları (PROJECT_ROOT'a göre)
+PAYLOAD_CSV = PROJECT_ROOT / "src" / "predict_model" / "ortools_payload.csv"
+RENTED_STOKS_CSV = PROJECT_ROOT / "data" / "static_datas" / "rented_stoks.csv"
+CAR_PARAMS_CSV = PROJECT_ROOT / "data" / "static_datas" / "car_parameters.csv"
 
 # Model parametreleri
 MAX_SPOT = 500

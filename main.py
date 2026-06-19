@@ -17,7 +17,7 @@ def run(
     forecast_json: Path | None = None,
     skip_predict: bool = False,
     skip_optimization: bool = False,
-    max_time_seconds: float = 120.0,
+    max_time_seconds: float = 300.0,
 ) -> dict:
     raw = load_raw_data()
 
@@ -66,7 +66,7 @@ def run(
         env["PYTHONUTF8"] = "1"
         env["ROUTETECH_OPTIMIZATION_INPUT"] = str(paths["optimization_input_json"])
         env["ROUTETECH_MAX_TIME_SECONDS"] = str(max_time_seconds)
-        env["ROUTETECH_LOG_SEARCH_PROGRESS"] = "0"
+        env["ROUTETECH_LOG_SEARCH_PROGRESS"] = "1"
         subprocess.run(
             [sys.executable, str(PROJECT_ROOT / "src" / "optimization.py")],
             cwd=str(PROJECT_ROOT),
@@ -88,6 +88,11 @@ def run(
         )
         subprocess.run(
             [sys.executable, str(PROJECT_ROOT / "tests" / "kiralık_arac_limit_asimi.py")],
+            cwd=str(PROJECT_ROOT),
+            env=env,
+        )
+        subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "tests" / "test_optimize.py")],
             cwd=str(PROJECT_ROOT),
             env=env,
         )
@@ -117,7 +122,7 @@ def main() -> None:
     parser.add_argument(
         "--max-time-seconds",
         type=float,
-        default=120.0,
+        default=300.0,
         help="Maximum OR-Tools solve time in seconds",
     )
     args = parser.parse_args()

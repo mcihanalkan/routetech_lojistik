@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import pandas as pd
 from ortools.sat.python import cp_model
 import sys
@@ -10,6 +11,10 @@ from haversine import GetDistanceMatrixAsList, GetCenters, is_city_between
 # 1. MODELİ BAŞLATMA
 # =============================================================================
 model = cp_model.CpModel()
+
+# main.py üzerinden gelen ortam değişkenleri (varsa kullan, yoksa varsayılan)
+ENV_MAX_TIME = float(os.environ.get("ROUTETECH_MAX_TIME_SECONDS", "300"))
+ENV_LOG_PROGRESS = os.environ.get("ROUTETECH_LOG_SEARCH_PROGRESS", "1") == "1"
 
 # =============================================================================
 # 2. INPUT VERİLERİ
@@ -340,33 +345,35 @@ for (a, c, b) in ugrama_rotalari:
         # C→B segmentinde: cb yükü + ab yükü
         model.Add(ugrama_yuk_cb[(a, c, b, g)] + ugrama_yuk_ab[(a, c, b, g)] <= u_kap)
 
-        # Teknofest Kural #1: Uğrama spot araçlarına %10 doluluk kuralı (İzole Edilmiş)
-        if g != gunler[-1]:
-            u_tasinan_net_listesi = []
+        # Uğrama yük-araç bağlantısı (tüm günler için geçerli)
+        u_tasinan_net_listesi = []
 
-            for arac in arac_turleri:
-                kap = arac_parametreleri[arac]["kapasite_desi"]
+        for arac in arac_turleri:
+            kap = arac_parametreleri[arac]["kapasite_desi"]
 
-                # --- Spot ugrama: %10 doluluk kuralı uygulanır ---
-                u_spot_net_a = model.NewIntVar(0, max_spot * kap * 2, f'u_spot_net_{a}_{c}_{b}_{g}_{arac}')
-                u_tasinan_net_listesi.append(u_spot_net_a)
-                model.Add(u_spot_net_a <= ugrama_spot_y[(a, c, b, g, arac)] * kap * 2)
+            # --- Spot ugrama ---
+            u_spot_net_a = model.NewIntVar(0, max_spot * kap * 2, f'u_spot_net_{a}_{c}_{b}_{g}_{arac}')
+            u_tasinan_net_listesi.append(u_spot_net_a)
+            model.Add(u_spot_net_a <= ugrama_spot_y[(a, c, b, g, arac)] * kap * 2)
+
+            # Teknofest Kural #1: %10 doluluk kuralı (son gün hariç)
+            if g != gunler[-1]:
                 model.Add(ugrama_spot_y[(a, c, b, g, arac)] * kap <= u_spot_net_a * 10)
 
-                # --- Kiralık ugrama: %10 uygulanmaz (zorunlu kalkış, Teknofest Kural #3) ---
-                ugrama_hat = f"{a}-{b}"
-                max_kir = kiralik_stok_gunluk.get((ugrama_hat, arac), 0)
-                if max_kir > 0:
-                    u_kir_net_a = model.NewIntVar(0, max_kir * kap * 2, f'u_kir_net_{a}_{c}_{b}_{g}_{arac}')
-                    u_tasinan_net_listesi.append(u_kir_net_a)
-                    model.Add(u_kir_net_a <= ugrama_kiralik_y[(a, c, b, g, arac)] * kap * 2)
+            # --- Kiralık ugrama: %10 uygulanmaz (zorunlu kalkış, Teknofest Kural #3) ---
+            ugrama_hat = f"{a}-{b}"
+            max_kir = kiralik_stok_gunluk.get((ugrama_hat, arac), 0)
+            if max_kir > 0:
+                u_kir_net_a = model.NewIntVar(0, max_kir * kap * 2, f'u_kir_net_{a}_{c}_{b}_{g}_{arac}')
+                u_tasinan_net_listesi.append(u_kir_net_a)
+                model.Add(u_kir_net_a <= ugrama_kiralik_y[(a, c, b, g, arac)] * kap * 2)
 
-            toplam_ugrama_yuk = cp_model.LinearExpr.Sum([
-                ugrama_yuk_ac[(a, c, b, g)],
-                ugrama_yuk_cb[(a, c, b, g)],
-                ugrama_yuk_ab[(a, c, b, g)],
-            ])
-            model.Add(toplam_ugrama_yuk == cp_model.LinearExpr.Sum(u_tasinan_net_listesi))
+        toplam_ugrama_yuk = cp_model.LinearExpr.Sum([
+            ugrama_yuk_ac[(a, c, b, g)],
+            ugrama_yuk_cb[(a, c, b, g)],
+            ugrama_yuk_ab[(a, c, b, g)],
+        ])
+        model.Add(toplam_ugrama_yuk == cp_model.LinearExpr.Sum(u_tasinan_net_listesi))
 # ---------------------------------------------------------------
 # KISIT E — Teknofest: Son Gün Erteleme Yasağı
 # ---------------------------------------------------------------
@@ -460,15 +467,14 @@ for (a, c, b) in ugrama_rotalari:
 
 model.Minimize(cp_model.LinearExpr.Sum(maliyet_kalemleri))
 
-
 # =============================================================================
 # 10. ÇÖZÜCÜ PARAMETRELERI
 # =============================================================================
 solver = cp_model.CpSolver()
-max_time_to_solve = 300.0 # şimdilik 5 dakika
+max_time_to_solve = ENV_MAX_TIME
 solver.parameters.max_time_in_seconds  = max_time_to_solve
 solver.parameters.num_search_workers   = 4
-solver.parameters.log_search_progress  = True
+solver.parameters.log_search_progress  = ENV_LOG_PROGRESS
 
 status = solver.Solve(model)
 
@@ -535,7 +541,7 @@ with open(output_file, "w", encoding="utf-8") as f:
                             metin = f"{g} | Kiralık {a} | {h} | {kapasite} | {araç_maliyet}\n"
                             f.write(metin)
                             print(metin.strip())
-                            
+
                             csv_records.append({
                                 "Tarih": g,
                                 "Araç_Tipi": f"Kiralık {a}",
@@ -619,7 +625,7 @@ with open(output_file, "w", encoding="utf-8") as f:
                                 "Maliyet_TL": araç_maliyet,
                                 "Rota_Tipi": f"Uğrama ({c})"
                             })
-
+                    
                     # Spot uğrama — her araç için ayrı satır
                     u_s_adet = solver.Value(ugrama_spot_y[(a, c, b, g, arac)])
                     u_spot_count += u_s_adet
@@ -629,7 +635,7 @@ with open(output_file, "w", encoding="utf-8") as f:
                             metin = f"{g} | Spot {arac} | {a}→{c}→{b} | {kapasite} | {spot_araç_maliyet}\n"
                             f.write(metin)
                             print(metin.strip())
-
+                            
                             ugrama_toplam_maliyet += spot_araç_maliyet
                             csv_records.append({
                                 "Tarih": g,
@@ -647,7 +653,6 @@ with open(output_file, "w", encoding="utf-8") as f:
             for g in gunler:
                 yuk_ac = solver.Value(ugrama_yuk_ac[(a, c, b, g)])
                 yuk_cb = solver.Value(ugrama_yuk_cb[(a, c, b, g)])
-                yuk_ab = solver.Value(ugrama_yuk_ab[(a, c, b, g)])
 
                 if yuk_ac > 0:
                     csv_records.append({

@@ -4,9 +4,15 @@ Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliy
 14_Mayis,Spot Kamyon,Balıkesir,Eskişehir,1,12000,12385,Direkt
 15_Mayis,Spot Kamyonet,Balıkesir,Eskişehir,1,5600,8819,Direkt
 17_Mayis,Spot Kamyonet,Balıkesir,Eskişehir,1,5600,8819,Direkt
+<<<<<<< HEAD
+13_Mayis,Spot Kamyonet,Balıkesir,Tekirdağ,1,5600,7470,Direkt
+15_Mayis,Spot Kamyonet,Balıkesir,İstanbul,1,5600,7944,Direkt
+13_Mayis,Spot Kamyonet,Bilecik,Manisa,1,5600,9745,Direkt
+=======
 12_Mayis,Spot Kamyonet,Balıkesir,Tekirdağ,1,5600,7470,Direkt
 13_Mayis,Spot Kamyonet,Balıkesir,Tekirdağ,1,5600,7470,Direkt
 14_Mayis,Spot Kamyonet,Bilecik,Manisa,1,5600,9745,Direkt
+>>>>>>>>> Temporary merge branch 2
 11_Mayis,Spot Kamyon,Eskişehir,Balıkesir,1,12000,12385,Direkt
 12_Mayis,Spot Kamyon,Eskişehir,Balıkesir,1,12000,12385,Direkt
 13_Mayis,Spot Kamyon,Eskişehir,Balıkesir,1,12000,12385,Direkt
@@ -20,6 +26,19 @@ Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliy
 14_Mayis,Spot Kamyonet,Eskişehir,Bilecik,1,5600,5867,Direkt
 15_Mayis,Spot Kamyonet,Eskişehir,Bilecik,1,5600,5867,Direkt
 17_Mayis,Spot Kamyonet,Eskişehir,Bilecik,1,5600,5867,Direkt
+<<<<<<<<< Temporary merge branch 1
+14_Mayis,Spot Kamyon,Eskişehir,Manisa,1,12000,13851,Direkt
+15_Mayis,Spot Kamyonet,Eskişehir,Manisa,1,5600,10075,Direkt
+17_Mayis,Spot Kamyonet,Eskişehir,Manisa,1,5600,10075,Direkt
+17_Mayis,Spot Kamyonet,Eskişehir,Tekirdağ,1,5600,9929,Direkt
+11_Mayis,Spot Tir,Kocaeli,Balıkesir,1,22400,17103,Direkt
+11_Mayis,Kiralık Kamyon,Kocaeli,Balıkesir,1,12000,7161,Direkt
+12_Mayis,Kiralık Kamyon,Kocaeli,Balıkesir,1,12000,7161,Direkt
+13_Mayis,Kiralık Kamyon,Kocaeli,Balıkesir,1,12000,7161,Direkt
+13_Mayis,Spot Kamyonet,Kocaeli,Balıkesir,1,5600,8640,Direkt
+14_Mayis,Kiralık Kamyon,Kocaeli,Balıkesir,1,12000,7161,Direkt
+15_Mayis,Kiralık Kamyon,Kocaeli,Balıkesir,1,12000,7161,Direkt
+=========
 11_Mayis,Spot Kamyonet,Eskişehir,Kütahya,1,5600,5848,Direkt
 13_Mayis,Spot Kamyonet,Eskişehir,Kütahya,1,5600,5848,Direkt
 17_Mayis,Spot Kamyonet,Eskişehir,Manisa,1,5600,10075,Direkt
@@ -34,6 +53,7 @@ Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliy
 11_Mayis,Spot Tir,Kocaeli,Balıkesir,1,22400,17103,Direkt
 12_Mayis,Spot Tir,Kocaeli,Balıkesir,1,22400,17103,Direkt
 13_Mayis,Spot Tir,Kocaeli,Balıkesir,1,22400,17103,Direkt
+>>>>>>>>> Temporary merge branch 2
 16_Mayis,Kiralık Kamyon,Kocaeli,Balıkesir,1,12000,7161,Direkt
 16_Mayis,Spot Kamyonet,Kocaeli,Balıkesir,1,5600,8640,Direkt
 17_Mayis,Kiralık Kamyon,Kocaeli,Balıkesir,1,12000,7161,Direkt
@@ -41,6 +61,20 @@ Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliy
 14_Mayis,Spot Kamyonet,Kocaeli,Bilecik,1,5600,6164,Direkt
 15_Mayis,Spot Kamyonet,Kocaeli,Bilecik,1,5600,6164,Direkt
 12_Mayis,Spot Kamyon,Kocaeli,Erzincan,1,12000,24950,Direkt
+<<<<<<<<< Temporary merge branch 1
+16_Mayis,Spot Kamyonet,Kocaeli,Erzincan,1,5600,19589,Direkt
+17_Mayis,Spot Kamyonet,Kocaeli,Erzincan,1,5600,19589,Direkt
+11_Mayis,Kiralık Kamyon,Kocaeli,Eskişehir,1,12000,6314,Direkt
+12_Mayis,Kiralık Kamyon,Kocaeli,Eskişehir,1,12000,6314,Direkt
+14_Mayis,Kiralık Kamyon,Kocaeli,Eskişehir,1,12000,6314,Direkt
+16_Mayis,Kiralık Kamyon,Kocaeli,Eskişehir,1,12000,6314,Direkt
+11_Mayis,Spot Kamyon,Kocaeli,Isparta,1,12000,14952,Direkt
+14_Mayis,Spot Kamyonet,Kocaeli,Isparta,1,5600,11019,Direkt
+15_Mayis,Spot Kamyonet,Kocaeli,Isparta,1,5600,11019,Direkt
+17_Mayis,Spot Kamyonet,Kocaeli,Kütahya,1,5600,7629,Direkt
+12_Mayis,Spot Kamyon,Kocaeli,Mardin,1,12000,28931,Direkt
+14_Mayis,Spot Kamyon,Kocaeli,Mardin,1,12000,28931,Direkt
+=========
 15_Mayis,Spot Kamyon,Kocaeli,Erzincan,1,12000,24950,Direkt
 17_Mayis,Spot Kamyonet,Kocaeli,Erzincan,1,5600,19589,Direkt
 11_Mayis,Kiralık Kamyon,Kocaeli,Eskişehir,1,12000,6314,Direkt
@@ -57,12 +91,17 @@ Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliy
 17_Mayis,Spot Kamyon,Kocaeli,Manisa,1,12000,14464,Direkt
 11_Mayis,Spot Kamyon,Kocaeli,Mardin,1,12000,28931,Direkt
 13_Mayis,Spot Kamyon,Kocaeli,Mardin,1,12000,28931,Direkt
+>>>>>>>>> Temporary merge branch 2
 16_Mayis,Spot Kamyonet,Kocaeli,Mardin,1,5600,23001,Direkt
 17_Mayis,Spot Kamyonet,Kocaeli,Mardin,1,5600,23001,Direkt
 11_Mayis,Spot Tir,Kocaeli,Mersin,1,22400,26954,Direkt
 12_Mayis,Spot Tir,Kocaeli,Mersin,1,22400,26954,Direkt
 12_Mayis,Spot Kamyonet,Kocaeli,Mersin,1,5600,15733,Direkt
 13_Mayis,Spot Tir,Kocaeli,Mersin,1,22400,26954,Direkt
+<<<<<<<<< Temporary merge branch 1
+14_Mayis,Spot Tir,Kocaeli,Mersin,1,22400,26954,Direkt
+=========
+>>>>>>>>> Temporary merge branch 2
 16_Mayis,Spot Kamyon,Kocaeli,Mersin,1,12000,20451,Direkt
 17_Mayis,Spot Kamyon,Kocaeli,Mersin,1,12000,20451,Direkt
 11_Mayis,Spot Kamyon,Kocaeli,Sivas,1,12000,20602,Direkt
@@ -76,8 +115,12 @@ Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliy
 12_Mayis,Spot Tir,Kocaeli,Tekirdağ,1,22400,16690,Direkt
 13_Mayis,Spot Tir,Kocaeli,Tekirdağ,1,22400,16690,Direkt
 14_Mayis,Kiralık Tir,Kocaeli,Tekirdağ,1,22400,9595,Direkt
+<<<<<<<<< Temporary merge branch 1
+15_Mayis,Kiralık Tir,Kocaeli,Tekirdağ,1,22400,9595,Direkt
+=========
 14_Mayis,Spot Kamyonet,Kocaeli,Tekirdağ,1,5600,8343,Direkt
 15_Mayis,Spot Kamyon,Kocaeli,Tekirdağ,1,12000,11830,Direkt
+>>>>>>>>> Temporary merge branch 2
 16_Mayis,Kiralık Tir,Kocaeli,Tekirdağ,1,22400,9595,Direkt
 17_Mayis,Kiralık Tir,Kocaeli,Tekirdağ,1,22400,9595,Direkt
 11_Mayis,Kiralık Tir,Kocaeli,Yalova,1,22400,7734,Direkt
@@ -93,11 +136,18 @@ Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliy
 14_Mayis,Kiralık Tir,Kocaeli,İstanbul,1,22400,8011,Direkt
 16_Mayis,Kiralık Tir,Kocaeli,İstanbul,1,22400,8011,Direkt
 17_Mayis,Kiralık Tir,Kocaeli,İstanbul,1,22400,8011,Direkt
+<<<<<<<<< Temporary merge branch 1
+15_Mayis,Spot Kamyon,Kocaeli,Şanlıurfa,1,12000,25958,Direkt
+16_Mayis,Spot Kamyonet,Kocaeli,Şanlıurfa,1,5600,20453,Direkt
+17_Mayis,Spot Kamyon,Kocaeli,Şanlıurfa,1,12000,25958,Direkt
+14_Mayis,Spot Kamyon,Manisa,Bilecik,1,12000,13466,Direkt
+=========
 11_Mayis,Spot Tir,Kocaeli,Şanlıurfa,1,22400,33510,Direkt
 12_Mayis,Spot Tir,Kocaeli,Şanlıurfa,1,22400,33510,Direkt
 14_Mayis,Spot Kamyon,Kocaeli,Şanlıurfa,1,12000,25958,Direkt
 16_Mayis,Spot Kamyonet,Kocaeli,Şanlıurfa,1,5600,20453,Direkt
 17_Mayis,Spot Kamyon,Kocaeli,Şanlıurfa,1,12000,25958,Direkt
+>>>>>>>>> Temporary merge branch 2
 16_Mayis,Spot Kamyonet,Manisa,Bilecik,1,5600,9745,Direkt
 17_Mayis,Spot Kamyonet,Manisa,Bilecik,1,5600,9745,Direkt
 11_Mayis,Spot Kamyon,Manisa,Denizli,1,12000,11260,Direkt
@@ -128,10 +178,15 @@ Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliy
 14_Mayis,Spot Kamyonet,Manisa,Sivas,1,5600,19789,Direkt
 16_Mayis,Spot Kamyonet,Manisa,Sivas,1,5600,19789,Direkt
 11_Mayis,Spot Tir,Manisa,Tekirdağ,1,22400,18260,Direkt
+<<<<<<<<< Temporary merge branch 1
+12_Mayis,Spot Kamyon,Manisa,Tekirdağ,1,12000,13148,Direkt
+11_Mayis,Spot Tir,Manisa,Yalova,1,22400,18580,Direkt
+=========
 11_Mayis,Spot Tir,Manisa,Yalova,1,22400,18580,Direkt
 12_Mayis,Spot Tir,Manisa,Yalova,1,22400,18580,Direkt
 14_Mayis,Spot Kamyonet,Manisa,Yalova,1,5600,9704,Direkt
 15_Mayis,Spot Kamyon,Manisa,İstanbul,1,12000,13870,Direkt
+>>>>>>>>> Temporary merge branch 2
 11_Mayis,Spot Kamyonet,Mersin,Eskişehir,1,5600,13536,Direkt
 12_Mayis,Spot Kamyonet,Mersin,Eskişehir,1,5600,13536,Direkt
 14_Mayis,Spot Kamyonet,Mersin,Eskişehir,1,5600,13536,Direkt
@@ -145,21 +200,41 @@ Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliy
 14_Mayis,Spot Kamyonet,Sivas,Eskişehir,1,5600,14744,Direkt
 15_Mayis,Spot Kamyonet,Sivas,Eskişehir,1,5600,14744,Direkt
 17_Mayis,Spot Kamyonet,Sivas,Eskişehir,1,5600,14744,Direkt
+<<<<<<<<< Temporary merge branch 1
+12_Mayis,Spot Kamyon,Tekirdağ,Balıkesir,1,12000,10812,Direkt
+13_Mayis,Spot Kamyonet,Tekirdağ,Balıkesir,1,5600,7470,Direkt
+16_Mayis,Spot Kamyonet,Tekirdağ,Bilecik,1,5600,8851,Direkt
+=========
 11_Mayis,Spot Tir,Tekirdağ,Balıkesir,1,22400,15479,Direkt
 12_Mayis,Spot Kamyon,Tekirdağ,Bilecik,1,12000,12422,Direkt
 13_Mayis,Spot Kamyon,Tekirdağ,Bilecik,1,12000,12422,Direkt
 15_Mayis,Spot Kamyonet,Tekirdağ,Bilecik,1,5600,8851,Direkt
+>>>>>>>>> Temporary merge branch 2
 11_Mayis,Spot Kamyonet,Tekirdağ,Denizli,1,5600,11605,Direkt
 12_Mayis,Spot Kamyonet,Tekirdağ,Denizli,1,5600,11605,Direkt
 13_Mayis,Spot Kamyonet,Tekirdağ,Denizli,1,5600,11605,Direkt
 14_Mayis,Spot Kamyonet,Tekirdağ,Denizli,1,5600,11605,Direkt
 16_Mayis,Spot Kamyonet,Tekirdağ,Denizli,1,5600,11605,Direkt
 11_Mayis,Spot Tir,Tekirdağ,Eskişehir,1,22400,18893,Direkt
+<<<<<<<<< Temporary merge branch 1
+=========
 14_Mayis,Spot Kamyon,Tekirdağ,Eskişehir,1,12000,13680,Direkt
+>>>>>>>>> Temporary merge branch 2
 11_Mayis,Spot Kamyon,Tekirdağ,Isparta,1,12000,16937,Direkt
 12_Mayis,Spot Kamyonet,Tekirdağ,Isparta,1,5600,12721,Direkt
 13_Mayis,Spot Kamyonet,Tekirdağ,Isparta,1,5600,12721,Direkt
 16_Mayis,Spot Kamyonet,Tekirdağ,Isparta,1,5600,12721,Direkt
+<<<<<<<<< Temporary merge branch 1
+12_Mayis,Spot Kamyonet,Tekirdağ,Kütahya,1,5600,9653,Direkt
+13_Mayis,Spot Kamyonet,Tekirdağ,Kütahya,1,5600,9653,Direkt
+11_Mayis,Spot Tir,Tekirdağ,Manisa,1,22400,18260,Direkt
+16_Mayis,Spot Kamyonet,Tekirdağ,İstanbul,1,5600,6966,Direkt
+11_Mayis,Spot Kamyon,Tekirdağ,Şanlıurfa,1,12000,29934,Direkt
+13_Mayis,Spot Tir,Yalova,Balıkesir,1,22400,15749,Direkt
+11_Mayis,Kiralık Kamyon,Yalova,Eskişehir,1,12000,6441,Direkt
+12_Mayis,Kiralık Kamyon,Yalova,Eskişehir,1,12000,6441,Direkt
+13_Mayis,Kiralık Kamyon,Yalova,Eskişehir,1,12000,6441,Direkt
+=========
 13_Mayis,Spot Kamyonet,Tekirdağ,Karaman,1,5600,16442,Direkt
 11_Mayis,Spot Tir,Tekirdağ,Manisa,1,22400,18260,Direkt
 12_Mayis,Spot Kamyon,Tekirdağ,Manisa,1,12000,13148,Direkt
@@ -175,19 +250,38 @@ Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliy
 12_Mayis,Spot Tir,Yalova,Balıkesir,1,22400,15749,Direkt
 11_Mayis,Spot Tir,Yalova,Bilecik,1,22400,13749,Direkt
 12_Mayis,Spot Tir,Yalova,Eskişehir,1,22400,15302,Direkt
+>>>>>>>>> Temporary merge branch 2
 14_Mayis,Kiralık Kamyon,Yalova,Eskişehir,1,12000,6441,Direkt
 15_Mayis,Kiralık Kamyon,Yalova,Eskişehir,1,12000,6441,Direkt
 11_Mayis,Spot Tir,Yalova,Manisa,1,22400,18580,Direkt
 12_Mayis,Spot Tir,Yalova,Manisa,1,22400,18580,Direkt
 13_Mayis,Spot Tir,Yalova,Manisa,1,22400,18580,Direkt
+<<<<<<<<< Temporary merge branch 1
+14_Mayis,Spot Kamyon,Yalova,Manisa,1,12000,13418,Direkt
+16_Mayis,Spot Kamyon,Yalova,Manisa,1,12000,13418,Direkt
+17_Mayis,Spot Kamyonet,Yalova,Manisa,1,5600,9704,Direkt
+11_Mayis,Kiralık Kamyon,Yalova,Tekirdağ,1,12000,6521,Direkt
+12_Mayis,Kiralık Kamyon,Yalova,Tekirdağ,1,12000,6521,Direkt
+=========
 13_Mayis,Spot Kamyon,Yalova,Mersin,1,12000,20914,Direkt
 11_Mayis,Spot Tir,Yalova,Tekirdağ,1,22400,15503,Direkt
 11_Mayis,Spot Kamyonet,Yalova,Tekirdağ,1,5600,7488,Direkt
+>>>>>>>>> Temporary merge branch 2
 13_Mayis,Kiralık Kamyon,Yalova,Tekirdağ,1,12000,6521,Direkt
 14_Mayis,Kiralık Kamyon,Yalova,Tekirdağ,1,12000,6521,Direkt
 15_Mayis,Kiralık Kamyon,Yalova,Tekirdağ,1,12000,6521,Direkt
 16_Mayis,Kiralık Kamyon,Yalova,Tekirdağ,1,12000,6521,Direkt
 17_Mayis,Kiralık Kamyon,Yalova,Tekirdağ,1,12000,6521,Direkt
+<<<<<<<<< Temporary merge branch 1
+11_Mayis,Kiralık Tir,İstanbul,Balıkesir,1,22400,9306,Direkt
+12_Mayis,Kiralık Tir,İstanbul,Balıkesir,1,22400,9306,Direkt
+12_Mayis,Spot Kamyon,İstanbul,Balıkesir,1,12000,11364,Direkt
+13_Mayis,Kiralık Tir,İstanbul,Balıkesir,1,22400,9306,Direkt
+14_Mayis,Kiralık Tir,İstanbul,Balıkesir,1,22400,9306,Direkt
+15_Mayis,Kiralık Tir,İstanbul,Balıkesir,1,22400,9306,Direkt
+16_Mayis,Kiralık Tir,İstanbul,Balıkesir,1,22400,9306,Direkt
+16_Mayis,Spot Kamyonet,İstanbul,Bilecik,1,5600,7043,Direkt
+=========
 11_Mayis,Spot Tir,İstanbul,Balıkesir,1,22400,16136,Direkt
 12_Mayis,Kiralık Tir,İstanbul,Balıkesir,1,22400,9306,Direkt
 13_Mayis,Spot Tir,İstanbul,Balıkesir,1,22400,16136,Direkt
@@ -196,6 +290,7 @@ Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliy
 11_Mayis,Spot Tir,İstanbul,Bilecik,1,22400,14885,Direkt
 12_Mayis,Spot Tir,İstanbul,Bilecik,1,22400,14885,Direkt
 13_Mayis,Spot Tir,İstanbul,Bilecik,1,22400,14885,Direkt
+>>>>>>>>> Temporary merge branch 2
 11_Mayis,Spot Kamyon,İstanbul,Denizli,1,12000,15186,Direkt
 12_Mayis,Spot Kamyon,İstanbul,Denizli,1,12000,15186,Direkt
 13_Mayis,Spot Kamyon,İstanbul,Denizli,1,12000,15186,Direkt
@@ -206,10 +301,16 @@ Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliy
 12_Mayis,Spot Tir,İstanbul,Erzincan,1,22400,34239,Direkt
 13_Mayis,Spot Kamyon,İstanbul,Erzincan,1,12000,26571,Direkt
 14_Mayis,Spot Kamyon,İstanbul,Erzincan,1,12000,26571,Direkt
+<<<<<<<<< Temporary merge branch 1
+15_Mayis,Spot Kamyon,İstanbul,Erzincan,1,12000,26571,Direkt
+17_Mayis,Spot Kamyonet,İstanbul,Erzincan,1,5600,20978,Direkt
+11_Mayis,Kiralık Tir,İstanbul,Eskişehir,1,22400,9459,Direkt
+=========
 16_Mayis,Spot Kamyonet,İstanbul,Erzincan,1,5600,20978,Direkt
 17_Mayis,Spot Kamyonet,İstanbul,Erzincan,1,5600,20978,Direkt
 11_Mayis,Kiralık Tir,İstanbul,Eskişehir,1,22400,9459,Direkt
 12_Mayis,Kiralık Tir,İstanbul,Eskişehir,1,22400,9459,Direkt
+>>>>>>>>> Temporary merge branch 2
 12_Mayis,Kiralık Tir,İstanbul,Eskişehir,1,22400,9459,Direkt
 13_Mayis,Kiralık Tir,İstanbul,Eskişehir,1,22400,9459,Direkt
 14_Mayis,Kiralık Tir,İstanbul,Eskişehir,1,22400,9459,Direkt
@@ -217,6 +318,12 @@ Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliy
 16_Mayis,Kiralık Tir,İstanbul,Eskişehir,1,22400,9459,Direkt
 16_Mayis,Kiralık Tir,İstanbul,Eskişehir,1,22400,9459,Direkt
 17_Mayis,Kiralık Tir,İstanbul,Eskişehir,1,22400,9459,Direkt
+<<<<<<<<< Temporary merge branch 1
+12_Mayis,Spot Kamyon,İstanbul,Isparta,1,12000,15729,Direkt
+13_Mayis,Spot Kamyon,İstanbul,Isparta,1,12000,15729,Direkt
+17_Mayis,Spot Kamyonet,İstanbul,Isparta,1,5600,11685,Direkt
+17_Mayis,Spot Kamyonet,İstanbul,Karaman,1,5600,14867,Direkt
+=========
 14_Mayis,Spot Kamyon,İstanbul,Isparta,1,12000,15729,Direkt
 17_Mayis,Spot Kamyonet,İstanbul,Isparta,1,5600,11685,Direkt
 13_Mayis,Spot Kamyon,İstanbul,Karaman,1,12000,19442,Direkt
@@ -226,6 +333,7 @@ Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliy
 12_Mayis,Spot Tir,İstanbul,Kütahya,1,22400,16611,Direkt
 13_Mayis,Spot Tir,İstanbul,Kütahya,1,22400,16611,Direkt
 14_Mayis,Spot Kamyon,İstanbul,Kütahya,1,12000,11763,Direkt
+>>>>>>>>> Temporary merge branch 2
 15_Mayis,Spot Kamyon,İstanbul,Kütahya,1,12000,11763,Direkt
 16_Mayis,Spot Kamyonet,İstanbul,Kütahya,1,5600,8286,Direkt
 11_Mayis,Kiralık Tir,İstanbul,Manisa,1,22400,10858,Direkt
@@ -235,6 +343,15 @@ Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliy
 13_Mayis,Spot Kamyon,İstanbul,Manisa,1,12000,13870,Direkt
 14_Mayis,Spot Tir,İstanbul,Manisa,1,22400,19119,Direkt
 15_Mayis,Kiralık Tir,İstanbul,Manisa,1,22400,10858,Direkt
+<<<<<<<<< Temporary merge branch 1
+16_Mayis,Kiralık Tir,İstanbul,Manisa,1,22400,10858,Direkt
+17_Mayis,Kiralık Tir,İstanbul,Manisa,1,22400,10858,Direkt
+13_Mayis,Spot Tir,İstanbul,Mardin,1,22400,38984,Direkt
+17_Mayis,Spot Kamyonet,İstanbul,Mardin,1,5600,24394,Direkt
+11_Mayis,Spot Tir,İstanbul,Mersin,1,22400,28619,Direkt
+12_Mayis,Spot Tir,İstanbul,Mersin,1,22400,28619,Direkt
+15_Mayis,Spot Tir,İstanbul,Mersin,1,22400,28619,Direkt
+=========
 15_Mayis,Spot Kamyonet,İstanbul,Manisa,1,5600,10092,Direkt
 11_Mayis,Spot Tir,İstanbul,Mardin,1,22400,38984,Direkt
 12_Mayis,Spot Tir,İstanbul,Mardin,1,22400,38984,Direkt
@@ -247,6 +364,7 @@ Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliy
 12_Mayis,Spot Kamyonet,İstanbul,Mersin,1,5600,16931,Direkt
 13_Mayis,Spot Tir,İstanbul,Mersin,1,22400,28619,Direkt
 17_Mayis,Spot Kamyonet,İstanbul,Mersin,1,5600,16931,Direkt
+>>>>>>>>> Temporary merge branch 2
 11_Mayis,Spot Tir,İstanbul,Sivas,1,22400,29075,Direkt
 12_Mayis,Spot Kamyon,İstanbul,Sivas,1,12000,22233,Direkt
 13_Mayis,Spot Kamyon,İstanbul,Sivas,1,12000,22233,Direkt
@@ -275,6 +393,12 @@ Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliy
 17_Mayis,Kiralık Tir,İstanbul,Yalova,1,22400,7606,Direkt
 17_Mayis,Kiralık Tir,İstanbul,Yalova,1,22400,7606,Direkt
 16_Mayis,Spot Kamyonet,İstanbul,Zonguldak,1,5600,9088,Direkt
+<<<<<<<<< Temporary merge branch 1
+14_Mayis,Spot Kamyon,İstanbul,Şanlıurfa,1,12000,27558,Direkt
+15_Mayis,Spot Kamyon,İstanbul,Şanlıurfa,1,12000,27558,Direkt
+16_Mayis,Spot Kamyonet,İstanbul,Şanlıurfa,1,5600,21825,Direkt
+17_Mayis,Spot Kamyonet,İstanbul,Şanlıurfa,1,5600,21825,Direkt
+=========
 11_Mayis,Spot Tir,İstanbul,Şanlıurfa,1,22400,35415,Direkt
 12_Mayis,Spot Tir,İstanbul,Şanlıurfa,1,22400,35415,Direkt
 13_Mayis,Spot Tir,İstanbul,Şanlıurfa,1,22400,35415,Direkt
@@ -282,8 +406,22 @@ Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliy
 17_Mayis,Spot Kamyonet,İstanbul,Şanlıurfa,1,5600,21825,Direkt
 11_Mayis,Spot Kamyonet,Şanlıurfa,Tekirdağ,1,5600,23861,Direkt
 14_Mayis,Spot Kamyonet,Şanlıurfa,Tekirdağ,1,5600,23861,Direkt
+>>>>>>>>> Temporary merge branch 2
 11_Mayis,Spot Kamyon,Balıkesir,Eskişehir,1,12000,12876,Uğrama (Bilecik)
 16_Mayis,Spot Kamyonet,Balıkesir,Eskişehir,1,5600,9240,Uğrama (Bilecik)
+<<<<<<<<< Temporary merge branch 1
+11_Mayis,Spot Tir,Balıkesir,İstanbul,1,22400,16915,Uğrama (Yalova)
+14_Mayis,Spot Kamyonet,Balıkesir,İstanbul,1,5600,8505,Uğrama (Yalova)
+11_Mayis,Spot Kamyon,Eskişehir,Tekirdağ,1,12000,14198,Uğrama (İstanbul)
+13_Mayis,Spot Kamyon,Eskişehir,Tekirdağ,1,12000,14198,Uğrama (İstanbul)
+11_Mayis,Spot Tir,Eskişehir,Tekirdağ,1,22400,19106,Uğrama (Yalova)
+12_Mayis,Spot Tir,Eskişehir,Tekirdağ,1,22400,19106,Uğrama (Yalova)
+14_Mayis,Spot Kamyon,Eskişehir,Tekirdağ,1,12000,13859,Uğrama (Yalova)
+15_Mayis,Spot Kamyonet,Eskişehir,Tekirdağ,1,5600,10082,Uğrama (Yalova)
+12_Mayis,Spot Kamyon,Eskişehir,İstanbul,1,12000,11643,Uğrama (Yalova)
+13_Mayis,Spot Kamyon,Eskişehir,İstanbul,1,12000,11643,Uğrama (Yalova)
+14_Mayis,Spot Kamyon,Eskişehir,İstanbul,1,12000,11643,Uğrama (Yalova)
+=========
 11_Mayis,Spot Kamyon,Balıkesir,İstanbul,1,12000,12019,Uğrama (Yalova)
 14_Mayis,Spot Tir,Balıkesir,İstanbul,1,22400,16915,Uğrama (Yalova)
 15_Mayis,Spot Kamyon,Balıkesir,İstanbul,1,12000,12019,Uğrama (Yalova)
@@ -296,8 +434,28 @@ Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliy
 13_Mayis,Spot Tir,Eskişehir,Tekirdağ,1,22400,19106,Uğrama (Yalova)
 14_Mayis,Spot Kamyon,Eskişehir,Tekirdağ,1,12000,13859,Uğrama (Yalova)
 15_Mayis,Spot Kamyon,Eskişehir,Tekirdağ,1,12000,13859,Uğrama (Yalova)
+>>>>>>>>> Temporary merge branch 2
 15_Mayis,Spot Kamyon,Eskişehir,İstanbul,1,12000,11643,Uğrama (Yalova)
 17_Mayis,Spot Kamyonet,Eskişehir,İstanbul,1,5600,8183,Uğrama (Yalova)
+<<<<<<<<< Temporary merge branch 1
+11_Mayis,Spot Tir,Kocaeli,Balıkesir,1,22400,18081,Uğrama (İstanbul)
+13_Mayis,Spot Tir,Kocaeli,Balıkesir,1,22400,18081,Uğrama (İstanbul)
+14_Mayis,Spot Kamyon,Kocaeli,Balıkesir,1,12000,12998,Uğrama (İstanbul)
+11_Mayis,Spot Tir,Kocaeli,Balıkesir,1,22400,17162,Uğrama (Yalova)
+11_Mayis,Spot Kamyon,Kocaeli,Balıkesir,1,12000,12226,Uğrama (Yalova)
+12_Mayis,Spot Tir,Kocaeli,Balıkesir,1,22400,17162,Uğrama (Yalova)
+14_Mayis,Spot Tir,Kocaeli,Balıkesir,1,22400,17162,Uğrama (Yalova)
+15_Mayis,Spot Kamyon,Kocaeli,Balıkesir,1,12000,12226,Uğrama (Yalova)
+16_Mayis,Spot Kamyon,Kocaeli,Balıkesir,1,12000,12226,Uğrama (Yalova)
+11_Mayis,Spot Tir,Kocaeli,Erzincan,1,22400,34164,Uğrama (Eskişehir)
+13_Mayis,Spot Kamyon,Kocaeli,Erzincan,1,12000,26508,Uğrama (Eskişehir)
+14_Mayis,Spot Kamyon,Kocaeli,Erzincan,1,12000,26508,Uğrama (Eskişehir)
+15_Mayis,Spot Kamyon,Kocaeli,Erzincan,1,12000,26508,Uğrama (Eskişehir)
+13_Mayis,Kiralık Kamyon,Kocaeli,Eskişehir,1,12000,6406,Uğrama (Bilecik)
+13_Mayis,Spot Kamyon,Kocaeli,Eskişehir,1,12000,10592,Uğrama (Bilecik)
+15_Mayis,Kiralık Kamyon,Kocaeli,Eskişehir,1,12000,6406,Uğrama (Bilecik)
+15_Mayis,Spot Kamyonet,Kocaeli,Eskişehir,1,5600,7282,Uğrama (Bilecik)
+=========
 12_Mayis,Spot Tir,Kocaeli,Balıkesir,1,22400,18081,Uğrama (İstanbul)
 12_Mayis,Kiralık Kamyon,Kocaeli,Balıkesir,1,12000,7552,Uğrama (İstanbul)
 14_Mayis,Spot Tir,Kocaeli,Balıkesir,1,22400,18081,Uğrama (İstanbul)
@@ -312,16 +470,49 @@ Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliy
 16_Mayis,Spot Kamyonet,Kocaeli,Erzincan,1,5600,20924,Uğrama (Eskişehir)
 14_Mayis,Kiralık Kamyon,Kocaeli,Eskişehir,1,12000,6406,Uğrama (Bilecik)
 15_Mayis,Kiralık Kamyon,Kocaeli,Eskişehir,1,12000,6406,Uğrama (Bilecik)
+>>>>>>>>> Temporary merge branch 2
 17_Mayis,Kiralık Kamyon,Kocaeli,Eskişehir,1,12000,6406,Uğrama (Bilecik)
 11_Mayis,Spot Kamyon,Kocaeli,Isparta,1,12000,15095,Uğrama (Eskişehir)
 12_Mayis,Spot Kamyon,Kocaeli,Isparta,1,12000,15095,Uğrama (Eskişehir)
+<<<<<<<<< Temporary merge branch 1
+13_Mayis,Spot Kamyon,Kocaeli,Isparta,1,12000,15095,Uğrama (Eskişehir)
+17_Mayis,Spot Kamyonet,Kocaeli,Isparta,1,5600,11142,Uğrama (Eskişehir)
+11_Mayis,Spot Tir,Kocaeli,Kütahya,1,22400,16510,Uğrama (Eskişehir)
+=========
 14_Mayis,Spot Kamyon,Kocaeli,Isparta,1,12000,15095,Uğrama (Eskişehir)
 15_Mayis,Spot Kamyonet,Kocaeli,Isparta,1,5600,11142,Uğrama (Eskişehir)
 11_Mayis,Spot Kamyonet,Kocaeli,Kütahya,1,5600,8213,Uğrama (Eskişehir)
+>>>>>>>>> Temporary merge branch 2
 12_Mayis,Spot Tir,Kocaeli,Kütahya,1,22400,16510,Uğrama (Eskişehir)
 14_Mayis,Spot Tir,Kocaeli,Kütahya,1,22400,16510,Uğrama (Eskişehir)
 15_Mayis,Spot Kamyon,Kocaeli,Kütahya,1,12000,11678,Uğrama (Eskişehir)
 16_Mayis,Spot Kamyonet,Kocaeli,Kütahya,1,5600,8213,Uğrama (Eskişehir)
+<<<<<<<<< Temporary merge branch 1
+11_Mayis,Spot Tir,Kocaeli,Manisa,1,22400,20602,Uğrama (Bilecik)
+12_Mayis,Spot Tir,Kocaeli,Manisa,1,22400,20602,Uğrama (Bilecik)
+14_Mayis,Spot Tir,Kocaeli,Manisa,1,22400,20602,Uğrama (Bilecik)
+15_Mayis,Spot Tir,Kocaeli,Manisa,1,22400,20602,Uğrama (Bilecik)
+16_Mayis,Spot Tir,Kocaeli,Manisa,1,22400,20602,Uğrama (Bilecik)
+17_Mayis,Spot Kamyon,Kocaeli,Manisa,1,12000,15116,Uğrama (Bilecik)
+12_Mayis,Spot Tir,Kocaeli,Manisa,1,22400,20127,Uğrama (Balıkesir)
+11_Mayis,Spot Tir,Kocaeli,Manisa,1,22400,19993,Uğrama (Yalova)
+13_Mayis,Spot Tir,Kocaeli,Manisa,1,22400,19993,Uğrama (Yalova)
+11_Mayis,Spot Tir,Kocaeli,Mardin,1,22400,38179,Uğrama (Eskişehir)
+13_Mayis,Spot Tir,Kocaeli,Mardin,1,22400,38179,Uğrama (Eskişehir)
+15_Mayis,Spot Kamyon,Kocaeli,Mardin,1,12000,29881,Uğrama (Eskişehir)
+12_Mayis,Spot Kamyonet,Kocaeli,Mersin,1,5600,15902,Uğrama (Eskişehir)
+13_Mayis,Spot Kamyonet,Kocaeli,Mersin,1,5600,15902,Uğrama (Eskişehir)
+15_Mayis,Spot Tir,Kocaeli,Mersin,1,22400,27188,Uğrama (Eskişehir)
+12_Mayis,Spot Tir,Kocaeli,Tekirdağ,1,22400,16723,Uğrama (İstanbul)
+13_Mayis,Spot Tir,Kocaeli,Tekirdağ,1,22400,16916,Uğrama (Yalova)
+14_Mayis,Spot Kamyonet,Kocaeli,Tekirdağ,1,5600,8505,Uğrama (Yalova)
+15_Mayis,Spot Kamyonet,Kocaeli,Tekirdağ,1,5600,8505,Uğrama (Yalova)
+15_Mayis,Spot Kamyonet,Kocaeli,İstanbul,1,5600,6606,Uğrama (Yalova)
+11_Mayis,Spot Tir,Kocaeli,Şanlıurfa,1,22400,34402,Uğrama (Eskişehir)
+12_Mayis,Spot Tir,Kocaeli,Şanlıurfa,1,22400,34402,Uğrama (Eskişehir)
+13_Mayis,Spot Tir,Kocaeli,Şanlıurfa,1,22400,34402,Uğrama (Eskişehir)
+14_Mayis,Spot Kamyon,Kocaeli,Şanlıurfa,1,12000,26708,Uğrama (Eskişehir)
+=========
 17_Mayis,Spot Kamyon,Kocaeli,Kütahya,1,12000,11678,Uğrama (Eskişehir)
 11_Mayis,Spot Kamyon,Kocaeli,Manisa,1,12000,15116,Uğrama (Bilecik)
 12_Mayis,Spot Tir,Kocaeli,Manisa,1,22400,20602,Uğrama (Bilecik)
@@ -347,6 +538,7 @@ Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliy
 13_Mayis,Spot Tir,Kocaeli,Şanlıurfa,1,22400,34402,Uğrama (Eskişehir)
 14_Mayis,Spot Kamyonet,Kocaeli,Şanlıurfa,1,5600,21096,Uğrama (Eskişehir)
 15_Mayis,Spot Kamyon,Kocaeli,Şanlıurfa,1,12000,26708,Uğrama (Eskişehir)
+>>>>>>>>> Temporary merge branch 2
 11_Mayis,Spot Tir,Manisa,Bilecik,1,22400,19407,Uğrama (Balıkesir)
 12_Mayis,Spot Tir,Manisa,Bilecik,1,22400,19407,Uğrama (Balıkesir)
 13_Mayis,Spot Tir,Manisa,Bilecik,1,22400,19407,Uğrama (Balıkesir)
@@ -364,6 +556,48 @@ Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliy
 13_Mayis,Spot Tir,Manisa,Tekirdağ,1,22400,18503,Uğrama (Balıkesir)
 14_Mayis,Spot Tir,Manisa,Tekirdağ,1,22400,18503,Uğrama (Balıkesir)
 15_Mayis,Spot Tir,Manisa,Tekirdağ,1,22400,18503,Uğrama (Balıkesir)
+<<<<<<<<< Temporary merge branch 1
+16_Mayis,Spot Kamyon,Manisa,Tekirdağ,1,12000,13352,Uğrama (Balıkesir)
+17_Mayis,Spot Kamyonet,Manisa,Tekirdağ,1,5600,9648,Uğrama (Balıkesir)
+12_Mayis,Spot Kamyon,Manisa,Yalova,1,12000,13579,Uğrama (Balıkesir)
+13_Mayis,Spot Tir,Manisa,Yalova,1,22400,18773,Uğrama (Balıkesir)
+14_Mayis,Spot Kamyon,Manisa,Yalova,1,12000,13579,Uğrama (Balıkesir)
+15_Mayis,Spot Kamyon,Manisa,Yalova,1,12000,13579,Uğrama (Balıkesir)
+16_Mayis,Spot Kamyonet,Manisa,Yalova,1,5600,9843,Uğrama (Balıkesir)
+17_Mayis,Spot Kamyonet,Manisa,Yalova,1,5600,9843,Uğrama (Balıkesir)
+11_Mayis,Spot Tir,Manisa,İstanbul,1,22400,19160,Uğrama (Balıkesir)
+12_Mayis,Spot Tir,Manisa,İstanbul,1,22400,19160,Uğrama (Balıkesir)
+13_Mayis,Spot Kamyon,Manisa,İstanbul,1,12000,13904,Uğrama (Balıkesir)
+17_Mayis,Spot Kamyonet,Manisa,İstanbul,1,5600,10121,Uğrama (Balıkesir)
+11_Mayis,Spot Kamyon,Manisa,İstanbul,1,12000,14397,Uğrama (Yalova)
+12_Mayis,Spot Tir,Manisa,İstanbul,1,22400,19746,Uğrama (Yalova)
+13_Mayis,Spot Tir,Manisa,İstanbul,1,22400,19746,Uğrama (Yalova)
+14_Mayis,Spot Tir,Manisa,İstanbul,1,22400,19746,Uğrama (Yalova)
+15_Mayis,Spot Tir,Manisa,İstanbul,1,22400,19746,Uğrama (Yalova)
+16_Mayis,Spot Kamyon,Manisa,İstanbul,1,12000,14397,Uğrama (Yalova)
+11_Mayis,Spot Tir,Tekirdağ,Bilecik,1,22400,17964,Uğrama (İstanbul)
+11_Mayis,Spot Tir,Tekirdağ,Bilecik,1,22400,17553,Uğrama (Yalova)
+12_Mayis,Spot Tir,Tekirdağ,Bilecik,1,22400,17553,Uğrama (Yalova)
+12_Mayis,Spot Kamyonet,Tekirdağ,Bilecik,1,5600,8964,Uğrama (Yalova)
+13_Mayis,Spot Kamyon,Tekirdağ,Bilecik,1,12000,12555,Uğrama (Yalova)
+14_Mayis,Spot Tir,Tekirdağ,Bilecik,1,22400,17553,Uğrama (Yalova)
+13_Mayis,Spot Kamyon,Tekirdağ,Eskişehir,1,12000,13727,Uğrama (Bilecik)
+15_Mayis,Spot Tir,Tekirdağ,Eskişehir,1,22400,18948,Uğrama (Bilecik)
+17_Mayis,Spot Kamyonet,Tekirdağ,Eskişehir,1,5600,9969,Uğrama (Bilecik)
+12_Mayis,Spot Tir,Tekirdağ,Eskişehir,1,22400,19106,Uğrama (Yalova)
+13_Mayis,Spot Tir,Tekirdağ,Eskişehir,1,22400,19106,Uğrama (Yalova)
+14_Mayis,Spot Tir,Tekirdağ,Eskişehir,1,22400,19106,Uğrama (Yalova)
+11_Mayis,Spot Tir,Tekirdağ,Karaman,1,22400,28831,Uğrama (İstanbul)
+12_Mayis,Spot Kamyon,Tekirdağ,Karaman,1,12000,22028,Uğrama (İstanbul)
+13_Mayis,Spot Kamyon,Tekirdağ,Karaman,1,12000,22028,Uğrama (İstanbul)
+14_Mayis,Spot Kamyonet,Tekirdağ,Karaman,1,5600,17084,Uğrama (İstanbul)
+15_Mayis,Spot Kamyonet,Tekirdağ,Karaman,1,5600,17084,Uğrama (İstanbul)
+11_Mayis,Spot Kamyon,Tekirdağ,Kütahya,1,12000,13985,Uğrama (Yalova)
+14_Mayis,Spot Kamyon,Tekirdağ,Kütahya,1,12000,13985,Uğrama (Yalova)
+15_Mayis,Spot Kamyon,Tekirdağ,Kütahya,1,12000,13985,Uğrama (Yalova)
+16_Mayis,Spot Kamyonet,Tekirdağ,Kütahya,1,5600,10190,Uğrama (Yalova)
+11_Mayis,Spot Tir,Tekirdağ,Manisa,1,22400,18503,Uğrama (Balıkesir)
+=========
 16_Mayis,Spot Tir,Manisa,Tekirdağ,1,22400,18503,Uğrama (Balıkesir)
 17_Mayis,Spot Kamyon,Manisa,Tekirdağ,1,12000,13352,Uğrama (Balıkesir)
 11_Mayis,Spot Tir,Manisa,Yalova,1,22400,18773,Uğrama (Balıkesir)
@@ -393,23 +627,95 @@ Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliy
 14_Mayis,Spot Kamyon,Tekirdağ,Kütahya,1,12000,13985,Uğrama (Yalova)
 15_Mayis,Spot Kamyon,Tekirdağ,Kütahya,1,12000,13985,Uğrama (Yalova)
 16_Mayis,Spot Kamyonet,Tekirdağ,Kütahya,1,5600,10190,Uğrama (Yalova)
+>>>>>>>>> Temporary merge branch 2
 12_Mayis,Spot Tir,Tekirdağ,Manisa,1,22400,18503,Uğrama (Balıkesir)
 13_Mayis,Spot Tir,Tekirdağ,Manisa,1,22400,18503,Uğrama (Balıkesir)
 14_Mayis,Spot Tir,Tekirdağ,Manisa,1,22400,18503,Uğrama (Balıkesir)
 15_Mayis,Spot Tir,Tekirdağ,Manisa,1,22400,18503,Uğrama (Balıkesir)
 16_Mayis,Spot Kamyon,Tekirdağ,Manisa,1,12000,13352,Uğrama (Balıkesir)
 17_Mayis,Spot Kamyonet,Tekirdağ,Manisa,1,5600,9648,Uğrama (Balıkesir)
+<<<<<<<<< Temporary merge branch 1
+11_Mayis,Spot Tir,Tekirdağ,Mersin,1,22400,31698,Uğrama (İstanbul)
+12_Mayis,Spot Kamyon,Tekirdağ,Mersin,1,12000,24436,Uğrama (İstanbul)
+13_Mayis,Spot Tir,Tekirdağ,Mersin,1,22400,31698,Uğrama (İstanbul)
+14_Mayis,Spot Tir,Tekirdağ,Mersin,1,22400,31309,Uğrama (Yalova)
+15_Mayis,Spot Kamyon,Tekirdağ,Mersin,1,12000,24109,Uğrama (Yalova)
+16_Mayis,Spot Kamyonet,Tekirdağ,Mersin,1,5600,18868,Uğrama (Yalova)
+17_Mayis,Spot Kamyonet,Tekirdağ,Mersin,1,5600,18868,Uğrama (Yalova)
+=========
 13_Mayis,Spot Kamyon,Tekirdağ,Mersin,1,12000,23932,Uğrama (Eskişehir)
 15_Mayis,Spot Tir,Tekirdağ,Mersin,1,22400,31097,Uğrama (Eskişehir)
 17_Mayis,Spot Kamyonet,Tekirdağ,Mersin,1,5600,18716,Uğrama (Eskişehir)
 14_Mayis,Spot Tir,Tekirdağ,Mersin,1,22400,31698,Uğrama (İstanbul)
 16_Mayis,Spot Kamyon,Tekirdağ,Mersin,1,12000,24436,Uğrama (İstanbul)
+>>>>>>>>> Temporary merge branch 2
 11_Mayis,Spot Tir,Tekirdağ,Zonguldak,1,22400,20804,Uğrama (İstanbul)
 12_Mayis,Spot Tir,Tekirdağ,Zonguldak,1,22400,20804,Uğrama (İstanbul)
 13_Mayis,Spot Kamyon,Tekirdağ,Zonguldak,1,12000,15286,Uğrama (İstanbul)
 14_Mayis,Spot Kamyon,Tekirdağ,Zonguldak,1,12000,15286,Uğrama (İstanbul)
 15_Mayis,Spot Kamyon,Tekirdağ,Zonguldak,1,12000,15286,Uğrama (İstanbul)
 17_Mayis,Spot Kamyonet,Tekirdağ,Zonguldak,1,5600,11305,Uğrama (İstanbul)
+<<<<<<<<< Temporary merge branch 1
+14_Mayis,Spot Kamyonet,Tekirdağ,Şanlıurfa,1,5600,23910,Uğrama (Eskişehir)
+15_Mayis,Spot Kamyonet,Tekirdağ,Şanlıurfa,1,5600,23910,Uğrama (Eskişehir)
+16_Mayis,Spot Kamyonet,Tekirdağ,Şanlıurfa,1,5600,23910,Uğrama (Eskişehir)
+12_Mayis,Spot Tir,Tekirdağ,Şanlıurfa,1,22400,38494,Uğrama (İstanbul)
+13_Mayis,Spot Tir,Tekirdağ,Şanlıurfa,1,22400,38494,Uğrama (İstanbul)
+11_Mayis,Spot Kamyon,Yalova,Eskişehir,1,12000,10664,Uğrama (Bilecik)
+15_Mayis,Spot Kamyonet,Yalova,Eskişehir,1,5600,7343,Uğrama (Bilecik)
+17_Mayis,Kiralık Kamyon,Yalova,Eskişehir,1,12000,6441,Uğrama (Bilecik)
+12_Mayis,Spot Kamyonet,Yalova,Manisa,1,5600,9843,Uğrama (Balıkesir)
+15_Mayis,Spot Tir,Yalova,Manisa,1,22400,18773,Uğrama (Balıkesir)
+11_Mayis,Spot Tir,Yalova,Mersin,1,22400,27506,Uğrama (Eskişehir)
+12_Mayis,Spot Tir,Yalova,Mersin,1,22400,27506,Uğrama (Eskişehir)
+11_Mayis,Spot Kamyonet,Yalova,Tekirdağ,1,5600,7806,Uğrama (İstanbul)
+17_Mayis,Kiralık Tir,İstanbul,Balıkesir,1,22400,9712,Uğrama (Yalova)
+15_Mayis,Spot Tir,İstanbul,Bilecik,1,22400,14915,Uğrama (Yalova)
+16_Mayis,Spot Kamyonet,İstanbul,Bilecik,1,5600,7065,Uğrama (Yalova)
+12_Mayis,Spot Tir,İstanbul,Erzincan,1,22400,35610,Uğrama (Eskişehir)
+13_Mayis,Spot Tir,İstanbul,Erzincan,1,22400,35610,Uğrama (Eskişehir)
+16_Mayis,Spot Kamyonet,İstanbul,Erzincan,1,5600,21965,Uğrama (Eskişehir)
+11_Mayis,Kiralık Tir,İstanbul,Eskişehir,1,22400,9463,Uğrama (Bilecik)
+11_Mayis,Spot Kamyon,İstanbul,Eskişehir,1,12000,11618,Uğrama (Bilecik)
+12_Mayis,Kiralık Tir,İstanbul,Eskişehir,1,22400,9463,Uğrama (Bilecik)
+12_Mayis,Spot Kamyon,İstanbul,Eskişehir,1,12000,11618,Uğrama (Bilecik)
+13_Mayis,Kiralık Tir,İstanbul,Eskişehir,1,22400,9463,Uğrama (Bilecik)
+13_Mayis,Spot Kamyon,İstanbul,Eskişehir,1,12000,11618,Uğrama (Bilecik)
+14_Mayis,Kiralık Tir,İstanbul,Eskişehir,1,22400,9463,Uğrama (Bilecik)
+14_Mayis,Spot Kamyon,İstanbul,Eskişehir,1,12000,11618,Uğrama (Bilecik)
+17_Mayis,Kiralık Tir,İstanbul,Eskişehir,1,22400,9463,Uğrama (Bilecik)
+11_Mayis,Spot Tir,İstanbul,Isparta,1,22400,22024,Uğrama (Eskişehir)
+14_Mayis,Spot Kamyon,İstanbul,Isparta,1,12000,16310,Uğrama (Eskişehir)
+15_Mayis,Spot Kamyon,İstanbul,Isparta,1,12000,16310,Uğrama (Eskişehir)
+16_Mayis,Spot Kamyonet,İstanbul,Isparta,1,5600,12183,Uğrama (Eskişehir)
+11_Mayis,Spot Tir,İstanbul,Kütahya,1,22400,16618,Uğrama (Yalova)
+12_Mayis,Spot Tir,İstanbul,Kütahya,1,22400,16618,Uğrama (Yalova)
+13_Mayis,Spot Tir,İstanbul,Kütahya,1,22400,16618,Uğrama (Yalova)
+14_Mayis,Spot Kamyon,İstanbul,Kütahya,1,12000,11769,Uğrama (Yalova)
+17_Mayis,Spot Kamyonet,İstanbul,Kütahya,1,5600,8291,Uğrama (Yalova)
+13_Mayis,Spot Kamyon,İstanbul,Manisa,1,12000,13904,Uğrama (Balıkesir)
+14_Mayis,Spot Kamyon,İstanbul,Manisa,1,12000,14397,Uğrama (Yalova)
+15_Mayis,Spot Kamyon,İstanbul,Manisa,1,12000,14397,Uğrama (Yalova)
+11_Mayis,Spot Tir,İstanbul,Mardin,1,22400,39625,Uğrama (Eskişehir)
+12_Mayis,Spot Tir,İstanbul,Mardin,1,22400,39625,Uğrama (Eskişehir)
+14_Mayis,Spot Tir,İstanbul,Mardin,1,22400,39625,Uğrama (Eskişehir)
+15_Mayis,Spot Kamyon,İstanbul,Mardin,1,12000,31095,Uğrama (Eskişehir)
+16_Mayis,Spot Kamyonet,İstanbul,Mardin,1,5600,24856,Uğrama (Eskişehir)
+14_Mayis,Spot Tir,İstanbul,Mersin,1,22400,28634,Uğrama (Eskişehir)
+16_Mayis,Spot Kamyon,İstanbul,Mersin,1,12000,21863,Uğrama (Eskişehir)
+17_Mayis,Spot Kamyonet,İstanbul,Mersin,1,5600,16942,Uğrama (Eskişehir)
+13_Mayis,Spot Tir,İstanbul,Mersin,1,22400,28671,Uğrama (Yalova)
+11_Mayis,Spot Tir,İstanbul,Şanlıurfa,1,22400,35848,Uğrama (Eskişehir)
+11_Mayis,Spot Tir,Şanlıurfa,Manisa,1,22400,38514,Uğrama (Eskişehir)
+12_Mayis,Spot Kamyon,Şanlıurfa,Manisa,1,12000,30162,Uğrama (Eskişehir)
+13_Mayis,Spot Kamyon,Şanlıurfa,Manisa,1,12000,30162,Uğrama (Eskişehir)
+16_Mayis,Spot Kamyonet,Şanlıurfa,Manisa,1,5600,24056,Uğrama (Eskişehir)
+11_Mayis,Spot Kamyon,Şanlıurfa,Tekirdağ,1,12000,29991,Uğrama (Eskişehir)
+12_Mayis,Spot Kamyonet,Şanlıurfa,Tekirdağ,1,5600,23910,Uğrama (Eskişehir)
+13_Mayis,Spot Kamyonet,Şanlıurfa,Tekirdağ,1,5600,23910,Uğrama (Eskişehir)
+15_Mayis,Spot Kamyonet,Şanlıurfa,Tekirdağ,1,5600,23910,Uğrama (Eskişehir)
+16_Mayis,Spot Kamyonet,Şanlıurfa,Tekirdağ,1,5600,23910,Uğrama (Eskişehir)
+=========
 16_Mayis,Spot Kamyonet,Tekirdağ,Şanlıurfa,1,5600,23910,Uğrama (Eskişehir)
 14_Mayis,Spot Tir,Tekirdağ,Şanlıurfa,1,22400,38494,Uğrama (İstanbul)
 15_Mayis,Spot Tir,Tekirdağ,Şanlıurfa,1,22400,38494,Uğrama (İstanbul)
@@ -731,3 +1037,4 @@ Tarih,Araç_Tipi,Çıkış_TM,Varış_TM,Araç_Sayısı,Teslim_Edilen_Desi,Maliy
 12_Mayis,Uğrama Teslimat,Şanlıurfa,Eskişehir,0,3655,0,Uğrama Katkısı (Şanlıurfa→Eskişehir→Tekirdağ)
 12_Mayis,Uğrama Teslimat,Eskişehir,Tekirdağ,0,7154,0,Uğrama Katkısı (Şanlıurfa→Eskişehir→Tekirdağ)
 17_Mayis,Uğrama Teslimat,Eskişehir,Tekirdağ,0,683,0,Uğrama Katkısı (Şanlıurfa→Eskişehir→Tekirdağ)
+>>>>>>>>> Temporary merge branch 2

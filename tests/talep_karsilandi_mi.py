@@ -25,7 +25,7 @@ dest_col = df_payload.columns[2]
 toplam_talep_rehberi = {}
 for (source, destination), group in df_payload.groupby([src_col, dest_col]):
     hat_key = f"{str(source).strip()}-{str(destination).strip()}"
-    toplam_rec_demand = sum(round(x) for x in group['recommended_demand'])
+    toplam_rec_demand = int(group['recommended_demand'].apply(round).sum())
     toplam_talep_rehberi[hat_key] = toplam_rec_demand
 
 print(f"✓ Ebubekir'in tahmin modelinden {len(toplam_talep_rehberi)} aktif anahat talebi hafızaya alındı.")
