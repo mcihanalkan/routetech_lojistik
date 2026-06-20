@@ -166,7 +166,7 @@ for h in hatlar:
             continue
         
         # A->C ve C->B rotası var mı ve C A ile B'nin arasında mı?
-        if (f"{tm1}-{c}" in hatlar and f"{c}-{tm2}" in hatlar and 
+        if ((f"{tm1}-{c}" in hatlar or f"{c}-{tm2}" in hatlar) and 
             is_city_between(source=tm1, destination=tm2, candidate=c, center_matrix=center_matrix_df)):
             ugrama_rotalari.append((tm1, c, tm2))
 
@@ -235,12 +235,6 @@ for h in hatlar:
     tm1, tm2 = parcalar
 
     for g in gunler:
-
-        # --- Kiralık araç kapasitesi (sabit) ---
-        kiralik_toplam_kap = sum(
-            kiralik_stok_gunluk.get((h, a), 0) * arac_parametreleri[a]["kapasite_desi"]
-            for a in arac_turleri
-        )
 
         # --- Spot araç kapasitesi ---
         spot_kap_ifadesi = cp_model.LinearExpr.Sum([
