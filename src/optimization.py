@@ -159,14 +159,14 @@ for h in hatlar:
     if len(parcalar) != 2:
         continue
     tm1, tm2 = parcalar
-    
+
     for c in centers:
         # C başlangıç veya bitiş noktası olamaz
         if c == tm1 or c == tm2:
             continue
-        
+
         # A->C ve C->B rotası var mı ve C A ile B'nin arasında mı?
-        if (f"{tm1}-{c}" in hatlar and f"{c}-{tm2}" in hatlar and 
+        if (f"{tm1}-{c}" in hatlar and f"{c}-{tm2}" in hatlar and
             is_city_between(source=tm1, destination=tm2, candidate=c, center_matrix=center_matrix_df)):
             ugrama_rotalari.append((tm1, c, tm2))
 
@@ -191,6 +191,8 @@ kiralik_x = {} # kiralık araç sayısı. Direkt gider. UĞRAMA YAPMAZ!
 spot_y          = {}   # spot araç sayısı (karar değişkeni)
 ertelenen_talep = {}   # güne ait karşılanamayan talep
 biriken_talep   = {}   # önceki günden devreden + bugünkü talep
+spot_yuk_by_type = {}        # spot araç türü başına taşınan yük (mevcut değişkenlerin referansı)
+kiralik_tasinan_yuk_dict = {}  # kiralık toplam taşınan yük (mevcut değişkenlerin referansı)
 
 # Modele karar değişkenlerini tanıtıyoruz.
 for h in hatlar:
@@ -265,6 +267,7 @@ for h in hatlar:
             # Her araç türü (a) için taşınan spot yükü ayrı izole ediyoruz
             tasinan_yuk_a = model.NewIntVar(0, max_spot * kap, f'spot_net_yuk_{h}_{g}_{a}')
             spot_tasinan_yuk_listesi.append(tasinan_yuk_a)
+            spot_yuk_by_type[(h, g, a)] = tasinan_yuk_a
 
             # Fiziksel sınır: Araç türünün taşıdığı yük, açılan kapasiteyi aşamaz
             model.Add(tasinan_yuk_a <= spot_y[(h, g, a)] * kap)
@@ -311,9 +314,10 @@ for h in hatlar:
             kiralik_x[(h, g, a)] * arac_parametreleri[a]["kapasite_desi"]
             for a in arac_turleri
         ])
-        
+
         kiralik_tasinan_yuk = model.NewIntVar(0, 500000, f'kiralik_net_yuk_{h}_{g}')
         model.Add(kiralik_tasinan_yuk <= kiralik_aktif_kapasite)
+        kiralik_tasinan_yuk_dict[(h, g)] = kiralik_tasinan_yuk
 
         # FIX #2: tasinan_toplam içine SABİT kapasiteyi değil, DEĞİŞKEN olan net kiralık yükünü koyuyoruz.
         tasinan_toplam = cp_model.LinearExpr.Sum(
@@ -524,20 +528,45 @@ with open(output_file, "w", encoding="utf-8") as f:
             tm1, tm2 = parcalar
 
             for g in gunler:
+                # Kiralık yükü kapasiteye orantılı dağıt (önce hesapla, sonra yaz)
+                kiralik_yuk_toplam = solver.Value(kiralik_tasinan_yuk_dict[(h, g)])
+                toplam_kiralik_kap = sum(
+                    solver.Value(kiralik_x[(h, g, ar)]) * arac_parametreleri[ar]["kapasite_desi"]
+                    for ar in arac_turleri
+                )
+                kiralik_tip_yukleri = {}
+                kiralik_dagitilan = 0
+                son_tip = None
+                for ar in arac_turleri:
+                    ka = solver.Value(kiralik_x[(h, g, ar)])
+                    if ka > 0:
+                        tk = ka * arac_parametreleri[ar]["kapasite_desi"]
+                        ty = kiralik_yuk_toplam * tk // toplam_kiralik_kap if toplam_kiralik_kap > 0 else 0
+                        ty = min(ty, tk)
+                        kiralik_tip_yukleri[ar] = ty
+                        kiralik_dagitilan += ty
+                        son_tip = ar
+                if son_tip is not None and kiralik_dagitilan != kiralik_yuk_toplam:
+                    fark = kiralik_yuk_toplam - kiralik_dagitilan
+                    son_kap = solver.Value(kiralik_x[(h, g, son_tip)]) * arac_parametreleri[son_tip]["kapasite_desi"]
+                    kiralik_tip_yukleri[son_tip] = min(kiralik_tip_yukleri[son_tip] + fark, son_kap)
+
                 for a in arac_turleri:
-                    # Kiralık araçlar: solver'dan gerçek değeri al
                     k_adet = solver.Value(kiralik_x[(h, g, a)])
                     s_adet = solver.Value(spot_y[(h, g, a)])
                     d_rented_count += k_adet
                     d_spot_count += s_adet
                     p = arac_parametreleri[a]
-                    kapasite = p["kapasite_desi"]
 
-                    # Kiralık araçlar — her araç için ayrı satır
+                    # Kiralık araçlar
                     if k_adet > 0:
+                        tip_yuk = kiralik_tip_yukleri.get(a, 0)
+                        yuk_per_arac = tip_yuk // k_adet
+                        yuk_kalan = tip_yuk - yuk_per_arac * k_adet
                         araç_maliyet = int(p["sabit_kira"] + dist * p["kiralik_km_maliyet"])
                         for i in range(k_adet):
-                            metin = f"{g} | Kiralık {a} | {h} | {kapasite} | {araç_maliyet}\n"
+                            yuk = yuk_per_arac + (1 if i < yuk_kalan else 0)
+                            metin = f"{g} | Kiralık {a} | {h} | {yuk} | {araç_maliyet}\n"
                             f.write(metin)
                             print(metin.strip())
 
@@ -547,19 +576,23 @@ with open(output_file, "w", encoding="utf-8") as f:
                                 "Çıkış_TM": tm1,
                                 "Varış_TM": tm2,
                                 "Araç_Sayısı": 1,
-                                "Teslim_Edilen_Desi": kapasite,
+                                "Teslim_Edilen_Desi": yuk,
                                 "Maliyet_TL": araç_maliyet,
                                 "Rota_Tipi": "Direkt"
                             })
-                    
-                    # Spot araçlar — her araç için ayrı satır
+
+                    # Spot araçlar — per-tip yük zaten solver'dan geliyor
                     if s_adet > 0:
+                        spot_yuk = solver.Value(spot_yuk_by_type[(h, g, a)])
+                        spot_yuk_per_arac = spot_yuk // s_adet
+                        spot_yuk_kalan = spot_yuk - spot_yuk_per_arac * s_adet
                         spot_araç_maliyet = int(p["spot_sabit_maliyet"] + dist * p["spot_km_maliyet"])
                         for i in range(s_adet):
-                            metin = f"{g} | Spot {a} | {h} | {kapasite} | {spot_araç_maliyet}\n"
+                            yuk = spot_yuk_per_arac + (1 if i < spot_yuk_kalan else 0)
+                            metin = f"{g} | Spot {a} | {h} | {yuk} | {spot_araç_maliyet}\n"
                             f.write(metin)
                             print(metin.strip())
-                            
+
                             spot_toplam_maliyet += spot_araç_maliyet
                             csv_records.append({
                                 "Tarih": g,
@@ -567,7 +600,7 @@ with open(output_file, "w", encoding="utf-8") as f:
                                 "Çıkış_TM": tm1,
                                 "Varış_TM": tm2,
                                 "Araç_Sayısı": 1,
-                                "Teslim_Edilen_Desi": kapasite,
+                                "Teslim_Edilen_Desi": yuk,
                                 "Maliyet_TL": spot_araç_maliyet,
                                 "Rota_Tipi": "Direkt"
                             })
@@ -594,23 +627,65 @@ with open(output_file, "w", encoding="utf-8") as f:
             dist_cb = distances_2d[tm_index[c]][tm_index[b]]
             dist_toplam = dist_ac + dist_cb
             ugrama_hat = f"{a}-{b}"
-            
+
             for g in gunler:
+                ugrama_toplam_yuk_gun = (
+                    solver.Value(ugrama_yuk_ac[(a, c, b, g)]) +
+                    solver.Value(ugrama_yuk_cb[(a, c, b, g)]) +
+                    solver.Value(ugrama_yuk_ab[(a, c, b, g)])
+                )
+                ugrama_toplam_arac_gun = sum(
+                    solver.Value(ugrama_kiralik_y[(a, c, b, g, ar)]) +
+                    solver.Value(ugrama_spot_y[(a, c, b, g, ar)])
+                    for ar in arac_turleri
+                )
+                # Uğrama yükü kapasiteye orantılı dağıt
+                ugrama_toplam_kap = sum(
+                    (solver.Value(ugrama_kiralik_y[(a, c, b, g, ar)]) + solver.Value(ugrama_spot_y[(a, c, b, g, ar)])) * arac_parametreleri[ar]["kapasite_desi"]
+                    for ar in arac_turleri
+                )
+                ugrama_tip_yukleri = {}
+                ugrama_dagitilan = 0
+                ugrama_son_tip = None
+                for ar in arac_turleri:
+                    u_toplam_adet = solver.Value(ugrama_kiralik_y[(a, c, b, g, ar)]) + solver.Value(ugrama_spot_y[(a, c, b, g, ar)])
+                    if u_toplam_adet > 0:
+                        tk = u_toplam_adet * arac_parametreleri[ar]["kapasite_desi"]
+                        ty = ugrama_toplam_yuk_gun * tk // ugrama_toplam_kap if ugrama_toplam_kap > 0 else 0
+                        ty = min(ty, tk)
+                        ugrama_tip_yukleri[ar] = ty
+                        ugrama_dagitilan += ty
+                        ugrama_son_tip = ar
+                if ugrama_son_tip is not None and ugrama_dagitilan != ugrama_toplam_yuk_gun:
+                    fark = ugrama_toplam_yuk_gun - ugrama_dagitilan
+                    u_son_adet = solver.Value(ugrama_kiralik_y[(a, c, b, g, ugrama_son_tip)]) + solver.Value(ugrama_spot_y[(a, c, b, g, ugrama_son_tip)])
+                    son_kap = u_son_adet * arac_parametreleri[ugrama_son_tip]["kapasite_desi"]
+                    ugrama_tip_yukleri[ugrama_son_tip] = min(ugrama_tip_yukleri[ugrama_son_tip] + fark, son_kap)
+
                 for arac in arac_turleri:
                     p = arac_parametreleri[arac]
-                    kapasite = p["kapasite_desi"]
-                    
-                    # Kiralık uğrama — her araç için ayrı satır
                     u_k_adet = solver.Value(ugrama_kiralik_y[(a, c, b, g, arac)])
+                    u_s_adet = solver.Value(ugrama_spot_y[(a, c, b, g, arac)])
+                    u_toplam = u_k_adet + u_s_adet
                     u_rented_count += u_k_adet
-                    
+                    u_spot_count += u_s_adet
+                    tip_yuk = ugrama_tip_yukleri.get(arac, 0)
+
+                    if u_toplam > 0:
+                        yuk_per_arac = tip_yuk // u_toplam
+                        yuk_kalan = tip_yuk - yuk_per_arac * u_toplam
+                        arac_sira = 0
+
+                    # Kiralık uğrama
                     if u_k_adet > 0:
                         araç_maliyet = int(p["sabit_kira"] + dist_toplam * p["kiralik_km_maliyet"])
                         dist_direkt_ab = distances_2d[tm_index[a]][tm_index[b]]
                         ekstra_km_maliyet = int((dist_toplam - dist_direkt_ab) * p["kiralik_km_maliyet"])
                         for i in range(u_k_adet):
                             kiralik_ugrama_ekstra_km_toplam += ekstra_km_maliyet
-                            metin = f"{g} | Kiralık {arac} | {a}→{c}→{b} | {kapasite} | {araç_maliyet}\n"
+                            yuk = yuk_per_arac + (1 if arac_sira < yuk_kalan else 0)
+                            arac_sira += 1
+                            metin = f"{g} | Kiralık {arac} | {a}→{c}→{b} | {yuk} | {araç_maliyet}\n"
                             f.write(metin)
                             print(metin.strip())
 
@@ -620,21 +695,21 @@ with open(output_file, "w", encoding="utf-8") as f:
                                 "Çıkış_TM": a,
                                 "Varış_TM": b,
                                 "Araç_Sayısı": 1,
-                                "Teslim_Edilen_Desi": kapasite,
+                                "Teslim_Edilen_Desi": yuk,
                                 "Maliyet_TL": araç_maliyet,
                                 "Rota_Tipi": f"Uğrama ({c})"
                             })
-                    
-                    # Spot uğrama — her araç için ayrı satır
-                    u_s_adet = solver.Value(ugrama_spot_y[(a, c, b, g, arac)])
-                    u_spot_count += u_s_adet
+
+                    # Spot uğrama
                     if u_s_adet > 0:
                         spot_araç_maliyet = int(p["spot_sabit_maliyet"] + dist_toplam * p["spot_km_maliyet"])
                         for i in range(u_s_adet):
-                            metin = f"{g} | Spot {arac} | {a}→{c}→{b} | {kapasite} | {spot_araç_maliyet}\n"
+                            yuk = yuk_per_arac + (1 if arac_sira < yuk_kalan else 0)
+                            arac_sira += 1
+                            metin = f"{g} | Spot {arac} | {a}→{c}→{b} | {yuk} | {spot_araç_maliyet}\n"
                             f.write(metin)
                             print(metin.strip())
-                            
+
                             ugrama_toplam_maliyet += spot_araç_maliyet
                             csv_records.append({
                                 "Tarih": g,
@@ -642,7 +717,7 @@ with open(output_file, "w", encoding="utf-8") as f:
                                 "Çıkış_TM": a,
                                 "Varış_TM": b,
                                 "Araç_Sayısı": 1,
-                                "Teslim_Edilen_Desi": kapasite,
+                                "Teslim_Edilen_Desi": yuk,
                                 "Maliyet_TL": spot_araç_maliyet,
                                 "Rota_Tipi": f"Uğrama ({c})"
                             })
