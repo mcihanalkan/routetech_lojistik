@@ -250,8 +250,11 @@ def run(save_json: bool = True) -> Dict[str, Any]:
     df_ortools.to_csv(OUTPUT_CSV, index=False)
     logger.info(f"💾 OR-Tools (Algoritma) payload kaydedildi: {OUTPUT_CSV}")
 
-    # 2. JÜRİ İÇİN EXCEL ÇIKTISI
-    OUTPUT_EXCEL = str(_HERE / "ortools_payload.xlsx")
+    # 2. JÜRİ İÇİN EXCEL ÇIKTISI (Results klasörüne)
+    excel_dir = _PROJECT_ROOT / "results"
+    excel_dir.mkdir(parents=True, exist_ok=True)  # Klasör yoksa otomatik oluşturur
+    OUTPUT_EXCEL = str(excel_dir / "ortools_payload.xlsx")
+
     df_ortools.to_excel(OUTPUT_EXCEL, index=False)
     logger.info(f"📊 Jüri (Raporlama) payload kaydedildi: {OUTPUT_EXCEL}")
 
