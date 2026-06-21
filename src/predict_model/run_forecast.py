@@ -236,16 +236,25 @@ def run(save_json: bool = True) -> Dict[str, Any]:
         date_key    = DATE_COL,
         group_key   = GROUP_COL,
     )
-    # --- 5. CSV Kaydet (OR-Tools doğrudan bu dosyayı okuyacak) ---
-    payload = band.to_alns_payload()
+    # --- 5. Çıktıları Kaydet (Algoritma ve Jüri İçin) ---
+
+    # İstersen JSON üretmeyi kapatabiliriz (zaten argüman olarak False vereceğiz)
     if save_json:
+        payload = band.to_alns_payload()
         with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         logger.info(f"ALNS payload kaydedildi: {OUTPUT_JSON}")
 
+    # 1. ALGORİTMA İÇİN CSV ÇIKTISI
     OUTPUT_CSV = str(_HERE / "ortools_payload.csv")
     df_ortools.to_csv(OUTPUT_CSV, index=False)
-    logger.info(f"💾 OR-Tools payload kaydedildi: {OUTPUT_CSV}")
+    logger.info(f"💾 OR-Tools (Algoritma) payload kaydedildi: {OUTPUT_CSV}")
+
+    # 2. JÜRİ İÇİN EXCEL ÇIKTISI
+    OUTPUT_EXCEL = str(_HERE / "ortools_payload.xlsx")
+    df_ortools.to_excel(OUTPUT_EXCEL, index=False)
+    logger.info(f"📊 Jüri (Raporlama) payload kaydedildi: {OUTPUT_EXCEL}")
+
     logger.info(
         f"\n{'='*60}\n"
         f"✅ Tamamlandı!\n"
@@ -264,4 +273,4 @@ def run(save_json: bool = True) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    run(save_json=True)
+    run(save_json=False)
