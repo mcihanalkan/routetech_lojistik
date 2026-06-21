@@ -4,6 +4,9 @@ import os
 import pandas as pd
 from ortools.sat.python import cp_model
 import sys
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, PatternFill
+import re
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "haversine"))
 from haversine import GetDistanceMatrixAsList, GetCenters, is_city_between
@@ -733,6 +736,8 @@ with open(output_file, "w", encoding="utf-8") as f:
                 yuk_ac = solver.Value(ugrama_yuk_ac[(a, c, b, g)])
                 yuk_cb = solver.Value(ugrama_yuk_cb[(a, c, b, g)])
 
+                yuk_ab = solver.Value(ugrama_yuk_ab[(a, c, b, g)])
+
                 if yuk_ac > 0:
                     csv_records.append({
                         "Tarih": g,
@@ -754,6 +759,17 @@ with open(output_file, "w", encoding="utf-8") as f:
                         "Teslim_Edilen_Desi": yuk_cb,
                         "Maliyet_TL": 0,
                         "Rota_Tipi": f"Uğrama Katkısı ({a}→{c}→{b})"
+                    })
+                if yuk_ab > 0:
+                    csv_records.append({
+                        "Tarih": g,
+                        "Araç_Tipi": "Uğrama Transit",
+                        "Çıkış_TM": a,
+                        "Varış_TM": b,
+                        "Araç_Sayısı": 0,
+                        "Teslim_Edilen_Desi": yuk_ab,
+                        "Maliyet_TL": 0,
+                        "Rota_Tipi": f"Uğrama Transit ({a}→{c}→{b})"
                     })
 
         # --- Teknofest Kural #5: Toplam Maliyet Özeti ---
@@ -802,3 +818,91 @@ if csv_records:
     print(f"\n✅ CSV çıktısı kaydedildi: {csv_output_file}")
 else:
     print("\n⚠️  CSV çıktısı için veri yok!")
+
+xlsx_output_file = Path(__file__).parent.parent / "results" / "optimization_results.xlsx"
+
+if csv_records:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Teslim Planı"
+
+    basliklar = ["Tarih", "Araç Tipi", "Çıkış TM", "Varış TM", "Atanan Desi", "Maliyet", "Rota Tipi"]
+    ws.append(basliklar)
+    for hucre in ws[1]:
+        hucre.font = Font(bold=True, color="FFFFFF")
+        hucre.fill = PatternFill("solid", start_color="4472C4")
+        hucre.alignment = Alignment(horizontal="center")
+
+    def gun_etiketini_tarihe_cevir(gun_etiketi: str) -> str:
+        eslesme = re.match(r"(\d+)_Mayis", str(gun_etiketi))
+        if eslesme:
+            gun_no = int(eslesme.group(1))
+            return f"2026-05-{gun_no:02d}"
+        return str(gun_etiketi)
+
+    ugrama_bacak_map = {}
+    for kayit in csv_records:
+        arac_tipi_csv = kayit.get("Araç_Tipi", "")
+        rota_tipi = kayit.get("Rota_Tipi", "")
+
+        if arac_tipi_csv == "Uğrama Teslimat":
+            eslesme = re.match(r"Uğrama Katkısı \((.+?)→(.+?)→(.+?)\)", str(rota_tipi))
+            if eslesme:
+                a_tm, c_tm, b_tm = eslesme.group(1), eslesme.group(2), eslesme.group(3)
+                tarih = kayit.get("Tarih", "")
+                key = (tarih, a_tm, c_tm, b_tm)
+                if key not in ugrama_bacak_map:
+                    ugrama_bacak_map[key] = {"ac_desi": 0, "cb_desi": 0, "ab_desi": 0}
+                cikis = kayit.get("Çıkış_TM", "")
+                varis = kayit.get("Varış_TM", "")
+                desi = kayit.get("Teslim_Edilen_Desi", 0)
+                if cikis == a_tm and varis == c_tm:
+                    ugrama_bacak_map[key]["ac_desi"] = desi
+                elif cikis == c_tm and varis == b_tm:
+                    ugrama_bacak_map[key]["cb_desi"] = desi
+
+        elif arac_tipi_csv == "Uğrama Transit":
+            eslesme = re.match(r"Uğrama Transit \((.+?)→(.+?)→(.+?)\)", str(rota_tipi))
+            if eslesme:
+                a_tm, c_tm, b_tm = eslesme.group(1), eslesme.group(2), eslesme.group(3)
+                tarih = kayit.get("Tarih", "")
+                key = (tarih, a_tm, c_tm, b_tm)
+                if key not in ugrama_bacak_map:
+                    ugrama_bacak_map[key] = {"ac_desi": 0, "cb_desi": 0, "ab_desi": 0}
+                ugrama_bacak_map[key]["ab_desi"] = kayit.get("Teslim_Edilen_Desi", 0)
+
+    for kayit in csv_records:
+        if kayit.get("Araç_Tipi") in ("Uğrama Teslimat", "Uğrama Transit"):
+            continue
+
+        tarih = gun_etiketini_tarihe_cevir(kayit.get("Tarih", ""))
+        tarih_raw = kayit.get("Tarih", "")
+        arac_tipi = kayit.get("Araç_Tipi", "")
+        cikis_tm = kayit.get("Çıkış_TM", "")
+        varis_tm = kayit.get("Varış_TM", "")
+        rota_tipi = kayit.get("Rota_Tipi", "")
+        atanan_desi = kayit.get("Teslim_Edilen_Desi", 0)
+        maliyet = kayit.get("Maliyet_TL", 0)
+
+        ugrama_eslesme = re.match(r"Uğrama \((.+)\)", str(rota_tipi))
+
+        if ugrama_eslesme:
+            ara_durak = ugrama_eslesme.group(1)
+            key = (tarih_raw, cikis_tm, ara_durak, varis_tm)
+            bacaklar = ugrama_bacak_map.get(key, {"ac_desi": 0, "cb_desi": 0})
+
+            ws.append([tarih, arac_tipi, cikis_tm, ara_durak, bacaklar["ac_desi"], "", "Uğrama 1/3"])
+            ws.append([tarih, arac_tipi, ara_durak, varis_tm, bacaklar["cb_desi"], "", "Uğrama 2/3"])
+            ws.append([tarih, arac_tipi, cikis_tm, varis_tm, bacaklar["ab_desi"], maliyet, "Uğrama 3/3"])
+            continue
+
+        ws.append([tarih, arac_tipi, cikis_tm, varis_tm, atanan_desi, maliyet, "Direkt"])
+
+    genislikler = {"A": 14, "B": 22, "C": 16, "D": 16, "E": 16, "F": 14, "G": 14}
+    for sutun, genislik in genislikler.items():
+        ws.column_dimensions[sutun].width = genislik
+
+    wb.save(xlsx_output_file)
+    print(f"\n✅ Excel (.xlsx) çıktısı kaydedildi: {xlsx_output_file}")
+else:
+    print("\n⚠️  Excel çıktısı için veri yok!")
