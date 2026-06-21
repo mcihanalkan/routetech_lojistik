@@ -1,19 +1,37 @@
 # RouteTech Lojistik - Anahat Optimizasyonu
 
-Yapay zeka destekli lojistik anahat optimizasyonu yarismasi projesi.
+Yapay zeka destekli lojistik anahat optimizasyonu yarışması projesidir.
 ML tabanli talep tahmini ve OR-Tools ile arac/rota optimizasyonu icerir.
 
 ## Toplam Maliyet Sonucu
 
-**Toplam Maliyet: 7.019.811 TL**
+**Toplam Maliyet: 7.160.246 TL**
 
 | Kalem | Tutar (TL) |
 |---|---|
 | Kiralik arac sabit maliyeti | 802.704 |
-| Kiralik ugrama ekstra km maliyeti | 6.566 |
-| Spot arac maliyeti (direkt) | 2.643.903 |
-| Spot arac maliyeti (ugrama) | 3.317.686 |
-| SLA gecikme cezasi | 248.952 |
+| Kiralik ugrama ekstra km maliyeti | 0 |
+| Spot arac maliyeti (direkt) | 2.638.333 |
+| Spot arac maliyeti (ugrama) | 3.503.425 |
+| SLA gecikme cezasi | 215.784 |
+
+| Istatistik | Deger |
+|---|---|
+| Toplam arac sayisi | 446 |
+| Direkt kiralik arac | 98 |
+| Ugrama kiralik arac | 0 |
+| Direkt spot arac | 165 |
+| Ugrama spot arac | 183 |
+| Toplam ertelenen yuk | 53.946 desi |
+| Cozucu suresi | ~453 sn |
+
+## Test Ortami
+
+- **Islemci**: AMD Ryzen 7 7735HS (16 thread, ~3.2 GHz)
+- **RAM**: 32 GB DDR5
+- **Isletim Sistemi**: Windows 11 Home 10.0.26200
+- **Cihaz**: ASUS TUF Gaming A15 FA507NV
+- **OR-Tools Cozucu Suresi**: 450 sn (max_time_seconds)
 
 ## Pipeline
 
@@ -55,4 +73,7 @@ python main.py --skip-predict
 
 - `data/outputs/optimization_input.json` — OR-Tools girdi paketi
 - `src/predict_model/ortools_payload.csv` — Algoritma icin tahmin ciktisi
-- `src/predict_model/ortools_payload.xlsx` — Juri raporlamasi icin Excel ciktisi
+- `results/ortools_payload.xlsx` — Juri raporlamasi icin Excel ciktisi
+- `results/optimization_results.xlsx` — Optimizasyon sonuc raporu (Excel)
+- `results/optimization_results.csv` — Optimizasyon sonuc verisi
+- `results/optimization_results.txt` — Detayli sonuc raporu
