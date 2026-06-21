@@ -326,6 +326,28 @@ for h in hatlar:
             ertelenen_talep[(h, g)] <= biriken_talep[(h, g)]
         )
 
+        # =============================================================================
+        # SIKIŞTIRICI KISIT: Büyük Araç Önceliği (TIR Tetikleme)
+        # =============================================================================
+        # O gün o hatta spot araçlarla taşınan TOPLAM net yükü alıyoruz
+        toplam_spot_yuk_ifadesi = cp_model.LinearExpr.Sum(spot_tasinan_yuk_listesi)
+        
+        # TIR kapasite eşiği (arac_parametreleri["Tir"]["kapasite_desi"]) -> Genellikle 22400
+        tir_kapasite = arac_parametreleri["Tir"]["kapasite_desi"]
+        
+        # 1. Koşul Bayrağı açıyoruz: Yük TIR kapasitesini aşıyor mu? (0 veya 1)
+        yuk_tiri_asiyor_mu = model.NewBoolVar(f'yuk_tiri_asiyor_{h}_{g}')
+        
+        # 2. Mantıksal Bağlantı (Big-M yöntemiyle sıkıştırma):
+        # Eğer toplam yük > tir_kapasite ise, 'yuk_tiri_asiyor_mu' mutlaka 1 olmak zorundadır.
+        # İpucu: toplam_spot_yuk_ifadesi <= tir_kapasite + max_talep * yuk_tiri_asiyor_mu
+        model.Add(toplam_spot_yuk_ifadesi > tir_kapasite).OnlyEnforceIf(yuk_tiri_asiyor_mu)
+        model.Add(toplam_spot_yuk_ifadesi <= tir_kapasite).OnlyEnforceIf(yuk_tiri_asiyor_mu.Not())
+        
+        # 3. Tetikleme Kısıtı: Eğer bayrak 1 ise, en az 1 adet Spot TIR açılmak zorundadır!
+        # Böylece çözücü 3 tane kamyonet açıp 3 defa sabit maliyet ödemek yerine, 1 TIR açmaya zorlanır.
+        model.Add(spot_y[(h, g, "Tir")] >= 1).OnlyEnforceIf(yuk_tiri_asiyor_mu)
+
 # ---------------------------------------------------------------
 # KISIT D — Uğrama Araç Kapasite Kısıtları 
 # ---------------------------------------------------------------
