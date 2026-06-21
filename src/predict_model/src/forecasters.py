@@ -28,6 +28,7 @@ import pandas as pd
 import numpy as np
 import logging
 import time
+import joblib
 from typing import Optional, List, Dict, Any, Tuple
 from copy import deepcopy
 
@@ -1180,3 +1181,17 @@ class DemandForecaster(BaseForecaster):
             ]
         lines.append("=" * 55)
         return "\n".join(lines)
+
+    def save_model(self, file_path: str) -> None:
+        """Eğitilmiş modeli, içindeki context_buffer ve çarpanlarla birlikte kaydeder (.joblib)"""
+        if not self.is_fitted_:
+            raise ValueError("❌ Model henüz eğitilmedi, kaydedilemez!")
+        joblib.dump(self, file_path)
+        if self.logging_enabled:
+            logger.info(f"💾 Eğitilmiş model başarıyla kaydedildi: {file_path}")
+
+    @classmethod
+    def load_model(cls, file_path: str) -> "DemandForecaster":
+        """Hazır eğitilmiş modeli diskten yükler"""
+        model = joblib.load(file_path)
+        return model

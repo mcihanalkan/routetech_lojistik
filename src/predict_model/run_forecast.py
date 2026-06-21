@@ -38,7 +38,8 @@ logger = logging.getLogger(__name__)
 _HERE          = Path(__file__).resolve().parent          # src/predict_model/
 _PROJECT_ROOT  = _HERE.parent.parent                      # routetech_lojistik/
 
-DATA_PATH      = str(_PROJECT_ROOT / "data" / "raw" / "Desi_talep.xlsx")
+DATA_PATH       = str(_PROJECT_ROOT / "data" / "raw" / "Desi_talep.xlsx")
+MODEL_FILE_PATH = str(_PROJECT_ROOT / "src" / "predict_model" / "trained_demand_model.joblib")
 PREDICT_START  = "2026-05-11"
 PREDICT_END    = "2026-05-17"
 OUTPUT_JSON    = str(_PROJECT_ROOT / "alns_payload.json")  # debug için; ALNS motoru RAM'den alır
@@ -180,19 +181,31 @@ def run(save_json: bool = True) -> Dict[str, Any]:
     # --- 1. Veri ---
     full_df = load_dataset(DATA_PATH)
 
-    # --- 2. Fit ---
-    forecaster = DemandForecaster(
-        target_column    = TARGET_COL,
-        date_column      = DATE_COL,
-        group_column     = GROUP_COL,
-        train_test_split = 0.85,
-        forecast_horizon = 7,
-        lags             = [1, 7, 14, 21, 30],  # lag_30 geri eklendi: aylık sezonsallık
-        rolling_windows  = [7, 14],
-        logging_enabled  = True,
-        random_state     = 42,
-    )
-    forecaster.fit(full_df)
+    # --- 2. Hazır Model Yükle VEYA Baştan Eğit ---
+    model_path = Path(MODEL_FILE_PATH)
+
+    if model_path.exists():
+        # EĞER DOSYA VARSA: Hiç eğitimle uğraşma, direkt yükle!
+        logger.info(f"📦 Hazır eğitilmiş model bulundu! Yükleniyor: {model_path.name}")
+        forecaster = DemandForecaster.load_model(str(model_path))
+    else:
+        # EĞER DOSYA YOKSA: 1 kereye mahsus eğit ve o dosyayı oluştur
+        logger.info("⚠️ Hazır model dosyası bulunamadı. Model sıfırdan eğitiliyor...")
+        forecaster = DemandForecaster(
+            target_column    = TARGET_COL,
+            date_column      = DATE_COL,
+            group_column     = GROUP_COL,
+            train_test_split = 0.85,
+            forecast_horizon = 7,
+            lags             = [1, 7, 14, 21, 30],  # lag_30 geri eklendi: aylık sezonsallık
+            rolling_windows  = [7, 14],
+            logging_enabled  = True,
+            random_state     = 42,
+        )
+        forecaster.fit(full_df)
+
+        # Eğitilen modeli gelecekte kullanmak üzere kaydet (.joblib dosyası olarak)
+        forecaster.save_model(str(model_path))
 
     # --- Feature Importance ---
     importances = forecaster.get_feature_importances()
