@@ -42,7 +42,7 @@ DATA_PATH       = str(_PROJECT_ROOT / "data" / "raw" / "Desi_talep.xlsx")
 MODEL_FILE_PATH = str(_PROJECT_ROOT / "src" / "predict_model" / "trained_demand_model.joblib")
 PREDICT_START  = "2026-05-11"
 PREDICT_END    = "2026-05-17"
-OUTPUT_JSON    = str(_PROJECT_ROOT / "alns_payload.json")  # debug için; ALNS motoru RAM'den alır
+OUTPUT_JSON    = str(_HERE / "alns_payload.json")# debug için; ALNS motoru RAM'den alır
 
 TARGET_COL  = "desi_hacmi"
 DATE_COL    = "tarih"
@@ -243,7 +243,7 @@ def run(save_json: bool = True) -> Dict[str, Any]:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         logger.info(f"ALNS payload kaydedildi: {OUTPUT_JSON}")
 
-    OUTPUT_CSV = str(_PROJECT_ROOT / "ortools_payload.csv")
+    OUTPUT_CSV = str(_HERE / "ortools_payload.csv")
     df_ortools.to_csv(OUTPUT_CSV, index=False)
     logger.info(f"💾 OR-Tools payload kaydedildi: {OUTPUT_CSV}")
     logger.info(
