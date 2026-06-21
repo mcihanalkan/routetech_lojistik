@@ -797,7 +797,6 @@ with open(output_file, "w", encoding="utf-8") as f:
             ÖZET İSTATİSTİKLER (Teknofest Kural #5 — Toplam Maliyet)
             {'=' * 80}
               Kiralık Araç Sabit Maliyeti : {kiralik_sabit_toplam:>15,.0f} TL  (her zaman ödenir)
-              Kiralık Uğrama Ekstra KM    : {kiralik_ugrama_ekstra_km_toplam:>15,.0f} TL
               Spot Araç Maliyeti (Direkt) : {spot_toplam_maliyet:>15,.0f} TL
               Spot Araç Maliyeti (Uğrama) : {ugrama_toplam_maliyet:>15,.0f} TL
               SLA Gecikme Cezası          : {sla_ceza_toplam:>15,.0f} TL
@@ -809,7 +808,6 @@ with open(output_file, "w", encoding="utf-8") as f:
               Objective Value (optimizer) : {solver.ObjectiveValue():>15,.0f}
               TOPLAM ARAÇ SAYISI          : {u_rented_count + d_rented_count + u_spot_count + d_spot_count}
               Direkt Kiralik Araç Sayısı  : {d_rented_count}
-              Uğrama Kiralik Araç Sayısı  : {u_rented_count} 
               Direkt Spot Araç Sayısı  : {d_spot_count} 
               Uğrama Spot Araç Sayısı  : {u_spot_count} 
  

@@ -5,23 +5,23 @@ ML tabanlı talep tahmini ve OR-Tools ile araç/rota optimizasyonu içerir.
 
 ## Toplam Maliyet Sonucu
 
-**Toplam Maliyet: 7.160.246 TL**
+**Toplam Maliyet: 7,176,211 TL**
 
 | Kalem | Tutar (TL) |
 |---|---|
 | Kiralık araç sabit maliyeti | 802.704 |
-| Spot araç maliyeti (direkt) | 2.638.333 |
-| Spot araç maliyeti (uğrama) | 3.503.425 |
-| SLA gecikme cezası | 215.784 |
+| Spot araç maliyeti (direkt) | 2,643,666 |
+| Spot araç maliyeti (uğrama) | 3,478,709 |
+| SLA gecikme cezası | 251,132 |
 
 | İstatistik | Değer |
 |---|---|
-| Toplam araç sayısı | 446 |
+| Toplam araç sayısı | 443 |
 | Direkt kiralık araç | 98 |
-| Direkt spot araç | 165 |
+| Direkt spot araç | 162 |
 | Uğrama spot araç | 183 |
-| Toplam ertelenen yük | 53.946 desi |
-| Çözücü süresi | ~453 sn |
+| Toplam ertelenen yük | 62,783 desi |
+| Çözücü süresi | ~451 sn |
 
 ## Test Ortamı
 
