@@ -356,14 +356,16 @@ for (a, c, b) in ugrama_rotalari:
             kap = arac_parametreleri[arac]["kapasite_desi"]
 
             # --- Spot ugrama ---
-            u_spot_net_a = model.NewIntVar(0, max_spot * kap * 2, f'u_spot_net_{a}_{c}_{b}_{g}_{arac}')
-            u_tasinan_net_listesi.append(u_spot_net_a)
-            model.Add(u_spot_net_a <= ugrama_spot_y[(a, c, b, g, arac)] * kap * 2)
+            u_spot_net_a = model.NewIntVar(0, max_spot * kap * 2, f'u_spot_net_{a}_{c}_{b}_{g}_{arac}') # Toplam spot yükü
+            u_tasinan_net_listesi.append(u_spot_net_a) 
+            model.Add(u_spot_net_a <= ugrama_spot_y[(a, c, b, g, arac)] * kap * 2) # 
 
             # Teknofest Kural #1: %10 doluluk kuralı (son gün hariç)
             if g != gunler[-1]:
-                model.Add(ugrama_spot_y[(a, c, b, g, arac)] * kap <= u_spot_net_a * 10)
-
+                model.Add(ugrama_spot_y[(a, c, b, g, arac)] * kap <= u_spot_net_a * 10) 
+                # Uğrama spot araç sayısı * kap * 0.10 <= toplam spot yükü. Bunu araç araç ayrı bir şekilde yapmamız gerekir.
+                # kap -> 5000, toplam spot yükü = 22000. 5000*5 * 0.1 <= 22000 = 2500 <= 22000 sağlandı fakat.
+                # Araç 1: 5000, araç 2: 5000, araç 3: 5000, araç 4: 5000
             # --- Kiralık ugrama: %10 uygulanmaz (zorunlu kalkış, Teknofest Kural #3) ---
             ugrama_hat = f"{a}-{b}"
             max_kir = kiralik_stok_gunluk.get((ugrama_hat, arac), 0)
