@@ -233,8 +233,13 @@ def run_ultimate_testing():
     print("=" * 95)
 
     toplam_csv_maliyet = df_results['Maliyet_TL'].sum()
-    print(f"💰 CSV'deki Toplam Sefer Maliyeti               : {toplam_csv_maliyet:,.0f} TL")
-    print(f"💰 Haversine Matrisinden Doğrulanan Net Maliyet : {toplam_beklenen_maliyet:,.0f} TL")
+    if toplam_csv_maliyet == toplam_beklenen_maliyet:
+        print(f"✅ CSV'deki toplam sefer maliyeti, Haversine matrisinden doğrulanan net maliyet ile eşleşti!")
+    else:
+        print(f"❌ CSV'deki toplam sefer maliyeti, Haversine matrisinden doğrulanan net maliyet ile eşleşmedi...")
+
+    # print(f"💰 CSV'deki Toplam Sefer Maliyeti               : {toplam_csv_maliyet:,.0f} TL")
+    # print(f"💰 Haversine Matrisinden Doğrulanan Net Maliyet : {toplam_beklenen_maliyet:,.0f} TL")
     
     fark = abs(toplam_csv_maliyet - toplam_beklenen_maliyet)
     if fark > 15 * len(df_results): 
