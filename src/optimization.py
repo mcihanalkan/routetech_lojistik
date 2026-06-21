@@ -4,6 +4,9 @@ import os
 import pandas as pd
 from ortools.sat.python import cp_model
 import sys
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, PatternFill
+import re
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "haversine"))
 from haversine import GetDistanceMatrixAsList, GetCenters, is_city_between
@@ -802,3 +805,75 @@ if csv_records:
     print(f"\n✅ CSV çıktısı kaydedildi: {csv_output_file}")
 else:
     print("\n⚠️  CSV çıktısı için veri yok!")
+
+xlsx_output_file = Path(__file__).parent.parent / "results" / "optimization_results.xlsx"
+ 
+if csv_records:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Teslim Planı"
+ 
+    # Başlık satırı — istenen format: Tarih | Araç Tipi | Çıkış TM | Varış TM | Atanan Desi | Maliyet
+    basliklar = ["Tarih", "Araç Tipi", "Çıkış TM", "Varış TM", "Atanan Desi", "Maliyet"]
+    ws.append(basliklar)
+    for hucre in ws[1]:
+        hucre.font = Font(bold=True, color="FFFFFF")
+        hucre.fill = PatternFill("solid", start_color="4472C4")
+        hucre.alignment = Alignment(horizontal="center")
+ 
+    def gun_etiketini_tarihe_cevir(gun_etiketi: str) -> str:
+        """'11_Mayis' -> '2026-05-11' formatına çevirir."""
+        eslesme = re.match(r"(\d+)_Mayis", str(gun_etiketi))
+        if eslesme:
+            gun_no = int(eslesme.group(1))
+            return f"2026-05-{gun_no:02d}"
+        return str(gun_etiketi)
+ 
+    for kayit in csv_records:
+        tarih = gun_etiketini_tarihe_cevir(kayit.get("Tarih", ""))
+        arac_tipi = kayit.get("Araç_Tipi", "")
+        cikis_tm = kayit.get("Çıkış_TM", "")
+        varis_tm = kayit.get("Varış_TM", "")
+        rota_tipi = kayit.get("Rota_Tipi", "")
+        atanan_desi = kayit.get("Teslim_Edilen_Desi", 0)
+        maliyet = kayit.get("Maliyet_TL", 0)
+ 
+        # Uğrama rotaları (A→C→B) üç ayrı satır olarak yazılmalı:
+        #   A → C   |   C → B   |   A → B (toplam rota bilgisi)
+        # "Rota_Tipi" alanı "Uğrama (C)" formatındaysa bu bir uğrama satırıdır.
+        ugrama_eslesme = re.match(r"Uğrama \((.+)\)", str(rota_tipi))
+ 
+        if ugrama_eslesme and "→" not in str(cikis_tm) and varis_tm and cikis_tm:
+            # Bu satır zaten orijinal kodun "Uğrama Teslimat" kayıtlarından biri
+            # olabilir (A→C veya C→B bacaklarını ayrı ayrı tutuyor) — bu durumda
+            # doğrudan tek satır olarak yazılır.
+            if arac_tipi == "Uğrama Teslimat":
+                ws.append([tarih, "Uğrama Teslimatı", cikis_tm, varis_tm, atanan_desi, maliyet])
+                continue
+ 
+            # Araç satırı ise (Kiralık/Spot ... | a→c→b formatında Varış_TM): bunu
+            # A→C, C→B ve A→B (toplam) olmak üzere 3 ayrı satıra böl.
+            ara_durak = ugrama_eslesme.group(1)
+            varis_parcalari = str(varis_tm).split("→")
+            if len(varis_parcalari) == 2:
+                c_tm, b_tm = varis_parcalari[0], varis_parcalari[1]
+            else:
+                c_tm, b_tm = ara_durak, varis_tm
+ 
+            ws.append([tarih, arac_tipi, cikis_tm, c_tm, "", ""])           # A → C bacağı
+            ws.append([tarih, arac_tipi, c_tm, b_tm, "", ""])               # C → B bacağı
+            ws.append([tarih, arac_tipi, cikis_tm, b_tm, atanan_desi, maliyet])  # A → B toplam (yük + maliyet)
+            continue
+ 
+        # Direkt rota veya erteleme kaydı — tek satır
+        ws.append([tarih, arac_tipi, cikis_tm, varis_tm, atanan_desi, maliyet])
+ 
+    # Sütun genişlikleri
+    genislikler = {"A": 14, "B": 22, "C": 16, "D": 16, "E": 16, "F": 14}
+    for sutun, genislik in genislikler.items():
+        ws.column_dimensions[sutun].width = genislik
+ 
+    wb.save(xlsx_output_file)
+    print(f"\n✅ Excel (.xlsx) çıktısı kaydedildi: {xlsx_output_file}")
+else:
+    print("\n⚠️  Excel çıktısı için veri yok!")
