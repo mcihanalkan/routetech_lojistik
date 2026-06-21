@@ -10,7 +10,6 @@ ML tabanli talep tahmini ve OR-Tools ile arac/rota optimizasyonu icerir.
 | Kalem | Tutar (TL) |
 |---|---|
 | Kiralik arac sabit maliyeti | 802.704 |
-| Kiralik ugrama ekstra km maliyeti | 0 |
 | Spot arac maliyeti (direkt) | 2.638.333 |
 | Spot arac maliyeti (ugrama) | 3.503.425 |
 | SLA gecikme cezasi | 215.784 |
@@ -19,7 +18,6 @@ ML tabanli talep tahmini ve OR-Tools ile arac/rota optimizasyonu icerir.
 |---|---|
 | Toplam arac sayisi | 446 |
 | Direkt kiralik arac | 98 |
-| Ugrama kiralik arac | 0 |
 | Direkt spot arac | 165 |
 | Ugrama spot arac | 183 |
 | Toplam ertelenen yuk | 53.946 desi |
