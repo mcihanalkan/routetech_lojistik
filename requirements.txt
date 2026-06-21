@@ -10,3 +10,4 @@ holidays>=0.45
 optuna>=3.6
 polars>=0.20
 haversine>=2.8
+joblib>=1.3.0
