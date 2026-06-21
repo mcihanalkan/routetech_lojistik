@@ -210,7 +210,7 @@ for h in hatlar:
 
 # Uğrama araç değişkenleri
 ugrama_spot_y = {}   # sadece spot araçlar için
-ugrama_kiralik_y = {}  # kiralık araçlar için
+# ugrama_kiralik_y = {}  # kiralık araçlar için
 
 ugrama_yuk_ac = {}
 ugrama_yuk_cb = {}
@@ -220,8 +220,8 @@ for (a, c, b) in ugrama_rotalari:
     for g in gunler:
         for arac in arac_turleri:
             ugrama_hat = f"{a}-{b}"
-            max_kir = kiralik_stok_gunluk.get((ugrama_hat, arac), 0)
-            ugrama_kiralik_y[(a, c, b, g, arac)] = model.NewIntVar(0, max_kir, f'uk_{a}_{c}_{b}_{g}_{arac}')
+            # max_kir = kiralik_stok_gunluk.get((ugrama_hat, arac), 0)
+            # ugrama_kiralik_y[(a, c, b, g, arac)] = model.NewIntVar(0, max_kir, f'uk_{a}_{c}_{b}_{g}_{arac}')
             ugrama_spot_y[(a, c, b, g, arac)] = model.NewIntVar(0, max_spot, f'uy_{a}_{c}_{b}_{g}_{arac}')
         # A'dan C'ye gidecek ve indirilecek yük
         ugrama_yuk_ac[(a, c, b, g)] = model.NewIntVar(0, max_talep_hatta, f'uac_{a}_{c}_{b}_{g}')
@@ -341,12 +341,15 @@ for h in hatlar:
 # ---------------------------------------------------------------
 for (a, c, b) in ugrama_rotalari:
     for g in gunler:
+        # u_kap = cp_model.LinearExpr.Sum([
+        #     ugrama_spot_y[(a, c, b, g, arac)] * arac_parametreleri[arac]["kapasite_desi"] +
+        #     ugrama_kiralik_y[(a, c, b, g, arac)] * arac_parametreleri[arac]["kapasite_desi"]
+        #     for arac in arac_turleri
+        # ])
         u_kap = cp_model.LinearExpr.Sum([
-            ugrama_spot_y[(a, c, b, g, arac)] * arac_parametreleri[arac]["kapasite_desi"] +
-            ugrama_kiralik_y[(a, c, b, g, arac)] * arac_parametreleri[arac]["kapasite_desi"]
+            ugrama_spot_y[(a, c, b, g, arac)] * arac_parametreleri[arac]["kapasite_desi"]
             for arac in arac_turleri
         ])
-
         # A→C segmentinde: ac yükü + ab yükü (ab yükü tüm yol boyunca araçta)
         model.Add(ugrama_yuk_ac[(a, c, b, g)] + ugrama_yuk_ab[(a, c, b, g)] <= u_kap)
 
@@ -370,13 +373,13 @@ for (a, c, b) in ugrama_rotalari:
                 # Uğrama spot araç sayısı * kap * 0.10 <= toplam spot yükü. Bunu araç araç ayrı bir şekilde yapmamız gerekir.
                 # kap -> 5000, toplam spot yükü = 22000. 5000*5 * 0.1 <= 22000 = 2500 <= 22000 sağlandı fakat.
                 # Araç 1: 5000, araç 2: 5000, araç 3: 5000, araç 4: 5000
-            # --- Kiralık ugrama: %10 uygulanmaz (zorunlu kalkış, Teknofest Kural #3) ---
-            ugrama_hat = f"{a}-{b}"
-            max_kir = kiralik_stok_gunluk.get((ugrama_hat, arac), 0)
-            if max_kir > 0:
-                u_kir_net_a = model.NewIntVar(0, max_kir * kap * 2, f'u_kir_net_{a}_{c}_{b}_{g}_{arac}')
-                u_tasinan_net_listesi.append(u_kir_net_a)
-                model.Add(u_kir_net_a <= ugrama_kiralik_y[(a, c, b, g, arac)] * kap * 2)
+            # # --- Kiralık ugrama: %10 uygulanmaz (zorunlu kalkış, Teknofest Kural #3) ---
+            # ugrama_hat = f"{a}-{b}"
+            # max_kir = kiralik_stok_gunluk.get((ugrama_hat, arac), 0)
+            # if max_kir > 0:
+            #     u_kir_net_a = model.NewIntVar(0, max_kir * kap * 2, f'u_kir_net_{a}_{c}_{b}_{g}_{arac}')
+            #     u_tasinan_net_listesi.append(u_kir_net_a)
+            #     model.Add(u_kir_net_a <= ugrama_kiralik_y[(a, c, b, g, arac)] * kap * 2)
 
         toplam_ugrama_yuk = cp_model.LinearExpr.Sum([
             ugrama_yuk_ac[(a, c, b, g)],
@@ -390,23 +393,23 @@ for (a, c, b) in ugrama_rotalari:
 for h in hatlar:
     model.Add(ertelenen_talep[(h, gunler[-1])] == 0)
 
-# =============================================================================
-# KISIT F — Kiralık Araç Stok Kontrolü (ZORUNLU KALKIŞ)
-# =============================================================================
-for h in hatlar:
-    for g in gunler:
-        for a in arac_turleri:
-            stok = kiralik_stok_gunluk.get((h, a), 0)
+# # =============================================================================
+# # KISIT F — Kiralık Araç Stok Kontrolü (ZORUNLU KALKIŞ)
+# # =============================================================================
+# for h in hatlar:
+#     for g in gunler:
+#         for a in arac_turleri:
+#             stok = kiralik_stok_gunluk.get((h, a), 0)
             
-            direct_use = kiralik_x[(h, g, a)]
-            ugrama_use = cp_model.LinearExpr.Sum([
-                ugrama_kiralik_y[(tm1, tm2, tm3, g, a)]
-                for (tm1, tm2, tm3) in ugrama_rotalari
-                if f"{tm1}-{tm3}" == h
-            ])
+#             direct_use = kiralik_x[(h, g, a)]
+#             ugrama_use = cp_model.LinearExpr.Sum([
+#                 ugrama_kiralik_y[(tm1, tm2, tm3, g, a)]
+#                 for (tm1, tm2, tm3) in ugrama_rotalari
+#                 if f"{tm1}-{tm3}" == h
+#             ])
             
-            # DÜZELTME: <= yerine == kullanıyoruz. Araçlar boş olsa bile KALKACAK!
-            model.Add(direct_use + ugrama_use == stok)
+#             # DÜZELTME: <= yerine == kullanıyoruz. Araçlar boş olsa bile KALKACAK!
+#             model.Add(direct_use + ugrama_use == stok)
 
 
 # 9. AMAÇ FONKSİYONU
@@ -471,8 +474,8 @@ for (a, c, b) in ugrama_rotalari:
             ugrama_kiralik_km_maliyet = int(ekstra_mesafe * p["kiralik_km_maliyet"])
 
             maliyet_kalemleri.append(ugrama_spot_y[(a, c, b, g, arac)] * ugrama_spot_maliyet)
-            # ✅ Kiralık uğrama maliyeti: sabit değil, sadece KM maliyeti
-            maliyet_kalemleri.append(ugrama_kiralik_y[(a, c, b, g, arac)] * ugrama_kiralik_km_maliyet)
+            # # ✅ Kiralık uğrama maliyeti: sabit değil, sadece KM maliyeti
+            # maliyet_kalemleri.append(ugrama_kiralik_y[(a, c, b, g, arac)] * ugrama_kiralik_km_maliyet)
 
 
 model.Minimize(cp_model.LinearExpr.Sum(maliyet_kalemleri))
@@ -642,21 +645,30 @@ with open(output_file, "w", encoding="utf-8") as f:
                     solver.Value(ugrama_yuk_cb[(a, c, b, g)]) +
                     solver.Value(ugrama_yuk_ab[(a, c, b, g)])
                 )
+                # ugrama_toplam_arac_gun = sum(
+                #     solver.Value(ugrama_kiralik_y[(a, c, b, g, ar)]) +
+                #     solver.Value(ugrama_spot_y[(a, c, b, g, ar)])
+                #     for ar in arac_turleri
+                # )
                 ugrama_toplam_arac_gun = sum(
-                    solver.Value(ugrama_kiralik_y[(a, c, b, g, ar)]) +
                     solver.Value(ugrama_spot_y[(a, c, b, g, ar)])
                     for ar in arac_turleri
                 )
                 # Uğrama yükü kapasiteye orantılı dağıt
+                # ugrama_toplam_kap = sum(
+                #     (solver.Value(ugrama_kiralik_y[(a, c, b, g, ar)]) + solver.Value(ugrama_spot_y[(a, c, b, g, ar)])) * arac_parametreleri[ar]["kapasite_desi"]
+                #     for ar in arac_turleri
+                # )
                 ugrama_toplam_kap = sum(
-                    (solver.Value(ugrama_kiralik_y[(a, c, b, g, ar)]) + solver.Value(ugrama_spot_y[(a, c, b, g, ar)])) * arac_parametreleri[ar]["kapasite_desi"]
+                    solver.Value(ugrama_spot_y[(a, c, b, g, ar)]) * arac_parametreleri[ar]["kapasite_desi"]
                     for ar in arac_turleri
                 )
                 ugrama_tip_yukleri = {}
                 ugrama_dagitilan = 0
                 ugrama_son_tip = None
                 for ar in arac_turleri:
-                    u_toplam_adet = solver.Value(ugrama_kiralik_y[(a, c, b, g, ar)]) + solver.Value(ugrama_spot_y[(a, c, b, g, ar)])
+                    # u_toplam_adet = solver.Value(ugrama_kiralik_y[(a, c, b, g, ar)]) + solver.Value(ugrama_spot_y[(a, c, b, g, ar)])
+                    u_toplam_adet = solver.Value(ugrama_spot_y[(a, c, b, g, ar)])
                     if u_toplam_adet > 0:
                         tk = u_toplam_adet * arac_parametreleri[ar]["kapasite_desi"]
                         ty = ugrama_toplam_yuk_gun * tk // ugrama_toplam_kap if ugrama_toplam_kap > 0 else 0
@@ -666,16 +678,19 @@ with open(output_file, "w", encoding="utf-8") as f:
                         ugrama_son_tip = ar
                 if ugrama_son_tip is not None and ugrama_dagitilan != ugrama_toplam_yuk_gun:
                     fark = ugrama_toplam_yuk_gun - ugrama_dagitilan
-                    u_son_adet = solver.Value(ugrama_kiralik_y[(a, c, b, g, ugrama_son_tip)]) + solver.Value(ugrama_spot_y[(a, c, b, g, ugrama_son_tip)])
+                    # u_son_adet = solver.Value(ugrama_kiralik_y[(a, c, b, g, ugrama_son_tip)]) + solver.Value(ugrama_spot_y[(a, c, b, g, ugrama_son_tip)])
+                    u_son_adet = solver.Value(ugrama_spot_y[(a, c, b, g, ugrama_son_tip)])
                     son_kap = u_son_adet * arac_parametreleri[ugrama_son_tip]["kapasite_desi"]
                     ugrama_tip_yukleri[ugrama_son_tip] = min(ugrama_tip_yukleri[ugrama_son_tip] + fark, son_kap)
 
                 for arac in arac_turleri:
                     p = arac_parametreleri[arac]
-                    u_k_adet = solver.Value(ugrama_kiralik_y[(a, c, b, g, arac)])
+                    # u_k_adet = solver.Value(ugrama_kiralik_y[(a, c, b, g, arac)])
                     u_s_adet = solver.Value(ugrama_spot_y[(a, c, b, g, arac)])
-                    u_toplam = u_k_adet + u_s_adet
-                    u_rented_count += u_k_adet
+                    # u_toplam = u_k_adet + u_s_adet
+                    # u_rented_count += u_k_adet
+
+                    u_toplam = u_s_adet
                     u_spot_count += u_s_adet
                     tip_yuk = ugrama_tip_yukleri.get(arac, 0)
 
@@ -684,29 +699,29 @@ with open(output_file, "w", encoding="utf-8") as f:
                         yuk_kalan = tip_yuk - yuk_per_arac * u_toplam
                         arac_sira = 0
 
-                    # Kiralık uğrama
-                    if u_k_adet > 0:
-                        araç_maliyet = int(p["sabit_kira"] + dist_toplam * p["kiralik_km_maliyet"])
-                        dist_direkt_ab = distances_2d[tm_index[a]][tm_index[b]]
-                        ekstra_km_maliyet = int((dist_toplam - dist_direkt_ab) * p["kiralik_km_maliyet"])
-                        for i in range(u_k_adet):
-                            kiralik_ugrama_ekstra_km_toplam += ekstra_km_maliyet
-                            yuk = yuk_per_arac + (1 if arac_sira < yuk_kalan else 0)
-                            arac_sira += 1
-                            metin = f"{g} | Kiralık {arac} | {a}→{c}→{b} | {yuk} | {araç_maliyet}\n"
-                            f.write(metin)
-                            print(metin.strip())
+                    # # Kiralık uğrama
+                    # if u_k_adet > 0:
+                    #     araç_maliyet = int(p["sabit_kira"] + dist_toplam * p["kiralik_km_maliyet"])
+                    #     dist_direkt_ab = distances_2d[tm_index[a]][tm_index[b]]
+                    #     ekstra_km_maliyet = int((dist_toplam - dist_direkt_ab) * p["kiralik_km_maliyet"])
+                    #     for i in range(u_k_adet):
+                    #         kiralik_ugrama_ekstra_km_toplam += ekstra_km_maliyet
+                    #         yuk = yuk_per_arac + (1 if arac_sira < yuk_kalan else 0)
+                    #         arac_sira += 1
+                    #         metin = f"{g} | Kiralık {arac} | {a}→{c}→{b} | {yuk} | {araç_maliyet}\n"
+                    #         f.write(metin)
+                    #         print(metin.strip())
 
-                            csv_records.append({
-                                "Tarih": g,
-                                "Araç_Tipi": f"Kiralık {arac}",
-                                "Çıkış_TM": a,
-                                "Varış_TM": b,
-                                "Araç_Sayısı": 1,
-                                "Teslim_Edilen_Desi": yuk,
-                                "Maliyet_TL": araç_maliyet,
-                                "Rota_Tipi": f"Uğrama ({c})"
-                            })
+                    #         csv_records.append({
+                    #             "Tarih": g,
+                    #             "Araç_Tipi": f"Kiralık {arac}",
+                    #             "Çıkış_TM": a,
+                    #             "Varış_TM": b,
+                    #             "Araç_Sayısı": 1,
+                    #             "Teslim_Edilen_Desi": yuk,
+                    #             "Maliyet_TL": araç_maliyet,
+                    #             "Rota_Tipi": f"Uğrama ({c})"
+                    #         })
 
                     # Spot uğrama
                     if u_s_adet > 0:
@@ -736,6 +751,8 @@ with open(output_file, "w", encoding="utf-8") as f:
                 yuk_ac = solver.Value(ugrama_yuk_ac[(a, c, b, g)])
                 yuk_cb = solver.Value(ugrama_yuk_cb[(a, c, b, g)])
 
+                yuk_ab = solver.Value(ugrama_yuk_ab[(a, c, b, g)])
+
                 if yuk_ac > 0:
                     csv_records.append({
                         "Tarih": g,
@@ -757,6 +774,17 @@ with open(output_file, "w", encoding="utf-8") as f:
                         "Teslim_Edilen_Desi": yuk_cb,
                         "Maliyet_TL": 0,
                         "Rota_Tipi": f"Uğrama Katkısı ({a}→{c}→{b})"
+                    })
+                if yuk_ab > 0:
+                    csv_records.append({
+                        "Tarih": g,
+                        "Araç_Tipi": "Uğrama Transit",
+                        "Çıkış_TM": a,
+                        "Varış_TM": b,
+                        "Araç_Sayısı": 0,
+                        "Teslim_Edilen_Desi": yuk_ab,
+                        "Maliyet_TL": 0,
+                        "Rota_Tipi": f"Uğrama Transit ({a}→{c}→{b})"
                     })
 
         # --- Teknofest Kural #5: Toplam Maliyet Özeti ---
@@ -807,72 +835,88 @@ else:
     print("\n⚠️  CSV çıktısı için veri yok!")
 
 xlsx_output_file = Path(__file__).parent.parent / "results" / "optimization_results.xlsx"
- 
+
 if csv_records:
     wb = Workbook()
     ws = wb.active
     ws.title = "Teslim Planı"
- 
-    # Başlık satırı — istenen format: Tarih | Araç Tipi | Çıkış TM | Varış TM | Atanan Desi | Maliyet
-    basliklar = ["Tarih", "Araç Tipi", "Çıkış TM", "Varış TM", "Atanan Desi", "Maliyet"]
+
+    basliklar = ["Tarih", "Araç Tipi", "Çıkış TM", "Varış TM", "Atanan Desi", "Maliyet", "Rota Tipi"]
     ws.append(basliklar)
     for hucre in ws[1]:
         hucre.font = Font(bold=True, color="FFFFFF")
         hucre.fill = PatternFill("solid", start_color="4472C4")
         hucre.alignment = Alignment(horizontal="center")
- 
+
     def gun_etiketini_tarihe_cevir(gun_etiketi: str) -> str:
-        """'11_Mayis' -> '2026-05-11' formatına çevirir."""
         eslesme = re.match(r"(\d+)_Mayis", str(gun_etiketi))
         if eslesme:
             gun_no = int(eslesme.group(1))
             return f"2026-05-{gun_no:02d}"
         return str(gun_etiketi)
- 
+
+    ugrama_bacak_map = {}
     for kayit in csv_records:
+        arac_tipi_csv = kayit.get("Araç_Tipi", "")
+        rota_tipi = kayit.get("Rota_Tipi", "")
+
+        if arac_tipi_csv == "Uğrama Teslimat":
+            eslesme = re.match(r"Uğrama Katkısı \((.+?)→(.+?)→(.+?)\)", str(rota_tipi))
+            if eslesme:
+                a_tm, c_tm, b_tm = eslesme.group(1), eslesme.group(2), eslesme.group(3)
+                tarih = kayit.get("Tarih", "")
+                key = (tarih, a_tm, c_tm, b_tm)
+                if key not in ugrama_bacak_map:
+                    ugrama_bacak_map[key] = {"ac_desi": 0, "cb_desi": 0, "ab_desi": 0}
+                cikis = kayit.get("Çıkış_TM", "")
+                varis = kayit.get("Varış_TM", "")
+                desi = kayit.get("Teslim_Edilen_Desi", 0)
+                if cikis == a_tm and varis == c_tm:
+                    ugrama_bacak_map[key]["ac_desi"] = desi
+                elif cikis == c_tm and varis == b_tm:
+                    ugrama_bacak_map[key]["cb_desi"] = desi
+
+        elif arac_tipi_csv == "Uğrama Transit":
+            eslesme = re.match(r"Uğrama Transit \((.+?)→(.+?)→(.+?)\)", str(rota_tipi))
+            if eslesme:
+                a_tm, c_tm, b_tm = eslesme.group(1), eslesme.group(2), eslesme.group(3)
+                tarih = kayit.get("Tarih", "")
+                key = (tarih, a_tm, c_tm, b_tm)
+                if key not in ugrama_bacak_map:
+                    ugrama_bacak_map[key] = {"ac_desi": 0, "cb_desi": 0, "ab_desi": 0}
+                ugrama_bacak_map[key]["ab_desi"] = kayit.get("Teslim_Edilen_Desi", 0)
+
+    for kayit in csv_records:
+        if kayit.get("Araç_Tipi") in ("Uğrama Teslimat", "Uğrama Transit"):
+            continue
+
         tarih = gun_etiketini_tarihe_cevir(kayit.get("Tarih", ""))
+        tarih_raw = kayit.get("Tarih", "")
         arac_tipi = kayit.get("Araç_Tipi", "")
         cikis_tm = kayit.get("Çıkış_TM", "")
         varis_tm = kayit.get("Varış_TM", "")
         rota_tipi = kayit.get("Rota_Tipi", "")
         atanan_desi = kayit.get("Teslim_Edilen_Desi", 0)
         maliyet = kayit.get("Maliyet_TL", 0)
- 
-        # Uğrama rotaları (A→C→B) üç ayrı satır olarak yazılmalı:
-        #   A → C   |   C → B   |   A → B (toplam rota bilgisi)
-        # "Rota_Tipi" alanı "Uğrama (C)" formatındaysa bu bir uğrama satırıdır.
+
         ugrama_eslesme = re.match(r"Uğrama \((.+)\)", str(rota_tipi))
- 
-        if ugrama_eslesme and "→" not in str(cikis_tm) and varis_tm and cikis_tm:
-            # Bu satır zaten orijinal kodun "Uğrama Teslimat" kayıtlarından biri
-            # olabilir (A→C veya C→B bacaklarını ayrı ayrı tutuyor) — bu durumda
-            # doğrudan tek satır olarak yazılır.
-            if arac_tipi == "Uğrama Teslimat":
-                ws.append([tarih, "Uğrama Teslimatı", cikis_tm, varis_tm, atanan_desi, maliyet])
-                continue
- 
-            # Araç satırı ise (Kiralık/Spot ... | a→c→b formatında Varış_TM): bunu
-            # A→C, C→B ve A→B (toplam) olmak üzere 3 ayrı satıra böl.
+
+        if ugrama_eslesme:
             ara_durak = ugrama_eslesme.group(1)
-            varis_parcalari = str(varis_tm).split("→")
-            if len(varis_parcalari) == 2:
-                c_tm, b_tm = varis_parcalari[0], varis_parcalari[1]
-            else:
-                c_tm, b_tm = ara_durak, varis_tm
- 
-            ws.append([tarih, arac_tipi, cikis_tm, c_tm, "", ""])           # A → C bacağı
-            ws.append([tarih, arac_tipi, c_tm, b_tm, "", ""])               # C → B bacağı
-            ws.append([tarih, arac_tipi, cikis_tm, b_tm, atanan_desi, maliyet])  # A → B toplam (yük + maliyet)
+            key = (tarih_raw, cikis_tm, ara_durak, varis_tm)
+            bacaklar = ugrama_bacak_map.get(key, {"ac_desi": 0, "cb_desi": 0})
+
+            ws.append([tarih, arac_tipi, cikis_tm, ara_durak, bacaklar["ac_desi"], "", "Uğrama 1/3"])
+            ws.append([tarih, arac_tipi, ara_durak, varis_tm, bacaklar["cb_desi"], "", "Uğrama 2/3"])
+            ws.append([tarih, arac_tipi, cikis_tm, varis_tm, bacaklar["ab_desi"], maliyet, "Uğrama 3/3"])
             continue
- 
-        # Direkt rota veya erteleme kaydı — tek satır
-        ws.append([tarih, arac_tipi, cikis_tm, varis_tm, atanan_desi, maliyet])
- 
-    # Sütun genişlikleri
-    genislikler = {"A": 14, "B": 22, "C": 16, "D": 16, "E": 16, "F": 14}
+
+        ws.append([tarih, arac_tipi, cikis_tm, varis_tm, atanan_desi, maliyet, "Direkt"])
+
+    genislikler = {"A": 14, "B": 22, "C": 16, "D": 16, "E": 16, "F": 14, "G": 14}
     for sutun, genislik in genislikler.items():
         ws.column_dimensions[sutun].width = genislik
- 
+
     wb.save(xlsx_output_file)
     print(f"\n✅ Excel (.xlsx) çıktısı kaydedildi: {xlsx_output_file}")
 else:
