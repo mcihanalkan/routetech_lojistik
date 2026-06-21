@@ -190,8 +190,12 @@ def run_ultimate_testing():
         toplam_kapasite = p["kapasite_desi"] * row.get('Araç_Sayısı', 1)
         tasinan_yuk = row['Teslim_Edilen_Desi']
 
-        if tasinan_yuk > toplam_kapasite + 1e-6:
-            failed_logs.append(f"[Kısıt D İhlali] Satır {idx}: Araç taşıma kapasitesi aşıldı! Taşınan: {tasinan_yuk} > Kapasite: {toplam_kapasite}")
+        # Uğrama rotalarında araç iki bacakta farklı yükler taşır (A→C bırak, C→B al),
+        # bu yüzden toplam teslim edilen desi tek seferlik kapasiteyi aşabilir (max 2×)
+        kapasite_siniri = toplam_kapasite * 2 if "Uğrama" in str(row.get('Rota_Tipi', '')) else toplam_kapasite
+
+        if tasinan_yuk > kapasite_siniri + 1e-6:
+            failed_logs.append(f"[Kısıt D İhlali] Satır {idx}: Araç taşıma kapasitesi aşıldı! Taşınan: {tasinan_yuk} > Kapasite: {kapasite_siniri}")
 
         src, dst = row['Çıkış_TM'], row['Varış_TM']
         mid = extract_ugrama_info(row['Rota_Tipi'])
