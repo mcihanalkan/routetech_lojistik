@@ -1,4 +1,5 @@
 from pathlib import Path
+import multiprocessing  # Kodun en üstüne ekle
 import os
 import pandas as pd
 from ortools.sat.python import cp_model
@@ -479,8 +480,10 @@ model.Minimize(cp_model.LinearExpr.Sum(maliyet_kalemleri))
 solver = cp_model.CpSolver()
 max_time_to_solve = ENV_MAX_TIME
 solver.parameters.max_time_in_seconds  = max_time_to_solve
-solver.parameters.num_search_workers   = 4
 solver.parameters.log_search_progress  = ENV_LOG_PROGRESS
+total_cores = multiprocessing.cpu_count()
+solver.parameters.num_search_workers   = total_cores
+
 
 status = solver.Solve(model)
 
