@@ -48,6 +48,11 @@ src/predict_model/          ML tahmin motoru ve egitilmis model (.joblib)
 haversine/haversine.py      Haversine mesafe hesabi
 ```
 
+## Gereksinimler
+
+- **Python**: 3.8 - 3.12 (onerilen: 3.10, 3.11 veya 3.12)
+- Bagimliliklarin tam listesi: `requirements.txt`
+
 ## Calistirma
 
 ```bash
