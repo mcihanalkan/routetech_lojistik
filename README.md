@@ -37,6 +37,12 @@ ML tabanli talep tahmini ve OR-Tools ile arac/rota optimizasyonu icerir.
 2. **Veri Hazirlama** (`main.py`): Excel girdilerini okur, mesafe matrisi hesaplar, optimizasyon girdisini paketler.
 3. **Optimizasyon** (`src/optimization.py`): OR-Tools CP-SAT ile arac atama, rota secimi ve maliyet minimizasyonu yapar. Tum CPU cekirdeklerini kullanir.
 
+## %10 Minimum Doluluk Kurali ve Son Gun Yaklasimi
+
+Spot araclar icin %10 minimum doluluk kurali uygulanmaktadir. Doluluk oranini karsilamayan yukler o gun tasimaya alinmaz ve bir sonraki gune ertelenir (SLA cezasi uygulanir).
+
+Ancak planlamanin son gununde (17 Mayis) erteleme yapilacak bir sonraki gun bulunmadigi icin, %10 doluluk kisiti devre disi birakilir. Bu sayede kalan tum yukler son gun teslim edilir ve karsilanmamis talep kalmaz.
+
 ## Klasor Yapisi
 
 ```text
