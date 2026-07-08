@@ -151,7 +151,9 @@ class DemandForecaster(BaseForecaster):
     depth : int
         CatBoost ağaç derinliği. Varsayılan: 6
     lags : List[int]
-        Feature engineering lag günleri. Varsayılan: [1, 7, 14, 30]
+        Feature engineering lag günleri. Varsayılan: [1, 7, 14]
+        (run_forecast.py / optimize.py artık veri büyüklüğüne göre lag_21/lag_30'u
+        select_lags() ile otomatik ekleyip açıkça geçiyor — bkz. o dosyalardaki not)
     rolling_windows : List[int]
         Rolling istatistik pencereleri. Varsayılan: [7, 14]
     underestimation_penalty : float
@@ -218,7 +220,7 @@ class DemandForecaster(BaseForecaster):
         self.l2_leaf_reg           = 10.0   # JSON'dan yüklenince fit() içinde üzerine yazılır
         self.bagging_temperature   = 0.3    # JSON'dan yüklenince fit() içinde üzerine yazılır
         self.optimized_alpha_      = 0.50   # JSON'dan yüklenince fit() içinde üzerine yazılır (v4)
-        self.lags                  = lags or [1, 7, 14]
+        self.lags                  = lags or [1, 7, 14]  # güvenli varsayılan; run_forecast.py/optimize.py artık select_lags() ile veri büyüklüğüne göre açıkça geçiyor
         self.rolling_windows       = rolling_windows or [7, 14]
         self.underestimation_penalty = underestimation_penalty
         self.outlier_clip_multiplier = outlier_clip_multiplier
@@ -503,6 +505,31 @@ class DemandForecaster(BaseForecaster):
         # --- 3. Train/Test Split (walk-forward, zaman sıralı) ---
         train_df, test_df = self._train_test_split(df_features)
 
+        # --- 3.5 Anormal Hafta Tespiti (optimize.py ile BİREBİR AYNI mantık) ---
+        # Amaç: forecasters.py'nin kendi self-evaluation'ı (bu split, ör. son ~%15
+        # gün) ile optimize.py'nin raporladığı "best_wape_clean" (kendi Fold-4
+        # penceresi) arasında adil bir karşılaştırma yapılabilmesi. optimize.py
+        # zaten haftalık ortalama hacmin genel ortalamanın 1.4 katını aştığı
+        # haftaları (tatil/kampanya birikimi vb.) "anormal" sayıp WAPE'den dışlıyor;
+        # forecasters.py'nin kendi "WAPE (tatil hariç)" hesabı ise sadece
+        # is_holiday/Pazar bayrağını dışlıyordu — daha dar bir filtreydi. Aşağıda
+        # aynı 1.4x eşiğini uygulayıp _evaluate_on_test()'e aktarıyoruz ki
+        # "temiz WAPE" gerçekten optimize.py'nin metriğiyle kıyaslanabilir olsun.
+        self._abnormal_weeks_ = set()
+        if self.target_column in df_features.columns and self.date_column in df_features.columns:
+            _weekly_src = df_features[df_features[self.target_column] > 0].copy()
+            if not _weekly_src.empty:
+                _weekly_src["_week"] = _weekly_src[self.date_column].dt.isocalendar().week.astype(int)
+                _weekly_src["_year"] = _weekly_src[self.date_column].dt.year
+                _wk_means = _weekly_src.groupby(["_year", "_week"])[self.target_column].mean()
+                _wk_threshold = _wk_means.mean() * 1.4
+                self._abnormal_weeks_ = set(_wk_means[_wk_means > _wk_threshold].index)
+                if self.logging_enabled and self._abnormal_weeks_:
+                    logger.info(
+                        f"⚠️  Anormal haftalar tespit edildi (optimize.py ile aynı eşik, "
+                        f"ort. × 1.4): {sorted(self._abnormal_weeks_)}"
+                    )
+
         # --- 4. Veri Temizleme — SADECE train üzerinde fit et (leakage önlemi) ---
         # IQR eşikleri yalnızca train_df'ten öğrenilir.
         # Aynı eşikler test_df'e uygulanır — test dağılımı öğrenmeye girmez.
@@ -540,6 +567,18 @@ class DemandForecaster(BaseForecaster):
                 group_column  = self.group_column,
                 log_transform = False,
             )
+
+        # Test satırlarının anormal-hafta maskesi — date_column X_test'ten
+        # düşürülmeden ÖNCE hesaplanmalı (bkz. 3.5 adımı).
+        abnormal_week_mask_test: Optional[np.ndarray] = None
+        if self._abnormal_weeks_ and self.date_column in test_df.columns:
+            _test_dates = pd.to_datetime(test_df[self.date_column])
+            _test_years = _test_dates.dt.year
+            _test_weeks = _test_dates.dt.isocalendar().week.astype(int)
+            abnormal_week_mask_test = np.array([
+                (y, w) in self._abnormal_weeks_
+                for y, w in zip(_test_years, _test_weeks)
+            ])
 
         X_train, y_train = self._split_X_y(train_df)
         X_test,  y_test  = self._split_X_y(test_df)
@@ -620,16 +659,22 @@ class DemandForecaster(BaseForecaster):
 
             fold_model.fit(
                 fold_train_pool,
-                eval_set=fold_val_pool,
-                early_stopping_rounds=50,
+                eval_set=fold_val_pool,   # sadece izleme/log amaçlı — aşağıdaki use_best_model=False ile durdurmuyor
+                use_best_model=False,
+                # ⚠️ KRİTİK: eval_set verilip use_best_model açıkça False yapılmazsa,
+                # CatBoost varsayılan olarak use_best_model=True kullanır ve modeli
+                # sessizce en iyi validation-skorlu iterasyona geri sarar — early_stopping_rounds
+                # kaldırılmış olsa bile! Önceki denemede tam olarak bu oldu: early_stopping_rounds
+                # kaldırıldı ama use_best_model=False unutulduğu için sonuç birebir aynı çıktı.
+                # Artık gerçekten her fold sabit self.iterations kadar eğitiliyor.
                 verbose=False,
             )
 
-            best_iter = fold_model.get_best_iteration()
+            best_iter = self.iterations
             if self.logging_enabled:
                 logger.info(
                     f"   ✅ {fold_name} eğitildi | "
-                    f"Durma İterasyonu: {best_iter} / {self.iterations}"
+                    f"Sabit iterasyon: {self.iterations} (use_best_model=False — gerçekten sabit)"
                 )
 
             self.models_.append(fold_model)
@@ -657,7 +702,10 @@ class DemandForecaster(BaseForecaster):
         # --- 6. Self-Evaluation ---
         if len(X_test) > 0:
             # Overfit analizi için X_train ve y_train'i de gönderiyoruz
-            self._evaluate_on_test(X_test, y_test, X_train, y_train)
+            self._evaluate_on_test(
+                X_test, y_test, X_train, y_train,
+                abnormal_week_mask=abnormal_week_mask_test,
+            )
 
         total_elapsed = time.time() - t_start
         if self.logging_enabled:
@@ -969,10 +1017,21 @@ class DemandForecaster(BaseForecaster):
         y_test: pd.Series,
         X_train: Optional[pd.DataFrame] = None,
         y_train: Optional[pd.Series] = None,
+        abnormal_week_mask: Optional[np.ndarray] = None,
     ) -> Dict[str, float]:
         """
         Test ve Train setleri üzerinde WAPE ve Decision Regret hesaplar,
         raporlama ve sunumlar için aşırı öğrenme (overfit) analizi basar.
+
+        Parameters
+        ----------
+        abnormal_week_mask : optimize.py ile aynı yöntemle (haftalık ortalama
+            > genel ortalama × 1.4) işaretlenmiş anormal-hafta maskesi.
+            Verilirse "WAPE (temiz)" hesabından bu satırlar da dışlanır —
+            böylece bu metrik, optimize.py'nin raporladığı "best_wape_clean"
+            ile gerçekten kıyaslanabilir hale gelir (aksi halde iki WAPE
+            farklı istisna kümeleriyle hesaplanıp yanıltıcı şekilde
+            karşılaştırılabiliyordu).
         """
         # --- TEST SETİ DEĞERLENDİRMESİ ---
         test_pool = Pool(data=X_test, cat_features=self.cat_features_)
@@ -1025,12 +1084,25 @@ class DemandForecaster(BaseForecaster):
             else:
                 sunday_mask = np.zeros(len(y_true_test), dtype=bool)
             normal_mask = ~(holiday_mask | sunday_mask)
+            # [Entegrasyon] optimize.py'nin anormal-hafta filtresi (ort. × 1.4)
+            # de aynı "temiz" tanımına dahil edilir — aksi halde bu metrik
+            # optimize.py'nin best_wape_clean'iyle kıyaslanamaz kalırdı.
+            n_abnormal_excluded = 0
+            if abnormal_week_mask is not None and len(abnormal_week_mask) == len(normal_mask):
+                abnormal_arr = np.asarray(abnormal_week_mask, dtype=bool)
+                n_abnormal_excluded = int((abnormal_arr & normal_mask).sum())
+                normal_mask = normal_mask & ~abnormal_arr
             if normal_mask.sum() >= 10:
                 wape_clean = (
                     float(np.sum(np.abs(y_true_test[normal_mask] - q50_preds_test[normal_mask]))
                           / np.sum(y_true_test[normal_mask]))
                     if np.sum(y_true_test[normal_mask]) > 0 else 0.0
                 )
+                if self.logging_enabled and n_abnormal_excluded > 0:
+                    logger.info(
+                        f"   ℹ️  WAPE (temiz) hesabından ayrıca {n_abnormal_excluded} "
+                        f"anormal-hafta günü dışlandı (optimize.py ile tutarlı tanım)."
+                    )
 
         diff_test = y_true_test - q50_preds_test
         regret_test = np.where(

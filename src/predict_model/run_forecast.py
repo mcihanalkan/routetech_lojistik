@@ -50,6 +50,26 @@ GROUP_COL   = "rota"          # kaynak_tm → varış_tm kombinasyonu
 KAYNAK_COL  = "kaynak_tm"
 VARIS_COL   = "varis_tm"
 
+# --- Uyarlanabilir lag seçimi (optimize.py ile BİREBİR AYNI eşikler) --------
+# lag_21 / lag_30, her rota için ilk N günü NaN yapıp feature matrix'ten
+# düşürüyor (max_lag × rota_sayısı kadar satır kaybı). Küçük veri setlerinde
+# bu kayıp sinyale değmiyor; veri büyüdükçe otomatik devreye girsinler diye
+# eşik değerine bağlandı. Bu değerler optimize.py'dekiyle AYNI kalmalı —
+# aksi halde optimize.py'nin bulduğu hiperparametreler farklı bir feature
+# setine göre tuned olur.
+LAG_21_MIN_ROWS = 15_000
+LAG_30_MIN_ROWS = 20_000
+
+
+def select_lags(n_real_rows: int) -> list:
+    """Veri büyüklüğüne göre lag_21/lag_30'u otomatik ekler/çıkarır — optimize.py ile birebir aynı mantık."""
+    lags = [1, 7, 14]
+    if n_real_rows >= LAG_21_MIN_ROWS:
+        lags.append(21)
+    if n_real_rows >= LAG_30_MIN_ROWS:
+        lags.append(30)
+    return lags
+
 
 # ---------------------------------------------------------------------------
 # 1. Veri Hazırlama
@@ -191,13 +211,21 @@ def run(save_json: bool = True) -> Dict[str, Any]:
     else:
         # EĞER DOSYA YOKSA: 1 kereye mahsus eğit ve o dosyayı oluştur
         logger.info("⚠️ Hazır model dosyası bulunamadı. Model sıfırdan eğitiliyor...")
+
+        n_real_rows = int((full_df[TARGET_COL] > 0).sum())
+        lags = select_lags(n_real_rows)
+        logger.info(
+            f"   Gerçek kayıt: {n_real_rows:,} → lag'ler: {lags} "
+            f"(eşikler: lag_21≥{LAG_21_MIN_ROWS:,}, lag_30≥{LAG_30_MIN_ROWS:,})"
+        )
+
         forecaster = DemandForecaster(
             target_column    = TARGET_COL,
             date_column      = DATE_COL,
             group_column     = GROUP_COL,
             train_test_split = 0.85,
             forecast_horizon = 7,
-            lags             = [1, 7, 14, 21, 30],  # lag_30 geri eklendi: aylık sezonsallık
+            lags             = lags,   # veri büyüklüğüne göre uyarlanır — bkz. select_lags()
             rolling_windows  = [7, 14],
             logging_enabled  = True,
             random_state     = 42,
@@ -229,7 +257,17 @@ def run(save_json: bool = True) -> Dict[str, Any]:
     )
 
     # --- 4. OR-Tools Payload (DataFrame Dönüşümü) ---
-    band = UncertaintyBand(buffer_ratio=0.5, logging_enabled=True)
+    # materiality_floor: [Tur 4 — uncertainty.py] q50 bu değerin altındaysa
+    # nihai risk_score, ham sigmoid skoruna oranla (q50/materiality_floor)
+    # bastırılır. Önceki çalıştırmada (bkz. proje notları) neredeyse durgun
+    # rotalarda (q50≈0) yapay HIGH sınıflandırmaları görülmüştü; bu parametre
+    # o sorunu düzeltir. Varsayılan zaten uncertainty.py'de MATERIALITY_FLOOR
+    # (750.0) — burada yine de açıkça geçiyoruz ki kim okursa niyeti görsün.
+    band = UncertaintyBand(
+        buffer_ratio=0.5,
+        logging_enabled=True,
+        materiality_floor=750.0,
+    )
 
     df_ortools = band.to_ortools_dataframe(
         predictions = raw_preds,

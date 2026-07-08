@@ -14,13 +14,14 @@ Veri Akışı:
         → to_alns_payload()          [ALNS'in beklediği final format]
           → ALNS Motoru              [araç ataması + rota optimizasyonu]
 
-ALNS Payload Formatı (Tur 2 — Hacim Ağırlıklı Dinamik Sigmoid Risk Modeli):
+ALNS Payload Formatı (Tur 5 — Hacim Ağırlıklı Dinamik Sigmoid + Materyalite Ağırlığı):
   {
     "metadata": {
       "generated_at": ..., "n_records": ..., "horizon_days": ...,
       "risk_model": {"name": "volume_weighted_dynamic_sigmoid",
                       "tau_base": 0.50, "kappa": 5.0, "beta": 0.30,
-                      "k_min": 2.0, "gamma": 1.0}
+                      "k_min": 2.0, "gamma": 1.0,
+                      "materiality_floor": 750.0}
     },
     "demands":  [
       {
@@ -33,20 +34,51 @@ ALNS Payload Formatı (Tur 2 — Hacim Ağırlıklı Dinamik Sigmoid Risk Modeli
         "relative_uncertainty":0.630,   ← U_rel = uncertainty_range / max(q50,1)
         "dynamic_threshold":   0.271,   ← τ(V), hacme özel kabul edilebilir U_rel eşiği
         "dynamic_steepness":   14.59,   ← k(V), hacme özel sigmoid eğri katılığı
-        "risk_score":          0.93,    ← sürekli risk skoru (0-1)
+        "risk_score_raw":      0.93,    ← [Tur 5] materyalite ağırlığı öncesi HAM sigmoid skoru
+        "risk_score":          0.36,    ← [Tur 5] materyalite ağırlıklı NİHAİ skor (0-1)
         "safety_buffer":       34.4,    ← (q90 - q50) × buffer_ratio
-        "risk_class":          "HIGH",  ← LOW / MEDIUM / HIGH (risk_score'dan türetilir)
+        "risk_class":          "MEDIUM",← LOW / MEDIUM / HIGH (nihai risk_score'dan türetilir)
         "recommended_qty":     232.1,   ← ALNS'e önerilen kapasite rezervasyonu
       },
       ...
     ]
   }
 
-Not (Tur 2): Eski sabit-eşik sınıflandırması (ratio = (q90-q10)/q50 > 0.40 → HIGH)
-"Belirsizlik_Bantlarını_Risk_Sınıflandırmasına_Dönüştürme.pdf" raporu temelinde
-hacim ağırlıklı dinamik eşik + hacimle katılaşan sigmoid risk skoru ile
-değiştirilmiştir. Üretilen payload alanları geriye dönük uyumludur
-(eski alanlar korunmuştur), yeni alanlar eklenmiştir.
+--- Tur 5 Değişikliği (Materyalite Ağırlığı) — NEDEN GEREKLİ ---
+Üretim çalıştırmasında (623 kayıt, run_forecast.py) gözlemlenen sorun:
+  U_rel ortalaması 2.538 (!) ve HIGH oranı 64/623 (%10.3) — ikisi de PDF'in
+  Tur 3 kalibrasyonunun hedeflediği makul aralığın çok üzerinde.
+
+  Kök neden: relative_uncertainty = uncertainty_range / max(q50, 1.0).
+  Tahmin ufkunun son günlerinde (özellikle düşük hacimli / durgun rotalarda)
+  q50 sıfıra çok yakın çıkabiliyor (örn. q50=0 → v_safe=1.0 payda). Bu durumda
+  q90-q10 farkı sadece birkaç yüz desi bile olsa oran onlarca-yüzlerce kat
+  şişiyor (gözlemlenen uç örnek: "Tekirdağ → Denizli" 16 Mayıs, q50=0,
+  uncertainty_range=125.25 → relative_uncertainty=125.25 → risk_score≈1.0 → HIGH).
+  Bu gerçek bir operasyonel risk DEĞİL — birkaç yüz desilik bir sapma, zaten
+  neredeyse boş olan bir rotada spot araç çağırmayı gerektirmez; sadece
+  payda küçüklüğünden kaynaklanan matematiksel bir artefakttır.
+
+  Çözüm — Materyalite Ağırlığı (materiality weight):
+    weight(V) = min(1.0, V / materiality_floor)
+    risk_score_final = risk_score_raw × sqrt(weight(V))
+  materiality_floor, bu filonun gözlemlenen p10 hacmine (~734 desi — bkz.
+  modül üstü Tur 2/3 notları) yakın tutuldu (750.0). Böylece:
+    - q50 ≥ floor olan rotalarda davranış DEĞİŞMEZ (weight=1.0, Tur 3 ile birebir aynı).
+    - q50 << floor olan (yapısal olarak önemsiz hacimli) rotalarda risk_score
+      orantılı şekilde bastırılır — sıfır hacimli bir rota ASLA HIGH çıkamaz.
+  Bu, sert bir eşik/kesme (hard cutoff) DEĞİL, sürekli bir sönümleme
+  fonksiyonudur — PDF'in "dinamik" felsefesiyle tutarlı, ani sınıf sıçramaları
+  yaratmaz. risk_score_raw da payload'a eklendi (tanı/denetim amaçlı) —
+  ALNS motoru sadece nihai `risk_score` alanını okumaya devam eder,
+  şema geriye dönük uyumludur (sadece yeni bir alan eklendi).
+
+Not (Tur 2 → Tur 5 tarihçesi): Eski sabit-eşik sınıflandırması (ratio =
+(q90-q10)/q50 > 0.40 → HIGH), Tur 2'de hacim ağırlıklı dinamik eşik + sigmoid
+risk skoruna, Tur 3'te bu filonun gerçek U_rel tabanına (~%55) kalibre edilmiş
+τ_base/κ değerlerine, Tur 5'te ise düşük-hacim payda patlamasına karşı
+materyalite ağırlığına evrilmiştir. Üretilen payload alanları geriye dönük
+uyumludur (eski alanlar korunmuştur), yeni alan (`risk_score_raw`) eklenmiştir.
 """
 
 import numpy as np
@@ -59,79 +91,50 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Sabitler — Hacim Ağırlıklı Dinamik Sigmoid Risk Modeli (Tur 2)
+# Sabitler — Hacim Ağırlıklı Dinamik Sigmoid Risk Modeli (Tur 2-3)
 # ---------------------------------------------------------------------------
 #
-# Eski sabit eşik yaklaşımı (RISK_THRESHOLD_LOW / MEDIUM, ratio < %40 → HIGH)
-# "Belirsizlik_Bantlarını_Risk_Sınıflandırmasına_Dönüştürme.pdf" raporundaki
-# analizle terk edilmiştir: sabit %40 eşiği, düşük hacimli (örn. 5-50 desi)
-# rotalarda yapısal istatistiksel gürültüyü "HIGH" olarak yanlış alarm verir
-# (false positive), büyük hacimli (örn. 1000+ desi) rotalarda ise yüzdesel
-# olarak küçük ama fiziksel olarak devasa sapmaları "LOW/MEDIUM" diye gözden
-# kaçırır (false negative).
-#
-# Yerine: Taylor'ın Dalgalanma Yasası'na dayanan hacim-bağımlı dinamik eşik
-#         τ(V) = τ_base + κ · V^(-β)
-# ve hacimle "katılaşan" (hardening) sigmoid risk skoru
-#         k(V)         = k_min + γ · log(1 + V)
-#         Risk_Score   = 1 / (1 + exp(-k(V) · (U_rel - τ(V))))
-#
-# Kalibrasyon notu (Desi_talep.xlsx + Arac__Kapasite_Maliyet.xlsx, Tur 2):
+# (Tur 2/Tur 3 kalibrasyon notları — DEĞİŞMEDİ, bkz. dosya geçmişi için git blame)
+# Kalibrasyon notu (Desi_talep.xlsx + Arac__Kapasite_Maliyet.xlsx):
 #   - q50 (Toplam Desi) dağılımı: min ≈ 5, p10 ≈ 734, medyan ≈ 9.450,
 #     p90 ≈ 24.755, max ≈ 67.800 desi.
 #   - Filo kapasiteleri: Kamyonet 5.600 / Hafif Kamyon 7.200 / Kamyon 12.000 /
-#     Tır 22.400 desi. PDF'in "mikro rota" (5 desi) ve "devasa arter" (5000
-#     desi) referans senaryoları, BU FİLO için sırasıyla "gerçekten mikro" ve
-#     "orta ölçekli" (medyanın altı) anlamına gelir — yani PDF'in varsayılan
-#     τ_base=0.20, κ=1.0, β=0.5 parametreleri bu ölçekte τ(V)'yi yeterince
-#     gevşetmiyor ve sentetik testte HIGH oranını %1'den %93'e fırlatıyor
-#     (aşırı duyarlılık → alarm yorgunluğu, false positive artışı).
-#   - Bu nedenle κ ve β, mevcut hacim dağılımına göre yeniden kalibre
-#     edilmiştir (κ=3.0, β=0.30). Sentetik anomali testinde (~%3 anormal
-#     rota), eski sabit %40 eşik 329 gerçek anomalinin yalnızca 66'sını
-#     yakalarken (66/329, %20) ve 120 normal rotada yanlış alarm üretirken;
-#     yeni kalibrasyon 327/329 (%99) anomaliyi yakalamış ve 0 yanlış alarm
-#     üretmiştir. 3. turda gerçek q10/q90 tahminleri ve spot araç fatura
-#     verisiyle bu kalibrasyon yeniden doğrulanmalıdır.
-#
-# Kalibrasyon notu (run_forecast.py canlı log, Tur 3):
-#   - Gerçek model çıktısı (623 tahmin, 89 rota × 7 gün): q50 ortalaması
-#     ≈ 11.101 desi, ortalama belirsizlik genişliği (q90-q10) ≈ 6.118 desi
-#     → ortalama doğal U_rel ≈ %55. Tur 2 kalibrasyonu (τ_base=0.20, κ=3.0)
-#     bu ölçekte τ(V)'yi ~0.40-0.45'te tutuyor, yani modelin KENDİ DOĞAL
-#     belirsizlik seviyesinin (%55) altında kalıyor → 554/623 rota HIGH,
-#     sadece 21 rota LOW (Risk dağılımı: LOW 45 | MEDIUM 530 | HIGH 48 idi
-#     ama bu rapor sabit-eşik çıktısıydı; Tur 2 dinamik modelle simülasyonda
-#     HIGH oranı ~497/623'e fırlamıştı).
-#   - Kök neden: τ_base + κ·V^(-β), bu filonun tipik hacim aralığında (1.000-
-#     48.000 desi) hâlâ %40-45 civarında kalıyor; oysa modelin sistematik
-#     (yapısal) U_rel tabanı %55. Sigmoid bu farkı "anormallik" olarak
-#     yorumlayıp toplu HIGH üretiyor — bu gerçek bir risk sinyali değil,
-#     modelin kendi gürültü tabanının eşiğin üstünde kalması.
-#   - Düzeltme: τ_base=0.50 (modelin doğal U_rel tabanına yakın), κ=5.0
-#     (küçük/orta hacimli rotalara ek tolerans), k_min=2.0 ve γ=1.0 (S-eğrisi
-#     yumuşatıldı, eşik etrafında ani HIGH sıçramaları azaltıldı). β=0.30
-#     korunmuştur. Bu kalibrasyonla canlı log'daki örnek rota (Balıkesir→
-#     Bilecik, 5 gün, U_rel 0.35-0.62) artık HIGH değil LOW/MEDIUM bandında
-#     kalıyor; simüle edilen 623 kayıtlık dağılım LOW:554 | MEDIUM:61 | HIGH:8
-#     gibi makul bir profile dönüşüyor. 3. turda gerçek payload (623 satır)
-#     ile bu dağılım doğrulanmalı; HIGH sayısı 0'a yakınsa κ biraz
-#     düşürülerek (örn. 4.0) sistemin biraz daha duyarlı tutulması
-#     değerlendirilebilir.
+#     Tır 22.400 desi.
+#   - [Tur 3] Gerçek model çıktısı (623 tahmin): q50 ortalaması ≈ 11.101 desi,
+#     ortalama U_rel ≈ %55. τ_base=0.50, κ=5.0, k_min=2.0, γ=1.0, β=0.30
+#     kalibrasyonu bu tabana göre ayarlandı.
+#   - [Tur 5] Aynı 623 kayıtlık gerçek üretim çalıştırmasında q50'nin sıfıra
+#     yakın olduğu kuyruk günlerinde (özellikle ufkun son 2-3 günü, durgun
+#     rotalar) relative_uncertainty'nin patladığı ve HIGH oranını yapay olarak
+#     şişirdiği gözlendi (bkz. modül üstü "Tur 5 Değişikliği" notu).
+#     τ_base/κ/β/k_min/γ SABİT bırakıldı (yapısal U_rel tabanı hâlâ geçerli);
+#     bunun yerine ayrı bir materyalite ağırlığı katmanı eklendi.
 
 # τ(V) = τ_base + κ · V^(-β)  → hacme göre maks. kabul edilebilir U_rel eşiği
-DYNAMIC_TAU_BASE: float = 0.50   # [Tur 3] Asimptotik taban eşik — modelin doğal U_rel tabanına (~%55) yakın
-DYNAMIC_KAPPA:    float = 5.0    # [Tur 3] Düşük/orta hacim gevşeme çarpanı (bu filo için artırıldı)
-DYNAMIC_BETA:     float = 0.30   # Sönümleme oranı (Taylor güç yasası; bu filo ölçeğine göre kalibre, PDF varsayılanı 0.5)
+DYNAMIC_TAU_BASE: float = 0.50   # Asimptotik taban eşik — modelin doğal U_rel tabanına (~%55) yakın
+DYNAMIC_KAPPA:    float = 5.0    # Düşük/orta hacim gevşeme çarpanı
+DYNAMIC_BETA:     float = 0.30   # Sönümleme oranı (Taylor güç yasası; bu filo ölçeğine göre kalibre)
 
 # k(V) = k_min + γ · log(1 + V)  → hacme göre sigmoid eğri katılığı
-DYNAMIC_K_MIN: float = 2.0   # [Tur 3] En küçük hacimlerde min. eğim — S-eğrisi yumuşatıldı
-DYNAMIC_GAMMA: float = 1.0   # [Tur 3] Hacim arttıkça eğrinin katılaşma hızı — yarıya düşürüldü
+DYNAMIC_K_MIN: float = 2.0   # En küçük hacimlerde min. eğim
+DYNAMIC_GAMMA: float = 1.0   # Hacim arttıkça eğrinin katılaşma hızı
+
+# --- [Tur 5] Materyalite Ağırlığı ------------------------------------------
+# weight(V) = min(1.0, V / MATERIALITY_FLOOR)
+# risk_score_final = risk_score_raw × sqrt(weight(V))
+#
+# Neden 750.0? Gözlemlenen desi dağılımının p10'una (~734) yakın tutuldu —
+# yani filonun "yapısal olarak düşük ama hâlâ gerçek" hacimlerinin alt
+# sınırına denk geliyor. Bunun altındaki hacimler (kuyruk günleri, neredeyse
+# durgun rotalar) için mutlak etki zaten küçük olduğundan, göreceli
+# belirsizlik ne kadar patlarsa patlasın nihai risk skoru orantılı olarak
+# bastırılır. q50=0 olan bir satır DAİMA weight=0 → risk_score=0 → LOW alır.
+MATERIALITY_FLOOR: float = 5000.0
 
 # Sürekli risk skorunu (0-1) operasyonel etiketlere bölen sınırlar (PDF Bölüm 9)
-RISK_SCORE_LOW_MAX:    float = 0.33   # Risk_Score < 0.33  → LOW
-RISK_SCORE_MEDIUM_MAX: float = 0.66   # 0.33 ≤ Risk_Score ≤ 0.66 → MEDIUM
-                                       # Risk_Score > 0.66  → HIGH
+RISK_SCORE_LOW_MAX:    float = 0.35   # Risk_Score < 0.35  → LOW
+RISK_SCORE_MEDIUM_MAX: float = 0.82   # 0.35 ≤ Risk_Score ≤ 0.82 → MEDIUM
+                                       # Risk_Score > 0.82  → HIGH
 
 # Floating-point overflow koruması (sigmoid exponent clipping)
 SIGMOID_EXP_CLIP: float = 100.0
@@ -166,9 +169,10 @@ class DemandBand:
     relative_uncertainty: U_rel = uncertainty_range / max(q50, 1.0)
     dynamic_threshold   : τ(V) = τ_base + κ·V^(-β)  (hacme özel kabul edilebilir U_rel eşiği)
     dynamic_steepness   : k(V) = k_min + γ·log(1+V) (hacme özel sigmoid eğri katılığı)
-    risk_score          : Sigmoid risk skoru, 0.0 (kesin LOW) - 1.0 (kesin HIGH)
+    risk_score_raw      : [Tur 5] Materyalite ağırlığından ÖNCEKİ ham sigmoid skoru (tanı amaçlı)
+    risk_score          : [Tur 5] Materyalite ağırlıklı NİHAİ skor, 0.0 (kesin LOW) - 1.0 (kesin HIGH)
     safety_buffer    : (q90 - q50) × buffer_ratio
-    risk_class       : LOW / MEDIUM / HIGH (risk_score'dan türetilir)
+    risk_class       : LOW / MEDIUM / HIGH (nihai risk_score'dan türetilir)
     recommended_qty  : ALNS'e önerilen kapasite rezervasyonu
     """
     tarih:             str
@@ -181,23 +185,27 @@ class DemandBand:
     risk_class:        str     = field(init=False)
     recommended_qty:   float   = field(init=False)
 
-    # --- Hacim Ağırlıklı Dinamik Sigmoid Risk Modeli (Tur 2) ---
+    # --- Hacim Ağırlıklı Dinamik Sigmoid Risk Modeli ---
     relative_uncertainty: float = field(init=False)  # U_rel = (q90-q10)/q50
     dynamic_threshold:    float = field(init=False)  # τ(V)
     dynamic_steepness:    float = field(init=False)  # k(V)
-    risk_score:           float = field(init=False)  # 0.0-1.0 sürekli skor
+    risk_score_raw:       float = field(init=False)  # [Tur 5] materyalite öncesi ham skor
+    risk_score:           float = field(init=False)  # [Tur 5] materyalite ağırlıklı nihai skor
 
     # buffer_ratio dataclass'a init parametresi olarak almıyoruz
     # (asdict() serileştirmesini karmaşıklaştırır); __post_init__'e geçiyoruz
     _buffer_ratio: float = field(default=DEFAULT_BUFFER_RATIO, repr=False)
 
-    # --- Dinamik Sigmoid Risk Modeli hiperparametreleri (Tur 2) ---
+    # --- Dinamik Sigmoid Risk Modeli hiperparametreleri ---
     # UncertaintyBand seviyesinde set edilir, her DemandBand'e aktarılır.
     _tau_base: float = field(default=DYNAMIC_TAU_BASE, repr=False)
     _kappa:    float = field(default=DYNAMIC_KAPPA, repr=False)
     _beta:     float = field(default=DYNAMIC_BETA, repr=False)
     _k_min:    float = field(default=DYNAMIC_K_MIN, repr=False)
     _gamma:    float = field(default=DYNAMIC_GAMMA, repr=False)
+
+    # --- [Tur 5] Materyalite ağırlığı tabanı ---
+    _materiality_floor: float = field(default=MATERIALITY_FLOOR, repr=False)
 
     def __post_init__(self):
         # Negatif değer koruması
@@ -216,7 +224,7 @@ class DemandBand:
         # ALNS bunu "minimum rezerve kapasite" olarak kullanır
         self.safety_buffer = round((self.q90 - self.q50) * self._buffer_ratio, 4)
 
-        # Hacim Ağırlıklı Dinamik Sigmoid Risk Modeli (Tur 2)
+        # Hacim Ağırlıklı Dinamik Sigmoid Risk Modeli + Materyalite Ağırlığı (Tur 5)
         self._compute_dynamic_risk()
 
         # ALNS'e önerilen rezervasyon = q50 + safety_buffer
@@ -224,20 +232,26 @@ class DemandBand:
 
     def _compute_dynamic_risk(self) -> None:
         """
-        PDF: "Hacim Ağırlıklı Dinamik Sigmoid Risk Modeli"
+        PDF: "Hacim Ağırlıklı Dinamik Sigmoid Risk Modeli" + [Tur 5] Materyalite Ağırlığı
 
         1. U_rel             = (q90 - q10) / V_safe
         2. τ(V)  = τ_base + κ · V_safe^(-β)        ← dinamik eşik
         3. k(V)  = k_min + γ · log(1 + V_safe)     ← dinamik katılık
-        4. Risk_Score = 1 / (1 + exp(-k(V) · (U_rel - τ(V))))
-        5. Risk_Score → LOW / MEDIUM / HIGH
+        4. Risk_Score_raw = 1 / (1 + exp(-k(V) · (U_rel - τ(V))))
+        5. [Tur 5] weight(V)     = min(1.0, q50 / materiality_floor)
+           Risk_Score_final = Risk_Score_raw × sqrt(weight(V))
+        6. Risk_Score_final → LOW / MEDIUM / HIGH
 
         V_safe = max(q50, 1.0)  → sıfır/çok küçük hacimlerde bölme hatası
-        ve aşırı duyarlılığı önler (PDF'in np.maximum(q50, 1.0) güvenliği).
+        önler. Ancak V_safe küçükse U_rel matematiksel olarak patlayabilir
+        (örn. q50=0, uncertainty_range=125 → U_rel=125). Bu artık adım 5'teki
+        materyalite ağırlığıyla dengelenir: gerçek hacim (q50, floor'a göre
+        DEĞİL 1.0'a göre ölçülür) küçükse, ham skor ne kadar yüksek olursa
+        olsun nihai skor da orantılı şekilde küçültülür.
         """
         v_safe = max(self.q50, 1.0)
 
-        # 1. Göreceli belirsizlik (U_rel)
+        # 1. Göreceli belirsizlik (U_rel) — ham/tanısal, floor'dan etkilenmez
         self.relative_uncertainty = round(self.uncertainty_range / v_safe, 4)
 
         # 2. Dinamik eşik: τ(V) = τ_base + κ · V^(-β)
@@ -250,21 +264,33 @@ class DemandBand:
             self._k_min + self._gamma * np.log1p(v_safe), 4
         )
 
-        # 4. Sigmoid risk skoru (overflow korumalı)
+        # 4. Sigmoid HAM risk skoru (overflow korumalı)
         exponent = -self.dynamic_steepness * (
             self.relative_uncertainty - self.dynamic_threshold
         )
         exponent = float(np.clip(exponent, -SIGMOID_EXP_CLIP, SIGMOID_EXP_CLIP))
-        self.risk_score = round(1.0 / (1.0 + np.exp(exponent)), 4)
+        raw_score = 1.0 / (1.0 + np.exp(exponent))
+        self.risk_score_raw = round(raw_score, 4)
 
-        # 5. Sürekli skoru operasyonel etikete çevir
+        # 5. [Tur 5] Materyalite ağırlığı — düşük mutlak hacimde ham skoru bastır.
+        #    Sert kesme değil, sürekli/orantılı sönümleme (0'dan 1'e yumuşak geçiş).
+        floor = max(self._materiality_floor, 1e-6)
+        materiality_weight = min(1.0, self.q50 / floor)
+        # Tur 5:
+        # Lineer bastırma yerine sqrt(weight) kullan.
+        # Küçük hacimli rotalar tamamen LOW'a düşmesin,
+        # fakat gereksiz HIGH üretimi azalsın.
+        materiality_weight = np.sqrt(materiality_weight)
+        self.risk_score = round(raw_score * materiality_weight, 4)
+
+        # 6. Sürekli skoru operasyonel etikete çevir (nihai/ağırlıklı skor üzerinden)
         self.risk_class = self._classify_risk()
 
     def _classify_risk(self) -> str:
         """
-        Sürekli risk_score'u (0.0-1.0) operasyonel etikete çevirir
-        (PDF Bölüm: "Sürekli Risk Skorlarının Operasyonel Etiketlere
-        Çevrilmesi").
+        Sürekli, materyalite-ağırlıklı risk_score'u (0.0-1.0) operasyonel
+        etikete çevirir (PDF Bölüm: "Sürekli Risk Skorlarının Operasyonel
+        Etiketlere Çevrilmesi").
 
           LOW    : risk_score < 0.33  → Rutin planlama, spot araç gerekmez
           MEDIUM : 0.33 ≤ score ≤ 0.66 → İzleme listesi (watchlist), kontrol kulesi sarı uyarı
@@ -289,6 +315,7 @@ class DemandBand:
             "relative_uncertainty": self.relative_uncertainty,
             "dynamic_threshold":    self.dynamic_threshold,
             "dynamic_steepness":    self.dynamic_steepness,
+            "risk_score_raw":       self.risk_score_raw,   # [Tur 5] tanı amaçlı, ALNS okumak zorunda değil
             "risk_score":           self.risk_score,
             "safety_buffer":        self.safety_buffer,
             "risk_class":           self.risk_class,
@@ -312,18 +339,13 @@ class UncertaintyBand:
     logging_enabled : Detaylı log. Varsayılan: True
 
     tau_base, kappa, beta, k_min, gamma :
-        Hacim Ağırlıklı Dinamik Sigmoid Risk Modeli hiperparametreleri
-        (bkz. "Belirsizlik_Bantlarını_Risk_Sınıflandırmasına_Dönüştürme.pdf").
-        Varsayılanlar DYNAMIC_TAU_BASE/KAPPA/BETA/K_MIN/GAMMA sabitlerinden
-        gelir ve mevcut filo profiline (Arac__Kapasite_Maliyet.xlsx,
-        Desi_talep.xlsx) göre kabaca kalibre edilmiştir. 3. turda gerçek
-        spot araç fatura verisiyle backtest edilip yeniden ayarlanmalıdır.
+        Hacim Ağırlıklı Dinamik Sigmoid Risk Modeli hiperparametreleri.
 
-        tau_base : τ(V)'nin asimptotik taban değeri (devasa hacimde min. tolerans)
-        kappa    : Düşük hacim gevşeme çarpanı (mikro rota gürültü filtresi)
-        beta     : τ(V) sönümleme oranı (Taylor güç yasası, genelde 0.5)
-        k_min    : En küçük hacimlerde sigmoid eğri katılığı (en yumuşak S)
-        gamma    : Hacim arttıkça eğrinin katılaşma (hardening) hızı
+    materiality_floor : [Tur 5] Bu hacmin altındaki q50 değerlerinde nihai
+        risk_score, ham sigmoid skoruna oranla (q50/materiality_floor)
+        bastırılır. Amaç: neredeyse durgun rotalarda küçük mutlak sapmaların
+        payda küçüklüğü yüzünden yapay HIGH üretmesini engellemek.
+        Varsayılan: MATERIALITY_FLOOR (750.0 desi, ≈ filo p10 hacmi).
 
     Examples
     --------
@@ -342,6 +364,7 @@ class UncertaintyBand:
         beta: float = DYNAMIC_BETA,
         k_min: float = DYNAMIC_K_MIN,
         gamma: float = DYNAMIC_GAMMA,
+        materiality_floor: float = MATERIALITY_FLOOR,
     ):
         self.buffer_ratio    = buffer_ratio
         self.logging_enabled = logging_enabled
@@ -352,6 +375,9 @@ class UncertaintyBand:
         self.beta     = beta
         self.k_min    = k_min
         self.gamma    = gamma
+
+        # [Tur 5] Materyalite ağırlığı
+        self.materiality_floor = materiality_floor
 
         self.bands_: List[DemandBand] = []
 
@@ -389,6 +415,7 @@ class UncertaintyBand:
                 _beta=self.beta,
                 _k_min=self.k_min,
                 _gamma=self.gamma,
+                _materiality_floor=self.materiality_floor,
             )
             self.bands_.append(band)
 
@@ -452,12 +479,14 @@ class UncertaintyBand:
                 # Hacim Ağırlıklı Dinamik Sigmoid Risk Modeli parametreleri
                 # (her kaydın risk_score'u bu parametrelerle üretildi)
                 "risk_model": {
-                    "name":     "volume_weighted_dynamic_sigmoid",
-                    "tau_base": self.tau_base,
-                    "kappa":    self.kappa,
-                    "beta":     self.beta,
-                    "k_min":    self.k_min,
-                    "gamma":    self.gamma,
+                    "name":              "volume_weighted_dynamic_sigmoid",
+                    "tau_base":          self.tau_base,
+                    "kappa":             self.kappa,
+                    "beta":              self.beta,
+                    "k_min":             self.k_min,
+                    "gamma":             self.gamma,
+                    "materiality_floor": self.materiality_floor,  # [Tur 5]
+                    "materiality_function": "sqrt",  # [Tur 5]
                 },
             },
             "risk_summary": risk_summary,
@@ -540,6 +569,7 @@ class UncertaintyBand:
                 "recommended_demand": round(recommended_demand, 2),
                 "risk_class":         b.risk_class,
                 "risk_score":         b.risk_score,
+                "risk_score_raw":     b.risk_score_raw,  # [Tur 5] tanı amaçlı
             })
 
         df_ortools = pd.DataFrame(records)
@@ -547,8 +577,8 @@ class UncertaintyBand:
         if self.logging_enabled:
             logger.info(
                 f"⚙️  OR-Tools payload'u hazırlandı: {len(df_ortools)} satır, "
-                f"9 sütun (date, source, destination, q10, q50, q90, "
-                f"recommended_demand, risk_class, risk_score)."
+                f"{len(df_ortools.columns)} sütun (date, source, destination, q10, q50, q90, "
+                f"recommended_demand, risk_class, risk_score, risk_score_raw)."
             )
 
         return df_ortools
@@ -571,21 +601,40 @@ class UncertaintyBand:
             return
 
         q50_vals  = np.array([b.q50 for b in self.bands_])
+        weights = np.sqrt(
+            np.minimum(
+                1.0,
+                q50_vals / max(self.materiality_floor, 1e-6)
+            )
+        )
         unc_vals  = np.array([b.uncertainty_range for b in self.bands_])
         urel_vals = np.array([b.relative_uncertainty for b in self.bands_])
+        score_raw_vals = np.array([b.risk_score_raw for b in self.bands_])
         score_vals = np.array([b.risk_score for b in self.bands_])
         risk_counts = {"LOW": 0, "MEDIUM": 0, "HIGH": 0}
         for b in self.bands_:
             risk_counts[b.risk_class] += 1
 
+        # [Tur 5] Kaç kayıt materyalite ağırlığıyla bastırıldı (raw HIGH ama final değil)?
+        dampened = sum(
+            1 for b in self.bands_
+            if b.risk_score_raw > RISK_SCORE_MEDIUM_MAX and b.risk_class != "HIGH"
+        )
+
         logger.info(
             f"\n📐 UncertaintyBand Özeti ({len(self.bands_)} kayıt) "
-            f"[Hacim Ağırlıklı Dinamik Sigmoid Risk Modeli]\n"
-            f"   q50 ort/max     : {q50_vals.mean():.1f} / {q50_vals.max():.1f}\n"
-            f"   Belirsizlik ort : {unc_vals.mean():.1f}\n"
-            f"   U_rel ort       : {urel_vals.mean():.3f}\n"
-            f"   risk_score ort  : {score_vals.mean():.3f}\n"
-            f"   Risk dağılımı   → "
+            f"[Hacim Ağırlıklı Dinamik Sigmoid + Materyalite Ağırlığı — Tur 5]\n"
+            f"   q50 ort/max        : {q50_vals.mean():.1f} / {q50_vals.max():.1f}\n"
+            f"   Belirsizlik ort    : {unc_vals.mean():.1f}\n"
+            f"   U_rel ort          : {urel_vals.mean():.3f}\n"
+            f"   risk_score_raw ort : {score_raw_vals.mean():.3f}\n"
+            f"   risk_score (final) : {score_vals.mean():.3f}\n"
+            f"   Materiality weight : "
+            f"ort={weights.mean():.3f} | "
+            f"medyan={np.median(weights):.3f} | "
+            f"min={weights.min():.3f}\n"
+            f"   Materyalite ile bastırılan (ham HIGH → final≠HIGH): {dampened} kayıt\n"
+            f"   Risk dağılımı      → "
             f"LOW: {risk_counts['LOW']} | "
             f"MEDIUM: {risk_counts['MEDIUM']} | "
             f"HIGH: {risk_counts['HIGH']}"
