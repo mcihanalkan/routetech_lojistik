@@ -162,6 +162,10 @@ class DemandBand:
     ----------
     tarih            : Tahmin tarihi (YYYY-MM-DD)
     tm_id            : Transfer Merkezi kimliği
+    slot             : Saat dilimi ("09:00" / "17:00") — DemandForecaster.predict()'ten
+                       gelen "slot" alanını taşır. Sadece kimlik/etiketleme amaçlıdır,
+                       risk hesaplama formüllerini (_compute_dynamic_risk) etkilemez —
+                       q10/q50/q90 zaten slot-spesifik geldiği için matematik aynı kalır.
     q10              : Düşük senaryo (alt güven sınırı)
     q50              : Medyan tahmin (operasyonel plan)
     q90              : Yüksek senaryo (spot araç alarm seviyesi)
@@ -191,6 +195,9 @@ class DemandBand:
     dynamic_steepness:    float = field(init=False)  # k(V)
     risk_score_raw:       float = field(init=False)  # [Tur 5] materyalite öncesi ham skor
     risk_score:           float = field(init=False)  # [Tur 5] materyalite ağırlıklı nihai skor
+
+    # --- Saat dilimi (09:00 / 17:00) — sadece kimlik/etiketleme amaçlı ---
+    slot: Optional[str] = None
 
     # buffer_ratio dataclass'a init parametresi olarak almıyoruz
     # (asdict() serileştirmesini karmaşıklaştırır); __post_init__'e geçiyoruz
@@ -308,6 +315,7 @@ class DemandBand:
         return {
             "tarih":                self.tarih,
             "TM_ID":                self.tm_id,
+            "slot":                 self.slot,
             "demand_low":           self.q10,
             "demand_base":          self.q50,
             "demand_high":          self.q90,
@@ -386,6 +394,7 @@ class UncertaintyBand:
         predictions: List[Dict[str, Any]],
         date_key:  str = "tarih",
         group_key: str = "TM_ID",
+        slot_key:  str = "slot",
     ) -> "UncertaintyBand":
         """
         predict() çıktısını (List[Dict]) DemandBand listesine dönüştürür.
@@ -395,6 +404,9 @@ class UncertaintyBand:
         predictions : DemandForecaster.predict() çıktısı
         date_key    : Tarih sütunu anahtarı
         group_key   : TM_ID sütunu anahtarı
+        slot_key    : Saat dilimi sütunu anahtarı (varsayılan: "slot") — date_key/
+                      group_key ile aynı desen: ileride farklı bir slot alan adı
+                      gelirse (örn. "talep_tamamlanma_saati") kod değişmeden çalışır.
 
         Returns
         -------
@@ -406,6 +418,7 @@ class UncertaintyBand:
             band = DemandBand(
                 tarih=str(rec.get(date_key, "N/A")),
                 tm_id=str(rec.get(group_key, "N/A")),
+                slot=rec.get(slot_key, "N/A"),
                 q10=float(rec.get("q10", 0.0)),
                 q50=float(rec.get("q50", 0.0)),
                 q90=float(rec.get("q90", 0.0)),
@@ -429,6 +442,7 @@ class UncertaintyBand:
         predictions: Optional[List[Dict[str, Any]]] = None,
         date_key:  str = "tarih",
         group_key: str = "TM_ID",
+        slot_key:  str = "slot",
     ) -> Dict[str, Any]:
         """
         ALNS motorunun tüketeceği nihai in-memory payload'ı üretir.
@@ -440,18 +454,20 @@ class UncertaintyBand:
         predictions : Opsiyonel. Verilirse from_json() otomatik çağrılır.
         date_key    : Tarih anahtarı
         group_key   : Grup anahtarı
+        slot_key    : Saat dilimi anahtarı (varsayılan: "slot")
 
         Returns
         -------
         Dict[str, Any]
             {
-              "metadata": { ... },
-              "demands":  [ DemandBand.to_dict(), ... ],
-              "risk_summary": { "LOW": n, "MEDIUM": n, "HIGH": n }
+              "metadata": { ..., "has_slot_dimension": True },
+              "demands":  [ DemandBand.to_dict(), ... ],  ← her kayıt artık "slot" taşır
+              "risk_summary": { "LOW": n, "MEDIUM": n, "HIGH": n },
+              "risk_summary_by_slot": { "09:00": {...}, "17:00": {...} }
             }
         """
         if predictions is not None:
-            self.from_json(predictions, date_key=date_key, group_key=group_key)
+            self.from_json(predictions, date_key=date_key, group_key=group_key, slot_key=slot_key)
 
         if not self.bands_:
             raise ValueError(
@@ -459,10 +475,18 @@ class UncertaintyBand:
                 "veya predictions parametresi geçin."
             )
 
-        # Risk dağılımı özeti
+        # Risk dağılımı özeti (tüm slotlar dahil, tek potada — genel özet için hâlâ anlamlı)
         risk_summary = {"LOW": 0, "MEDIUM": 0, "HIGH": 0}
         for b in self.bands_:
             risk_summary[b.risk_class] += 1
+
+        # İsteğe bağlı: slot bazlı kırılım — OR-Tools/ALNS motorunun işini kolaylaştırır
+        # (zorunlu değil, ama küçük bir ek — genel risk_summary'nin yerini almaz)
+        risk_summary_by_slot: Dict[str, Dict[str, int]] = {}
+        for b in self.bands_:
+            slot_label = b.slot or "N/A"
+            bucket = risk_summary_by_slot.setdefault(slot_label, {"LOW": 0, "MEDIUM": 0, "HIGH": 0})
+            bucket[b.risk_class] += 1
 
         # Tarih aralığı
         dates = [b.tarih for b in self.bands_ if b.tarih != "N/A"]
@@ -476,6 +500,10 @@ class UncertaintyBand:
                 "buffer_ratio":  self.buffer_ratio,
                 # ALNS bu bayrağı okuyarak high-risk satırlara öncelik verir
                 "has_high_risk": risk_summary["HIGH"] > 0,
+                # Şema notu: her "demands" kaydı artık bir "slot" alanı taşıyor
+                # (09:00/17:00) — ALNS tarafındaki arkadaşlar payload'ı ilk
+                # gördüğünde şemanın değiştiğini fark etsin diye.
+                "has_slot_dimension": True,
                 # Hacim Ağırlıklı Dinamik Sigmoid Risk Modeli parametreleri
                 # (her kaydın risk_score'u bu parametrelerle üretildi)
                 "risk_model": {
@@ -490,6 +518,9 @@ class UncertaintyBand:
                 },
             },
             "risk_summary": risk_summary,
+            # İsteğe bağlı slot bazlı kırılım — zorunlu değil, genel risk_summary'nin
+            # yerini almaz, sadece OR-Tools/ALNS motoruna kolaylık sağlar
+            "risk_summary_by_slot": risk_summary_by_slot,
             # Ana veri: ALNS araç atama algoritmasına girdi
             "demands": [b.to_dict() for b in self.bands_],
         }
@@ -510,6 +541,7 @@ class UncertaintyBand:
         predictions: List[Dict[str, Any]],
         date_key: str = "tarih",
         group_key: str = "TM_ID",
+        slot_key: str = "slot",
     ) -> "pd.DataFrame":
         """
         Tahminleri OR-Tools Optimizasyon motorunun kullanabileceği
@@ -521,18 +553,25 @@ class UncertaintyBand:
         Çıktı sütunlar
         --------------
         date                : Tahmin tarihi
+        slot                : Saat dilimi ("09:00" / "17:00") — ZORUNLU: bu olmadan
+                               OR-Tools iki farklı saat dilimindeki talebi aynı
+                               satırmış gibi işler (yanlış kapasite/SLA planlaması)
         source              : Kaynak Transfer Merkezi
         destination         : Varış Transfer Merkezi
         q10                 : Düşük senaryo
         q50                 : Medyan tahmin
         q90                 : Yüksek senaryo (spot araç alarm seviyesi)
         recommended_demand  : q50 + safety_buffer (OR-Tools kapasite girdisi)
+        risk_class          : LOW / MEDIUM / HIGH
+        risk_score          : Materyalite ağırlıklı nihai risk skoru
+        risk_score_raw      : [Tur 5] tanı amaçlı ham risk skoru
 
         Parameters
         ----------
         predictions : DemandForecaster.predict() çıktısı (List[Dict])
         date_key    : Tarih anahtarı (varsayılan: "tarih")
         group_key   : Grup anahtarı (varsayılan: "TM_ID")
+        slot_key    : Saat dilimi anahtarı (varsayılan: "slot")
 
         Returns
         -------
@@ -541,7 +580,7 @@ class UncertaintyBand:
         import pandas as pd
 
         # 1. Tahminleri içeri al ve belirsizlik bantlarını/tamponları hesapla
-        self.from_json(predictions, date_key=date_key, group_key=group_key)
+        self.from_json(predictions, date_key=date_key, group_key=group_key, slot_key=slot_key)
 
         # 2. OR-Tools formatında listeyi hazırla
         records = []
@@ -561,6 +600,7 @@ class UncertaintyBand:
             recommended_demand = b.q50 + b.safety_buffer
             records.append({
                 "date":               b.tarih,
+                "slot":               b.slot,       # ZORUNLU — bkz. docstring/madde 4 notu
                 "source":             source.strip(),
                 "destination":        dest.strip(),
                 "q10":                round(b.q10, 2),
@@ -577,7 +617,7 @@ class UncertaintyBand:
         if self.logging_enabled:
             logger.info(
                 f"⚙️  OR-Tools payload'u hazırlandı: {len(df_ortools)} satır, "
-                f"{len(df_ortools.columns)} sütun (date, source, destination, q10, q50, q90, "
+                f"{len(df_ortools.columns)} sütun (date, slot, source, destination, q10, q50, q90, "
                 f"recommended_demand, risk_class, risk_score, risk_score_raw)."
             )
 
@@ -639,3 +679,26 @@ class UncertaintyBand:
             f"MEDIUM: {risk_counts['MEDIUM']} | "
             f"HIGH: {risk_counts['HIGH']}"
         )
+
+        # --- İsteğe bağlı: slot bazlı ayrıştırılmış özet ---------------------
+        # 09:00 ve 17:00'nin hacim dağılımları çok farklı olabiliyor (örn.
+        # 09:00 ort. 517, 17:00 ort. 3225 — ~6 kat fark). Tek bir genel
+        # ortalamada bu ikisi karışırsa yanıltıcı olur; birden fazla slot
+        # varsa her biri için ayrı bir mini özet de basılır (teşhis amaçlı).
+        distinct_slots = sorted({b.slot for b in self.bands_ if b.slot not in (None, "N/A")})
+        if len(distinct_slots) > 1:
+            for slot_label in distinct_slots:
+                slot_bands = [b for b in self.bands_ if b.slot == slot_label]
+                if not slot_bands:
+                    continue
+                s_q50  = np.array([b.q50 for b in slot_bands])
+                s_urel = np.array([b.relative_uncertainty for b in slot_bands])
+                s_counts = {"LOW": 0, "MEDIUM": 0, "HIGH": 0}
+                for b in slot_bands:
+                    s_counts[b.risk_class] += 1
+                logger.info(
+                    f"   ── [{slot_label}] {len(slot_bands)} kayıt → "
+                    f"q50 ort/max: {s_q50.mean():.1f}/{s_q50.max():.1f} | "
+                    f"U_rel ort: {s_urel.mean():.3f} | "
+                    f"Risk → LOW: {s_counts['LOW']} | MEDIUM: {s_counts['MEDIUM']} | HIGH: {s_counts['HIGH']}"
+                )

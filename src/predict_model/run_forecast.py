@@ -4,14 +4,23 @@ run_forecast.py — Teknofest 2026 Tahmin Çalıştırıcı
 Kullanım:
     python run_forecast.py
 
-Giriş  : Desi_talep.xlsx
-Çıkış  : ALNS motoruna in-memory JSON (List[Dict])
+Giriş  : teknofest26_gelismis.xlsx (slot bazlı: 09:00 / 17:00)
+Çıkış  : ortools_payload.csv / .xlsx (slot sütunlu, OR-Tools/ALNS motoruna girdi)
          İsteğe bağlı: alns_payload.json (debug için)
 
-Mimari:
-    DemandForecaster.fit()   → Tek CatBoost Modeli (MultiQuantile: q10/q50/q90)
-    DemandForecaster.predict() → List[Dict] (tarih, kaynak_tm, varis_tm, q10, q50, q90)
-    UncertaintyBand.to_alns_payload() → ALNS formatı (risk_class, safety_buffer, ...)
+Mimari (İKİ MODEL — Direct Forecasting, 09:00 ve 17:00 ayrı ayrı):
+    load_dataset()              → Wide format: (rota, tarih) başına iki hedef
+                                   sütun (toplam_desi_0900 / toplam_desi_1700)
+    DemandForecaster.fit()      → Her slot için AYRI CatBoost modeli
+                                   (MultiQuantile: q10/q50/q90), diğer slot
+                                   "sibling_target_column" olarak feature'a girer
+    DemandForecaster.predict()  → List[Dict] (tarih, kaynak_tm, varis_tm, slot,
+                                   q10, q50, q90) — her model kendi listesini üretir
+    UncertaintyBand.to_ortools_dataframe(slot_key="slot") → slot-aware DataFrame;
+                                   aynı (date, source, destination) için 09:00 ve
+                                   17:00 ayrı satırlar olarak yer alır
+    UncertaintyBand.to_alns_payload()      → ALNS formatı (risk_class,
+                                   safety_buffer, risk_summary_by_slot, ...)
 """
 
 import json
@@ -38,17 +47,32 @@ logger = logging.getLogger(__name__)
 _HERE          = Path(__file__).resolve().parent          # src/predict_model/
 _PROJECT_ROOT  = _HERE.parent.parent                      # routetech_lojistik/
 
-DATA_PATH       = str(_PROJECT_ROOT / "data" / "raw" / "Desi_talep.xlsx")
-MODEL_FILE_PATH = str(_PROJECT_ROOT / "src" / "predict_model" / "trained_demand_model.joblib")
+DATA_PATH       = str(_PROJECT_ROOT / "data" / "raw" / "teknofest26_gelismis.xlsx")
+MODEL_FILE_PATH_0900 = str(_PROJECT_ROOT / "src" / "predict_model" / "trained_demand_model_0900.joblib")
+MODEL_FILE_PATH_1700 = str(_PROJECT_ROOT / "src" / "predict_model" / "trained_demand_model_1700.joblib")
+# NOT: Yeni veri 2026-01-01 → 2026-06-28 aralığını kapsıyor (179 gün).
+# PREDICT_START/END aşağıda placeholder olarak eski değerlerde bırakıldı —
+# kesin tahmin penceresi netleşince (muhtemelen 2026-06-28'in hemen sonrası)
+# güncellenecek. Bu adımda (load_dataset) önemli değil.
 PREDICT_START  = "2026-05-11"
 PREDICT_END    = "2026-05-17"
 OUTPUT_JSON    = str(_HERE / "alns_payload.json")# debug için; ALNS motoru RAM'den alır
 
-TARGET_COL  = "desi_hacmi"
 DATE_COL    = "tarih"
 GROUP_COL   = "rota"          # kaynak_tm → varış_tm kombinasyonu
 KAYNAK_COL  = "kaynak_tm"
 VARIS_COL   = "varis_tm"
+
+# --- Yeni: iki saat dilimli (09:00 / 17:00) veri için slot boyutu ----------
+# teknofest26_gelismis.xlsx her talebi tek satırda, "talep_tamamlanma_saati"
+# sütunuyla 09:00 veya 17:00 olarak işaretliyor. load_dataset() artık bu
+# üçüncü boyutu (rota × tarih × slot) tam grid'e ekleyip, sonrasında
+# (rota, tarih) bazında wide formata pivotluyor: iki paralel hedef sütun
+# (TARGET_COL_0900 / TARGET_COL_1700) → Direct Forecasting mimarisinin temeli.
+SLOT_COL         = "saat_dilimi"
+SLOTS            = ["09:00", "17:00"]
+TARGET_COL_0900  = "toplam_desi_0900"
+TARGET_COL_1700  = "toplam_desi_1700"
 
 # --- Uyarlanabilir lag seçimi (optimize.py ile BİREBİR AYNI eşikler) --------
 # lag_21 / lag_30, her rota için ilk N günü NaN yapıp feature matrix'ten
@@ -75,30 +99,67 @@ def select_lags(n_real_rows: int) -> list:
 # 1. Veri Hazırlama
 # ---------------------------------------------------------------------------
 
+def _normalize_slot(value: str) -> str:
+    """'9:00' / '09:00' / '17:00' gibi varyantları kanonik 'HH:MM' formatına indirger."""
+    s = str(value).strip()
+    try:
+        h, m = s.split(":")
+        return f"{int(h):02d}:{int(m):02d}"
+    except ValueError:
+        # Beklenmeyen bir format gelirse olduğu gibi bırak (aşağıda validasyon uyaracaktır)
+        return s
+
+
 def load_dataset(path: str) -> pd.DataFrame:
     """
-    Excel → DemandForecaster'ın beklediği formata dönüştür.
+    Excel → DemandForecaster'ın beklediği wide formata dönüştür.
 
     DemandForecaster group_column olarak tek bir sütun bekliyor.
-    Dataset A'da grup = kaynak_tm + varış_tm kombinasyonu → 'rota' sütunu.
+    Grup = kaynak_tm + varış_tm kombinasyonu → 'rota' sütunu.
 
-    Eksik gün × rota kombinasyonları 0 ile doldurulur:
-      - Lag/rolling feature'lar için gerekli (süreksizlik = NaN zinciri)
-      - Model "o gün o rotada taşıma yok" örüntüsünü öğrenir
+    ÖNEMLİ — teknofest26_gelismis.xlsx artık slot bazlı (talep_tamamlanma_saati):
+    her talep satırı 09:00 veya 17:00 olarak işaretli, aynı (rota, tarih) için
+    iki ayrı satır olabiliyor. Bu fonksiyon:
+      1. rota × tarih × slot için TAM grid kurar (eksikler 0 — bkz. aşağıdaki not)
+      2. wide formata pivotlar → tek satır = (rota, tarih), iki hedef sütun
+         (toplam_desi_0900 / toplam_desi_1700)
 
-    Sütun eşleştirme stratejisi (Dataset B'ye dayanıklılık):
+    Eksikleri neden 0 ile dolduruyoruz (NaN değil):
+      Veride 17:00 dolu iken 09:00'in boş olması çok yaygın (17.281 satır),
+      tersi nadir (1.069 satır). Bu, eksik slotların veri hatası değil,
+      "o slotta gerçekten talep oluşmadı" anlamına geldiğini gösteriyor.
+      Dolayısıyla lag/rolling feature'ların süreksiz NaN zincirine
+      bölünmemesi için eksikler 0.0 ile doldurulur (eski Desi_talep.xlsx
+      sürecindeki mantıkla birebir aynı).
+
+    NOT (Kocaeli): Kocaeli veri setinde hâlâ sadece kaynak olarak geçiyor,
+      hiçbir zaman varış değil. Bu, hub/graph feature'larının (hub_in_vol,
+      neighbor_vol_2nd_order vb.) varış bazlı hesaplarında Kocaeli için
+      sürekli 0 üretecek — hata değil, ama yorumlarken şaşırmamak için not.
+
+    NOT (talep_id): Bu sütun geçmiş gerçek verinin kendi kimliği; bizim
+      üreteceğimiz tahmin ID'siyle (D00001 formatı) karışmaması için
+      hiçbir feature'a dahil edilmez, bilinçli olarak seçilmez/atılır.
+
+    Sütun eşleştirme stratejisi (farklı dataset varyantlarına dayanıklılık):
       1. Bilinen Türkçe/İngilizce sütun adlarına isim bazlı bak
       2. Bulunamazsa pozisyon bazlı fallback (uyarı logla)
-      Böylece Dataset B farklı sütun adı veya sırası gelse de çalışır.
     """
+    # NOT: TARGET_COL artık modül seviyesinde bir sabit değil (bkz. Sabitler
+    # bölümü) — burada sadece bu fonksiyonun İÇİNDE, pivot'tan önceki ham/tekil
+    # "Toplam Desi" sütununu adlandırmak için yerel bir isim kullanıyoruz.
+    # Pivot sonrası bu sütun zaten TARGET_COL_0900 / TARGET_COL_1700'e ayrılıyor.
+    _RAW_TARGET_COL = "desi_hacmi"
+
     df = pd.read_excel(path) if path.endswith(".xlsx") else pd.read_csv(path)
     df.columns = [c.strip() for c in df.columns]
 
-    # Bilinen olası sütun adları (Dataset A Türkçe + Dataset B İngilizce varyantlar)
-    _KAYNAK_CANDIDATES = ["Çıkış Transfer Merkezi", "kaynak_tm", "source", "origin", "from"]
-    _VARIS_CANDIDATES  = ["Varış Transfer Merkezi", "varis_tm",  "destination", "dest", "to"]
+    # Bilinen olası sütun adları (eski Dataset A Türkçe + yeni teknofest26_gelismis + İngilizce varyantlar)
+    _KAYNAK_CANDIDATES = ["Çıkış Transfer Merkezi", "kaynak_tm", "cikis", "çıkış", "source", "origin", "from"]
+    _VARIS_CANDIDATES  = ["Varış Transfer Merkezi", "varis_tm",  "varis", "varış", "destination", "dest", "to"]
     _DATE_CANDIDATES   = ["Tarih", "tarih", "date", "Date", "tarih_"]
-    _TARGET_CANDIDATES = ["Toplam Desi", "desi_hacmi", "desi", "demand", "talep"]
+    _TARGET_CANDIDATES = ["Toplam Desi", "toplam_desi", "desi_hacmi", "desi", "demand", "talep"]
+    _SLOT_CANDIDATES   = ["talep_tamamlanma_saati", "saat_dilimi", "slot", "saat", "time_slot"]
 
     def _find_col(candidates: list, col_idx: int, label: str) -> str:
         """Sütun adını isim bazlı ara, bulamazsan pozisyon bazlı fallback."""
@@ -121,39 +182,86 @@ def load_dataset(path: str) -> pd.DataFrame:
     varis_col_raw  = _find_col(_VARIS_CANDIDATES,  1, "varis_tm")
     date_col_raw   = _find_col(_DATE_CANDIDATES,   2, "tarih")
     target_col_raw = _find_col(_TARGET_CANDIDATES, 3, "desi_hacmi")
+    slot_col_raw   = _find_col(_SLOT_CANDIDATES,   4, "saat_dilimi")
 
     df = df.rename(columns={
         kaynak_col_raw: KAYNAK_COL,
         varis_col_raw:  VARIS_COL,
         date_col_raw:   DATE_COL,
-        target_col_raw: TARGET_COL,
+        target_col_raw: _RAW_TARGET_COL,
+        slot_col_raw:   SLOT_COL,
     })
+
+    # talep_id gibi bizim işimize yaramayan / tahmin ID'siyle karışabilecek
+    # sütunları burada bilinçli olarak dışarıda bırakıyoruz — sadece ihtiyaç
+    # duyduğumuz 5 sütunu seçiyoruz.
+    df = df[[KAYNAK_COL, VARIS_COL, DATE_COL, _RAW_TARGET_COL, SLOT_COL]].copy()
+
     df[DATE_COL] = pd.to_datetime(df[DATE_COL])
+    df[SLOT_COL] = df[SLOT_COL].apply(_normalize_slot)
     df[GROUP_COL] = df[KAYNAK_COL] + " → " + df[VARIS_COL]
 
-    # Tam grid: tüm rota × tüm gün (eksikler 0)
+    unexpected_slots = set(df[SLOT_COL].unique()) - set(SLOTS)
+    if unexpected_slots:
+        logger.warning(f"⚠️  Beklenmeyen saat_dilimi değerleri bulundu: {unexpected_slots}")
+
+    # Aynı (rota, tarih, slot) için birden fazla talep satırı varsa topla
+    # (teknofest26_gelismis.xlsx'te her satır zaten tek bir talep ama
+    # ileride farklı bir dataset birden fazla talep içerebilir).
+    df = (
+        df.groupby([GROUP_COL, KAYNAK_COL, VARIS_COL, DATE_COL, SLOT_COL], as_index=False)[_RAW_TARGET_COL]
+        .sum()
+    )
+
+    # --- Tam grid: rota × tarih × slot (3 boyutlu) — eksikler 0 -----------
     all_dates  = pd.date_range(df[DATE_COL].min(), df[DATE_COL].max(), freq="D")
     all_routes = df[GROUP_COL].unique()
     rota_map   = df[[GROUP_COL, KAYNAK_COL, VARIS_COL]].drop_duplicates()
 
-    idx    = pd.MultiIndex.from_product([all_routes, all_dates], names=[GROUP_COL, DATE_COL])
-    full   = pd.DataFrame(index=idx).reset_index()
-    full   = full.merge(rota_map, on=GROUP_COL, how="left")
-    full   = full.merge(df[[GROUP_COL, DATE_COL, TARGET_COL]], on=[GROUP_COL, DATE_COL], how="left")
-    full[TARGET_COL] = full[TARGET_COL].fillna(0.0)
-    full   = full.sort_values([GROUP_COL, DATE_COL]).reset_index(drop=True)
+    idx  = pd.MultiIndex.from_product(
+        [all_routes, all_dates, SLOTS], names=[GROUP_COL, DATE_COL, SLOT_COL]
+    )
+    full = pd.DataFrame(index=idx).reset_index()
+    full = full.merge(rota_map, on=GROUP_COL, how="left")
+    full = full.merge(
+        df[[GROUP_COL, DATE_COL, SLOT_COL, _RAW_TARGET_COL]],
+        on=[GROUP_COL, DATE_COL, SLOT_COL],
+        how="left",
+    )
+    full[_RAW_TARGET_COL] = full[_RAW_TARGET_COL].fillna(0.0)
+
+    # --- Wide'a pivot: tek satır = (rota, tarih), iki hedef sütun ----------
+    wide = full.pivot_table(
+        index=[GROUP_COL, DATE_COL, KAYNAK_COL, VARIS_COL],
+        columns=SLOT_COL,
+        values=_RAW_TARGET_COL,
+        aggfunc="sum",
+        fill_value=0.0,
+    )
+    wide.columns = [
+        TARGET_COL_0900 if c == "09:00" else TARGET_COL_1700 for c in wide.columns
+    ]
+    wide = wide.reset_index()
+    wide = wide.sort_values([GROUP_COL, DATE_COL]).reset_index(drop=True)
 
     logger.info(
-        f"✅ Veri hazır: {len(df):,} gerçek kayıt | "
-        f"{full[GROUP_COL].nunique()} rota | {full[DATE_COL].nunique()} gün\n"
-        f"   {full[DATE_COL].min().date()} → {full[DATE_COL].max().date()}"
+        f"✅ Veri hazır (wide format): {len(df):,} gerçek kayıt (slot bazlı) | "
+        f"{wide[GROUP_COL].nunique()} rota | {wide[DATE_COL].nunique()} gün\n"
+        f"   {wide[DATE_COL].min().date()} → {wide[DATE_COL].max().date()}\n"
+        f"   Sütunlar: {TARGET_COL_0900}, {TARGET_COL_1700}"
     )
-    return full
+    return wide
 
 
 def build_predict_grid(full_df: pd.DataFrame) -> pd.DataFrame:
     """
-    11-17 Mayıs için boş tahmin grid'i oluştur.
+    PREDICT_START → PREDICT_END aralığı için boş tahmin grid'i oluştur.
+
+    ÖNEMLİ: Artık her satırda İKİ hedef sütun birden bulunuyor
+    (TARGET_COL_0900 ve TARGET_COL_1700, ikisi de NaN → 0.0). Bu sayede
+    grid her iki model için de ortak kullanılabiliyor — forecasters.py'nin
+    predict()'i hangi modelse ona göre kendi target_column'unu ayırıyor.
+
     Context buffer (son 35 gün) eklenerek lag/rolling doğru hesaplanır.
     """
     target_dates = pd.date_range(PREDICT_START, PREDICT_END, freq="D")
@@ -164,20 +272,35 @@ def build_predict_grid(full_df: pd.DataFrame) -> pd.DataFrame:
         info = full_df[full_df[GROUP_COL] == route][[KAYNAK_COL, VARIS_COL]].iloc[0]
         for d in target_dates:
             rows.append({
-                GROUP_COL:  route,
-                DATE_COL:   d,
-                KAYNAK_COL: info[KAYNAK_COL],
-                VARIS_COL:  info[VARIS_COL],
-                TARGET_COL: np.nan,
+                GROUP_COL:       route,
+                DATE_COL:        d,
+                KAYNAK_COL:      info[KAYNAK_COL],
+                VARIS_COL:       info[VARIS_COL],
+                TARGET_COL_0900: np.nan,
+                TARGET_COL_1700: np.nan,
             })
 
     pred_df   = pd.DataFrame(rows)
     buf_start = pd.Timestamp(PREDICT_START) - pd.Timedelta(days=35)
-    buffer    = full_df[full_df[DATE_COL] >= buf_start].copy()
+    # ÖNEMLİ: Üst sınır da şart. PREDICT_START/END, full_df'in KAPSADIĞI bir
+    # aralıksa (örn. smoke test — geçmiş bir haftayı "tahmin" ediyorsak),
+    # üst sınır olmadan buffer PREDICT_START-END için de gerçek/dolu satırları
+    # içerir. pred_df aynı (rota, tarih) kombinasyonları için NaN satırlar
+    # eklediğinde concat sonrası her kombinasyon için İKİ satır oluşur (biri
+    # gerçek, biri NaN) — bu da lag/rolling hesaplarını (shift/rolling
+    # pencereleri kayar) ve predict()'in tahmin satırlarını ayırt etmesini
+    # bozar. Bu yüzden buffer kesinlikle PREDICT_START'tan ÖNCEKİ günlerle
+    # sınırlı olmalı — PREDICT_START/END ileride gerçek geleceğe (full_df'in
+    # dışına) çekilse bile bu satır genel/doğru kalır.
+    buffer    = full_df[
+        (full_df[DATE_COL] >= buf_start) & (full_df[DATE_COL] < pd.Timestamp(PREDICT_START))
+    ].copy()
     combined  = pd.concat([buffer, pred_df], ignore_index=True)
     combined  = combined.sort_values([GROUP_COL, DATE_COL]).reset_index(drop=True)
     # NaN → 0 (lag kaynağı için), tahmin haftasında model bu değerleri üretecek
-    combined[TARGET_COL] = combined[TARGET_COL].fillna(0.0)
+    # — iki hedef sütun için de ayrı ayrı uygulanır.
+    for col in (TARGET_COL_0900, TARGET_COL_1700):
+        combined[col] = combined[col].fillna(0.0)
     return combined
 
 
@@ -185,76 +308,125 @@ def build_predict_grid(full_df: pd.DataFrame) -> pd.DataFrame:
 # 2. Tahmin + ALNS Payload
 # ---------------------------------------------------------------------------
 
-def run(save_json: bool = True) -> Dict[str, Any]:
+def _fit_or_load_forecaster(
+    full_df: pd.DataFrame,
+    target_column: str,
+    sibling_target_column: str,
+    model_path: Path,
+    label: str,
+) -> DemandForecaster:
     """
-    Ana akış:
-      1. Veri yükle
-      2. DemandForecaster.fit() — 3 ayrı CatBoost
-      3. DemandForecaster.predict() — List[Dict] (q10/q50/q90)
-      4. UncertaintyBand.to_alns_payload() — ALNS formatı
-      5. İsteğe bağlı JSON kaydet (debug)
+    Tek bir slot (09:00 ya da 17:00) için model yükle/eğit yardımcı fonksiyonu.
+    Model dosyası varsa doğrudan yüklenir (bu durumda select_lags() hiç
+    çağrılmaz — eski davranışla birebir aynı korunuyor). Yoksa n_real_rows
+    bu slota özgü hesaplanır ve kendi lag seti seçilir (iki model farklı
+    veri yoğunluğuna sahip olabileceğinden farklı lag setleriyle kurulabilir).
+    """
+    if model_path.exists():
+        logger.info(f"📦 [{label}] Hazır eğitilmiş model bulundu! Yükleniyor: {model_path.name}")
+        return DemandForecaster.load_model(str(model_path))
+
+    logger.info(f"⚠️ [{label}] Hazır model dosyası bulunamadı. Model sıfırdan eğitiliyor...")
+
+    n_real_rows = int((full_df[target_column] > 0).sum())
+    lags = select_lags(n_real_rows)
+    logger.info(
+        f"   [{label}] Gerçek kayıt: {n_real_rows:,} → lag'ler: {lags} "
+        f"(eşikler: lag_21≥{LAG_21_MIN_ROWS:,}, lag_30≥{LAG_30_MIN_ROWS:,})"
+    )
+
+    forecaster = DemandForecaster(
+        target_column          = target_column,
+        sibling_target_column  = sibling_target_column,
+        date_column             = DATE_COL,
+        group_column            = GROUP_COL,
+        train_test_split        = 0.85,
+        forecast_horizon        = 7,
+        lags                    = lags,   # veri büyüklüğüne göre uyarlanır — bkz. select_lags()
+        rolling_windows         = [7, 14],
+        logging_enabled         = True,
+        random_state            = 42,
+    )
+    forecaster.fit(full_df)
+
+    # Eğitilen modeli gelecekte kullanmak üzere kaydet (.joblib dosyası olarak)
+    forecaster.save_model(str(model_path))
+    return forecaster
+
+
+def run(save_json: bool = True) -> "pd.DataFrame":
+    """
+    Ana akış (İKİ MODEL — Direct Forecasting: 09:00 ve 17:00 ayrı modeller):
+      1. Veri yükle (tek çağrı — full_df her iki slotu da wide formatta içeriyor)
+      2. Her slot için ayrı DemandForecaster.fit() (ya da hazır modeli yükle)
+      3. Ortak predict_grid ile her iki model için predict() → 2 ayrı List[Dict]
+      4. İki listeyi birleştir (predict()'ten gelen "slot" alanı korunuyor)
+      5. UncertaintyBand.to_ortools_dataframe(..., slot_key="slot") — artık
+         slot-aware; aynı (date, source, destination) için 09:00 ve 17:00
+         AYRI satırlar olarak DataFrame'de yer alıyor.
+      6. İsteğe bağlı ALNS JSON payload + CSV/Excel çıktıları kaydedilir.
     """
     logger.info("=" * 60)
-    logger.info("🚀 Teknofest 2026 — Tahmin Motoru")
+    logger.info("🚀 Teknofest 2026 — Tahmin Motoru (09:00 & 17:00)")
     logger.info("=" * 60)
 
-    # --- 1. Veri ---
+    # --- 1. Veri (tek çağrı, her iki slot da içinde) ---
     full_df = load_dataset(DATA_PATH)
 
-    # --- 2. Hazır Model Yükle VEYA Baştan Eğit ---
-    model_path = Path(MODEL_FILE_PATH)
+    # --- 2. İki model: 09:00 ve 17:00 ayrı ayrı eğit/yükle ---
+    forecaster_0900 = _fit_or_load_forecaster(
+        full_df, TARGET_COL_0900, TARGET_COL_1700, Path(MODEL_FILE_PATH_0900), "09:00"
+    )
+    forecaster_1700 = _fit_or_load_forecaster(
+        full_df, TARGET_COL_1700, TARGET_COL_0900, Path(MODEL_FILE_PATH_1700), "17:00"
+    )
 
-    if model_path.exists():
-        # EĞER DOSYA VARSA: Hiç eğitimle uğraşma, direkt yükle!
-        logger.info(f"📦 Hazır eğitilmiş model bulundu! Yükleniyor: {model_path.name}")
-        forecaster = DemandForecaster.load_model(str(model_path))
-    else:
-        # EĞER DOSYA YOKSA: 1 kereye mahsus eğit ve o dosyayı oluştur
-        logger.info("⚠️ Hazır model dosyası bulunamadı. Model sıfırdan eğitiliyor...")
+    # --- Feature Importance (her model kendi feature önceliğini gösterir —
+    #     örn. 17:00 modeli muhtemelen toplam_desi_0900'e yüksek önem verecek) ---
+    importances_0900 = forecaster_0900.get_feature_importances()
+    print("\n\U0001f525 [09:00] En Önemli 10 Feature:")
+    print(importances_0900.head(10))
 
-        n_real_rows = int((full_df[TARGET_COL] > 0).sum())
-        lags = select_lags(n_real_rows)
-        logger.info(
-            f"   Gerçek kayıt: {n_real_rows:,} → lag'ler: {lags} "
-            f"(eşikler: lag_21≥{LAG_21_MIN_ROWS:,}, lag_30≥{LAG_30_MIN_ROWS:,})"
-        )
+    importances_1700 = forecaster_1700.get_feature_importances()
+    print("\n\U0001f525 [17:00] En Önemli 10 Feature:")
+    print(importances_1700.head(10))
 
-        forecaster = DemandForecaster(
-            target_column    = TARGET_COL,
-            date_column      = DATE_COL,
-            group_column     = GROUP_COL,
-            train_test_split = 0.85,
-            forecast_horizon = 7,
-            lags             = lags,   # veri büyüklüğüne göre uyarlanır — bkz. select_lags()
-            rolling_windows  = [7, 14],
-            logging_enabled  = True,
-            random_state     = 42,
-        )
-        forecaster.fit(full_df)
-
-        # Eğitilen modeli gelecekte kullanmak üzere kaydet (.joblib dosyası olarak)
-        forecaster.save_model(str(model_path))
-
-    # --- Feature Importance ---
-    importances = forecaster.get_feature_importances()
-    print("\n\U0001f525 En Önemli 10 Feature:")
-    print(importances.head(10))
-
-    # --- 3. Predict grid ---
+    # --- 3. Ortak predict grid (her iki hedefi birden taşıyor) ---
     predict_grid = build_predict_grid(full_df)
-    all_preds: List[Dict[str, Any]] = forecaster.predict(predict_grid)
 
-    # Buffer satırlarını çıkar — sadece PREDICT_START/END aralığı kalsın
+    preds_0900: List[Dict[str, Any]] = forecaster_0900.predict(predict_grid)
+    preds_1700: List[Dict[str, Any]] = forecaster_1700.predict(predict_grid)
+
+    # Buffer satırlarını çıkar — sadece PREDICT_START/END aralığı kalsın.
+    # İki slotun tahminlerini burada birleştiriyoruz; her kayıtta predict()'ten
+    # gelen "slot" alanı zaten korunduğu için birleşim sonrası bile hangi
+    # kaydın 09:00'a, hangisinin 17:00'a ait olduğu kaybolmuyor.
     target_dates = set(
         pd.date_range(PREDICT_START, PREDICT_END, freq="D").strftime("%Y-%m-%d")
     )
-    raw_preds = [r for r in all_preds if str(r[DATE_COL])[:10] in target_dates]
+    raw_preds = [r for r in preds_0900 + preds_1700 if str(r[DATE_COL])[:10] in target_dates]
 
     logger.info(
         f"\n✅ Tahmin tamamlandı: {len(raw_preds)} kayıt "
         f"({PREDICT_START} → {PREDICT_END}, "
-        f"{full_df[GROUP_COL].nunique()} rota × 7 gün)"
+        f"{full_df[GROUP_COL].nunique()} rota × 7 gün × 2 slot)"
     )
+
+    # -------------------------------------------------------------------
+    # uncertainty.py artık slot-aware (bkz. DemandBand.slot, from_json()'daki
+    # slot_key, to_ortools_dataframe()'deki zorunlu "slot" sütunu) — bu adım
+    # geri açıldı. 09:00 ve 17:00 tahminleri artık aynı (date, source,
+    # destination) için AYRI satırlar olarak DataFrame'de yer alıyor.
+    # -------------------------------------------------------------------
+
+    if save_json:
+        with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
+            json.dump(raw_preds, f, ensure_ascii=False, indent=2, default=str)
+        logger.info(f"💾 Ham tahminler (debug, slot alanlı) kaydedildi: {OUTPUT_JSON}")
+
+    print("\n📋 Ham Tahmin Örneği (İlk 5 Kayıt):")
+    for r in raw_preds[:5]:
+        print(r)
 
     # --- 4. OR-Tools Payload (DataFrame Dönüşümü) ---
     # materiality_floor: [Tur 4 — uncertainty.py] q50 bu değerin altındaysa
@@ -270,13 +442,14 @@ def run(save_json: bool = True) -> Dict[str, Any]:
     )
 
     df_ortools = band.to_ortools_dataframe(
-        predictions = raw_preds,
-        date_key    = DATE_COL,
-        group_key   = GROUP_COL,
+        predictions=raw_preds,
+        date_key=DATE_COL,
+        group_key=GROUP_COL,
+        slot_key="slot",
     )
+
     # --- 5. Çıktıları Kaydet (Algoritma ve Jüri İçin) ---
 
-    # İstersen JSON üretmeyi kapatabiliriz (zaten argüman olarak False vereceğiz)
     if save_json:
         payload = band.to_alns_payload()
         with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
@@ -290,9 +463,8 @@ def run(save_json: bool = True) -> Dict[str, Any]:
 
     # 2. JÜRİ İÇİN EXCEL ÇIKTISI (Results klasörüne)
     excel_dir = _PROJECT_ROOT / "results"
-    excel_dir.mkdir(parents=True, exist_ok=True)  # Klasör yoksa otomatik oluşturur
+    excel_dir.mkdir(parents=True, exist_ok=True)
     OUTPUT_EXCEL = str(excel_dir / "ortools_payload.xlsx")
-
     df_ortools.to_excel(OUTPUT_EXCEL, index=False)
     logger.info(f"📊 Jüri (Raporlama) payload kaydedildi: {OUTPUT_EXCEL}")
 
