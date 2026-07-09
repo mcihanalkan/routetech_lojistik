@@ -1,28 +1,62 @@
 {
     "small": {
-        "row_count": 10770,
+        "target_column": "toplam_desi_0900",
+        "sibling_target_column": "toplam_desi_1700",
+        "row_count": 24906,
         "lags_used": [
             1,
             7,
-            14
+            14,
+            21,
+            30
         ],
         "gamma": 0.5988248587570623,
         "gamma_source": "gamma=kapasite-ağırlıklı ort. (sütun: 'Kapasite (desi)'): 0.5988 | araç-tipi bazlı: Tır=γ0.6714, Kamyon=γ0.5276, Hafif Kamyon=γ0.7500, Kamyonet=γ0.2667 [kaynak: Araç_Kapasite_Maliyet.xlsx, sütunlar: spot='Spot Araç Sabit Günlük Maliyet (TL)', atıl='Kiralık Araç Günlük Kira (TL)']",
-        "best_hybrid_score": 0.298585,
-        "best_wape": 0.191777,
-        "best_wape_clean": 0.191777,
-        "underprediction_rate": 0.059881,
-        "rel_width_q90_q10": 0.4444,
-        "quantile_crossing_rate": 0.0019,
-        "optimization_time_minutes": 30.61,
+        "best_hybrid_score": 0.746334,
+        "best_wape": 0.484231,
+        "best_wape_clean": 0.492224,
+        "underprediction_rate": 0.287545,
+        "rel_width_q90_q10": 4.0294,
+        "quantile_crossing_rate": 0.0,
+        "optimization_time_minutes": 31.7,
         "optuna_seed": 42,
         "params": {
-            "iterations": 450,
-            "alpha": 0.7248,
+            "iterations": 350,
+            "alpha": 0.7094,
             "depth": 5,
-            "learning_rate": 0.026675547353083393,
-            "l2_leaf_reg": 23.652906589469982,
-            "bagging_temperature": 0.4383936092336267
+            "learning_rate": 0.047712207946827054,
+            "l2_leaf_reg": 25.621952363820153,
+            "bagging_temperature": 0.4425192044349383
+        }
+    },
+    "medium": {
+        "target_column": "toplam_desi_1700",
+        "sibling_target_column": "toplam_desi_0900",
+        "row_count": 41118,
+        "lags_used": [
+            1,
+            7,
+            14,
+            21,
+            30
+        ],
+        "gamma": 0.5988248587570623,
+        "gamma_source": "gamma=kapasite-ağırlıklı ort. (sütun: 'Kapasite (desi)'): 0.5988 | araç-tipi bazlı: Tır=γ0.6714, Kamyon=γ0.5276, Hafif Kamyon=γ0.7500, Kamyonet=γ0.2667 [kaynak: Araç_Kapasite_Maliyet.xlsx, sütunlar: spot='Spot Araç Sabit Günlük Maliyet (TL)', atıl='Kiralık Araç Günlük Kira (TL)']",
+        "best_hybrid_score": 0.41258,
+        "best_wape": 0.210352,
+        "best_wape_clean": 0.210352,
+        "underprediction_rate": 0.16568,
+        "rel_width_q90_q10": 1.5898,
+        "quantile_crossing_rate": 0.0124,
+        "optimization_time_minutes": 37.86,
+        "optuna_seed": 42,
+        "params": {
+            "iterations": 1500,
+            "alpha": 0.6674,
+            "depth": 7,
+            "learning_rate": 0.026292183092620925,
+            "l2_leaf_reg": 7.928708336812588,
+            "bagging_temperature": 0.17799726016810133
         }
     }
 }

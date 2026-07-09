@@ -6,12 +6,19 @@ Gerçek veri üzerinde Optuna çalıştırır, en iyi parametreleri
 hyperparams_map.json'a yazar.
 
 Kullanım:
-    python optimize.py                          # varsayılan: 50 trial, 900s timeout
-    python optimize.py --data baska_veri.xlsx  # farklı veriyle
+    python optimize.py                            # varsayılan: 09:00 VE 17:00 SIRAYLA (tek çalıştırma)
+    python optimize.py --slot 0900                # sadece 09:00 modeli
+    python optimize.py --slot 1700                # sadece 17:00 modeli
+    python optimize.py --data baska_veri.xlsx     # farklı veriyle (ikisini de tune eder)
     python optimize.py --trials 50 --timeout 1200
-    python optimize.py --trials 50 --timeout 0  # timeout yok, sadece trial sayısı sınırı
-    python optimize.py --gamma 0.6               # spot/atıl maliyet oranı: (C_spot/C_atil) - 1
-    python optimize.py --gamma 0               # asimetrik ceza kapalı (eski davranış)
+    python optimize.py --trials 50 --timeout 0    # timeout yok, sadece trial sayısı sınırı
+    python optimize.py --gamma 0.6                # spot/atıl maliyet oranı: (C_spot/C_atil) - 1
+    python optimize.py --gamma 0                  # asimetrik ceza kapalı (eski davranış)
+    python optimize.py --alpha-sweep               # her iki slot için de alpha knee taraması
+
+--slot verilmezse (ya da --slot both) tek komutla 09:00 ve 17:00 SIRAYLA
+tune edilir (bkz. v12 notu aşağıda) — toplam süre tek slota göre ~2 katı
+olur. Tek bir slotu hızlıca tune etmek istersen --slot 0900 / --slot 1700.
 
 Her çalıştırmada JSON'daki ilgili bucket güncellenir.
 Yeni bir veri boyutu (örn. 500K satır) gelirse otomatik yeni bucket eklenir.
@@ -48,6 +55,46 @@ gerçek test WAPE'siyle örtüşmüyordu. v5'te:
   - Hem tüm-gün hem "temiz" (anormal hafta hariç) WAPE ayrı ayrı loglanıyor.
 Bu fold-ensemble simülasyonu trial başına ~4x daha pahalı; --timeout'u buna
 göre büyütmek (örn. 1800-3600s) veya --trials sayısını azaltmak gerekebilir.
+
+--- v12 Değişiklikleri (Slot-Farkındalı Entegrasyon — run_forecast.py / forecasters.py ile tam senkron) ---
+optimize.py artık run_forecast.py'nin GERÇEKTEN çalıştığı wide/slot formatına
+(09:00 / 17:00, tek satır = rota×tarih, iki hedef sütun) ve forecasters.py'nin
+gerçek eğitim mantığına birebir bağlı:
+  1. load_data() KALDIRILDI — run_forecast.py::load_dataset() import edilip
+     kullanılıyor (tek kaynak, kod tekrarı ve kopma riski yok). Varsayılan
+     --data artık teknofest26_gelismis.xlsx.
+  2. build_feature_matrix çağrıları artık target_columns=[target_column,
+     sibling_target_column] (liste) kullanıyor — forecasters.py::
+     _engineer_features ile birebir aynı.
+  3. optimize() ve alpha_sweep() artık --slot {0900,1700} argümanıyla
+     çalışıyor; TARGET_COL sabit kaldırıldı, her yerde
+     target_column/sibling_target_column parametre olarak taşınıyor.
+     n_rows artık (full_df[target_column] > 0).sum() ile SADECE o slotun
+     gerçek kayıtları üzerinden hesaplanıyor.
+  4. drop_cols naif [TARGET_COL, DATE_COL] listesi yerine forecasters.py::
+     _get_drop_columns ile BİREBİR AYNI kural uygulanıyor (bkz.
+     _get_drop_columns() fonksiyonu aşağıda): 09:00 modeli için sibling
+     (toplam_desi_1700) ve cross_lag_0900_same_day KESİNLİKLE drop edilir;
+     17:00 modeli için sibling (toplam_desi_0900) BİLEREK tutulur (leakage
+     değil, meşru feature).
+  5. FOLD_DATES artık forecasters.py::fit() ile BİREBİR AYNI:
+     2026-05-31 → 2026-06-27 (önceki 2026-04-14 → 2026-05-10 pencereleri
+     eski/kopmuş veriye aitti — bu dosyanın kendi docstring uyarısının
+     ihlal edildiği tam nokta buydu, artık düzeltildi).
+  6. ALPHA_MIN/MAX bandı [0.60, 0.78] halen ESKİ tek-serili veride
+     (skewness ≈1.3) kalibre edilmiş durumda. Yeni veride 09:00 için
+     skewness ≈+4.71, 17:00 için ≈+3.80 — bu bandın hâlâ doğru olduğu
+     GARANTİ DEĞİL. Adım 1-5 tamamlandıktan sonra her slot için ayrı
+     `--alpha-sweep --slot 0900` / `--alpha-sweep --slot 1700` çalıştırıp
+     knee noktasını yeniden bulun; gerekirse bandı güncelleyin.
+  7. --slot argümanı: varsayılan "both" ile TEK komutta 09:00 (n≈24.906 →
+     "small" bucket) ve 17:00 (n≈41.118 → "medium" bucket) SIRAYLA tune
+     edilir. İstenirse --slot 0900 / --slot 1700 ile tek tek de çalıştırılabilir.
+       python optimize.py                 # ikisi de, tek komut
+       python optimize.py --slot 0900     # sadece 09:00
+       python optimize.py --slot 1700     # sadece 17:00
+     _bucket_name() otomatik ayrım yapar; doğru n_rows hesaplandığı sürece
+     (madde 3) iki farklı bucket kendiliğinden JSON'da oluşur.
 """
 
 import argparse
@@ -64,6 +111,20 @@ from catboost import CatBoostRegressor, Pool
 
 sys.path.insert(0, str(Path(__file__).parent))
 from src.features import build_feature_matrix, get_categorical_columns
+# v12: load_dataset() artık run_forecast.py'den import ediliyor — iki dosyanın
+# birbirinden kopması (bkz. FOLD_DATES kopması, v11'de düzeltildi) tam olarak
+# bu kod tekrarından geliyordu. Slot sabitleri de aynı yerden alınıyor ki
+# "toplam_desi_0900" / "toplam_desi_1700" string'i iki dosyada AYRI AYRI
+# yazılıp birbirinden sapmasın.
+from run_forecast import (
+    load_dataset,
+    DATE_COL,
+    GROUP_COL,
+    KAYNAK_COL,
+    VARIS_COL,
+    TARGET_COL_0900,
+    TARGET_COL_1700,
+)
 
 try:
     import optuna
@@ -82,11 +143,58 @@ logger = logging.getLogger(__name__)
 _HERE            = Path(__file__).resolve().parent
 _PROJECT_ROOT    = _HERE.parent.parent
 HYPERPARAMS_PATH = _HERE / "hyperparams_map.json"
-TARGET_COL  = "desi_hacmi"
-DATE_COL    = "tarih"
-GROUP_COL   = "rota"
-KAYNAK_COL  = "kaynak_tm"
-VARIS_COL   = "varis_tm"
+# v12: TARGET_COL / DATE_COL / GROUP_COL / KAYNAK_COL / VARIS_COL artık
+# module-level sabit DEĞİL — DATE_COL/GROUP_COL/KAYNAK_COL/VARIS_COL yukarıda
+# run_forecast.py'den import edildi. Tek bir "desi_hacmi" hedefi de artık
+# yok — wide/slot formatında iki hedef var (TARGET_COL_0900/TARGET_COL_1700,
+# import edildi), hangisinin kullanılacağı --slot CLI argümanıyla seçilir ve
+# optimize()/alpha_sweep() içinde target_column/sibling_target_column olarak
+# taşınır (bkz. aşağıdaki _get_drop_columns() ve _SLOT_TARGETS).
+
+# --- Slot seçimi (forecasters.py::DemandForecaster ile aynı 09:00/17:00 mantığı) ---
+_SLOT_TARGETS = {
+    "0900": (TARGET_COL_0900, TARGET_COL_1700),
+    "1700": (TARGET_COL_1700, TARGET_COL_0900),
+}
+# forecasters.py::_get_drop_columns'daki cross-lag sütunu — 09:00 modeli için
+# kendi hedefinin trivial kopyası olduğundan drop edilmesi gerekiyor.
+_CROSS_LAG_0900_COL = "cross_lag_0900_same_day"
+
+
+def get_drop_columns(target_column: str, sibling_target_column: str, available_columns) -> list:
+    """
+    forecasters.py::DemandForecaster._get_drop_columns ile BİREBİR AYNI kural
+    (bkz. forecasters.py satır ~287-339 — doğrulandı):
+
+      - date_column   : HER ZAMAN drop (leakage — model tarihi görmemeli).
+      - target_column : HER ZAMAN drop (y olarak ayrılır).
+      - sibling_target_column:
+          * 09:00 modeliyse (target_column == TARGET_COL_0900): DAİMA drop
+            edilir — 17:00 talebi, 09:00 tahmini anında henüz gerçekleşmemiş
+            (kesin leakage).
+          * 17:00 modeliyse: DROP EDİLMEZ — 17:00 tahmini anında sabahki
+            (09:00) talep zaten gerçekleşmiştir, meşru bir feature'dır.
+      - cross_lag_0900_same_day:
+          * 09:00 modeli için: kendi hedefinin trivial kopyası → drop.
+          * 17:00 modeli için: zararsız (toplam_desi_0900 zaten feature
+            olarak tutuluyor) → tutulur.
+
+    Bu olmadan (eski naif [TARGET_COL, DATE_COL] listesiyle) optimize.py,
+    üretimde asla göremeyeceği bir "gelecek bilgisi" ile tune edilir —
+    bulunan hiperparametreler gerçek modelde işe yaramaz, hatta yanıltıcı
+    olabilir.
+    """
+    is_0900_model = target_column == TARGET_COL_0900
+    drop_cols = [DATE_COL, target_column]
+
+    if sibling_target_column and is_0900_model:
+        drop_cols.append(sibling_target_column)
+
+    if is_0900_model:
+        drop_cols.append(_CROSS_LAG_0900_COL)
+
+    available = set(available_columns)
+    return [c for c in drop_cols if c in available]
 
 # run_forecast.py (DemandForecaster) ile BİREBİR aynı tutulmalı.
 # Biri değişirse diğeri de manuel güncellenmeli — forecasters.py'nin
@@ -156,6 +264,16 @@ DEFAULT_GAMMA = 0.5988
 # nokta bulabilir, ama kanıtlanmış kötü uçlara (0.84-0.90) gidemez.
 # Bu bandı periyodik olarak (özellikle veri belirgin şekilde değiştiğinde)
 # --alpha-sweep ile yeniden doğrulayın.
+# v12 UYARI: Bu bant [0.60, 0.78] ESKİ tek-serili Desi_talep.xlsx verisinde
+# (skewness ≈1.3) kalibre edildi. Yeni teknofest26_gelismis.xlsx/slot verisi
+# ÇOK daha çarpık: 09:00 hedefi için skewness ≈+4.71, 17:00 için ≈+3.80.
+# Bandın hâlâ doğru olduğunu VARSAYMAK RİSKLİ — Adım 1-5 (bu dosyadaki v12
+# değişiklikleri) tamamlandıktan sonra HER SLOT için ayrı ayrı çalıştırın:
+#     python optimize.py --alpha-sweep --slot 0900
+#     python optimize.py --alpha-sweep --slot 1700
+# ve knee noktasını yeniden bulup gerekirse ALPHA_MIN/ALPHA_MAX'ı (slot
+# başına farklı olabilir — bu durumda _SLOT_TARGETS'e benzer bir
+# {"0900": (min,max), "1700": (min,max)} sözlüğüne geçirin) güncelleyin.
 ALPHA_MIN = 0.60
 ALPHA_MAX = 0.78
 
@@ -390,65 +508,32 @@ def _bucket_name(n_rows: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Veri yükleme (run_forecast.py ile aynı mantık)
+# Veri yükleme
+# v12: load_data() KALDIRILDI. Artık run_forecast.py::load_dataset() DOĞRUDAN
+# import edilip kullanılıyor (yukarıda) — rota×tarih×slot tam grid, eksikleri
+# 0 ile doldurma, wide pivot (toplam_desi_0900/toplam_desi_1700) mantığı tek
+# kaynaktan geliyor, iki dosya birbirinden kopamıyor.
 # ---------------------------------------------------------------------------
-
-def load_data(path: str) -> pd.DataFrame:
-    df = pd.read_excel(path) if path.endswith(".xlsx") else pd.read_csv(path)
-    df.columns = [c.strip() for c in df.columns]
-
-    # run_forecast.py ile aynı isim bazlı eşleştirme mantığı
-    _KAYNAK_CANDIDATES = ["Çıkış Transfer Merkezi", "kaynak_tm", "source", "origin", "from"]
-    _VARIS_CANDIDATES  = ["Varış Transfer Merkezi",  "varis_tm",  "destination", "dest", "to"]
-    _DATE_CANDIDATES   = ["Tarih", "tarih", "date", "Date"]
-    _TARGET_CANDIDATES = ["Toplam Desi", "desi_hacmi", "desi", "demand", "talep"]
-
-    def _find_col(candidates, col_idx, label):
-        cols_lower = {c.lower().strip(): c for c in df.columns}
-        for cand in candidates:
-            if cand in df.columns:
-                return cand
-            if cand.lower() in cols_lower:
-                return cols_lower[cand.lower()]
-        fallback = df.columns[col_idx]
-        logger.warning(f"⚠️  '{label}' isim bazlı bulunamadı → pozisyon [{col_idx}]: '{fallback}'")
-        return fallback
-
-    df = df.rename(columns={
-        _find_col(_KAYNAK_CANDIDATES, 0, "kaynak_tm"): KAYNAK_COL,
-        _find_col(_VARIS_CANDIDATES,  1, "varis_tm"):  VARIS_COL,
-        _find_col(_DATE_CANDIDATES,   2, "tarih"):     DATE_COL,
-        _find_col(_TARGET_CANDIDATES, 3, "desi_hacmi"): TARGET_COL,
-    })
-    df[DATE_COL] = pd.to_datetime(df[DATE_COL])
-    df[GROUP_COL] = df[KAYNAK_COL] + " → " + df[VARIS_COL]
-
-    all_dates  = pd.date_range(df[DATE_COL].min(), df[DATE_COL].max(), freq="D")
-    all_routes = df[GROUP_COL].unique()
-    rota_map   = df[[GROUP_COL, KAYNAK_COL, VARIS_COL]].drop_duplicates()
-
-    idx  = pd.MultiIndex.from_product([all_routes, all_dates], names=[GROUP_COL, DATE_COL])
-    full = pd.DataFrame(index=idx).reset_index()
-    full = full.merge(rota_map, on=GROUP_COL, how="left")
-    full = full.merge(df[[GROUP_COL, DATE_COL, TARGET_COL]], on=[GROUP_COL, DATE_COL], how="left")
-    full[TARGET_COL] = full[TARGET_COL].fillna(0.0)
-    full = full.sort_values([GROUP_COL, DATE_COL]).reset_index(drop=True)
-    logger.info(f"✅ Veri: {len(df):,} kayıt | {full[GROUP_COL].nunique()} rota")
-    return full
 
 
 # ---------------------------------------------------------------------------
-# Fold tarihleri — forecasters.py::DemandForecaster.fit() ile BİREBİR AYNI.
-# ---------------------------------------------------------------------------
+# Fold tarihleri — forecasters.py::DemandForecaster.fit() ile BİREBİR AYNI
+# (bkz. forecasters.py satır ~745-750 — doğrulandı). Bu pencereler, gerçek
+# tahmin penceresine (PREDICT_START/END = 2026-06-29 → 2026-07-05,
+# run_forecast.py) en yakın, veri içindeki son 4 tam hafta.
+# v12: Önceki 2026-04-14 → 2026-05-10 pencereleri eski/kopmuş bir veri
+# dönemine aitti — dosyanın kendi docstring'inde uyardığı "v5 aynı kalmalı,
+# aksi halde farklı bir dönem için tuned olur" hatası tam olarak buydu.
+# Biri değişirse diğeri MANUEL güncellenmeli.
 FOLD_DATES = [
-    ("Fold 1", "2026-04-14", "2026-04-20"),
-    ("Fold 2", "2026-04-21", "2026-04-27"),
-    ("Fold 3", "2026-04-28", "2026-05-04"),
-    ("Fold 4", "2026-05-05", "2026-05-10"),
+    ("Fold 1", "2026-05-31", "2026-06-06"),
+    ("Fold 2", "2026-06-07", "2026-06-13"),
+    ("Fold 3", "2026-06-14", "2026-06-20"),
+    ("Fold 4", "2026-06-21", "2026-06-27"),
 ]
 
 
-def _fit_fold_ensemble(feat_df, feature_cols, cat_features, params, fold_dates=FOLD_DATES):
+def _fit_fold_ensemble(feat_df, feature_cols, cat_features, params, target_column, fold_dates=FOLD_DATES):
     models = []
     for fold_name, val_start, val_end in fold_dates:
         fold_train = feat_df[feat_df[DATE_COL] < val_start]
@@ -456,7 +541,7 @@ def _fit_fold_ensemble(feat_df, feature_cols, cat_features, params, fold_dates=F
             logger.warning(f"   ⚠️  {fold_name}: train seti boş, atlanıyor.")
             continue
         X_ft = fold_train[feature_cols]
-        y_ft = fold_train[TARGET_COL]
+        y_ft = fold_train[target_column]
         model = CatBoostRegressor(**params)
         model.fit(Pool(X_ft, y_ft, cat_features=cat_features), verbose=False)
         models.append(model)
@@ -492,7 +577,7 @@ def _correct_and_score(y_true, raw_preds, gamma, beta_width):
 
 
 def _fit_fold_ensemble_and_score(
-    feat_df, feature_cols, cat_features, params, gamma, beta_width,
+    feat_df, feature_cols, cat_features, params, gamma, beta_width, target_column,
     fold_dates=FOLD_DATES,
 ):
     """
@@ -529,13 +614,13 @@ def _fit_fold_ensemble_and_score(
             continue
 
         X_ft = fold_train[feature_cols]
-        y_ft = fold_train[TARGET_COL]
+        y_ft = fold_train[target_column]
         model = CatBoostRegressor(**params)
         model.fit(Pool(X_ft, y_ft, cat_features=cat_features), verbose=False)
         models.append(model)
 
         X_fv = fold_val[feature_cols]
-        y_fv = fold_val[TARGET_COL].values
+        y_fv = fold_val[target_column].values
         raw_fv = model.predict(X_fv)
 
         fold_score, _, crossing = _correct_and_score(y_fv, raw_fv, gamma, beta_width)
@@ -564,6 +649,8 @@ def alpha_sweep(
     fixed_params: dict,
     gamma: float,
     alphas: List[float],
+    target_column: str,
+    sibling_target_column: str,
     hpo_folds: int = 4,
 ) -> List[Dict[str, Any]]:
     """
@@ -576,22 +663,28 @@ def alpha_sweep(
     hacme göre ağırlıklı gerçek WAPE elde edilir (metrics.py::wape ile
     aynı mantık).
 
+    target_column/sibling_target_column : hangi slotun (09:00/17:00) tune
+        edildiğini belirler — n_rows, feature matrix ve leakage-safe
+        drop_cols hep buna göre hesaplanır (bkz. optimize() ile aynı mantık).
+
     Returns
     -------
     List[Dict] : her alpha için {alpha, wape, underpred_rate, rel_width,
                  crossing_rate, hybrid_score} — knee'yi görmek için
                  sırayla yazdırılmaya hazır.
     """
-    full_df = load_data(data_path)
-    n_rows  = len(full_df[full_df[TARGET_COL] > 0])
+    full_df = load_dataset(data_path)
+    # v12: n_rows artık SADECE bu slotun gerçek kayıtları üzerinden
+    # hesaplanıyor (run_forecast.py::_fit_or_load_forecaster ile aynı satır).
+    n_rows  = int((full_df[target_column] > 0).sum())
     lags    = select_lags(n_rows)
 
     feat_df = build_feature_matrix(
-        df=full_df, target_column=TARGET_COL, date_column=DATE_COL,
-        group_column=GROUP_COL, lags=lags, rolling_windows=ROLLING_WINDOWS,
-        drop_na=False,
+        df=full_df, target_columns=[target_column, sibling_target_column],
+        date_column=DATE_COL, group_column=GROUP_COL, lags=lags,
+        rolling_windows=ROLLING_WINDOWS, drop_na=False,
     )
-    drop_cols    = [TARGET_COL, DATE_COL]
+    drop_cols    = get_drop_columns(target_column, sibling_target_column, feat_df.columns)
     feature_cols = [c for c in feat_df.columns if c not in drop_cols]
     cat_features = get_categorical_columns(feat_df[feature_cols])
 
@@ -626,12 +719,12 @@ def alpha_sweep(
 
             model = CatBoostRegressor(**params)
             model.fit(
-                Pool(fold_train[feature_cols], fold_train[TARGET_COL], cat_features=cat_features),
+                Pool(fold_train[feature_cols], fold_train[target_column], cat_features=cat_features),
                 verbose=False,
             )
             raw = np.maximum(model.predict(fold_val[feature_cols]), 0.0)
 
-            y_true_all.append(fold_val[TARGET_COL].values)
+            y_true_all.append(fold_val[target_column].values)
             preds_all.append(raw[:, 1])
             q10_all.append(raw[:, 0])
             q90_all.append(raw[:, 2])
@@ -706,6 +799,8 @@ def print_alpha_sweep_table(results: List[Dict[str, Any]]) -> None:
 
 def optimize(
     data_path: str,
+    target_column: str,
+    sibling_target_column: str,
     n_trials: int  = 30,
     timeout: int   = 180,
     gamma: float   = DEFAULT_GAMMA,
@@ -720,6 +815,11 @@ def optimize(
 
     gamma=0 → eski simetrik WAPE davranışı (geriye dönük uyumluluk).
 
+    target_column / sibling_target_column : hangi slotun (09:00/17:00)
+        modeli tune ediliyor — run_forecast.py::_fit_or_load_forecaster
+        çağrısıyla AYNI mantık. n_rows, feature matrix, drop_cols hep buna
+        göre hesaplanır (bkz. get_drop_columns()).
+
     v5 değişiklikleri (forecasters.py ile tutarlılık için):
       1. TPESampler'a sabit seed → aynı veri + argümanlarla aynı trial dizisi
          (önceden her çalıştırmada farklı sonuç çıkmasının başlıca nedeniydi).
@@ -732,6 +832,14 @@ def optimize(
          pahalı — --trials/--timeout'u buna göre ayarla. Hem tüm-gün hem
          "temiz" (anormal hafta hariç) WAPE ayrı ayrı loglanır, böylece
          run_forecast.py'nin wape_test/wape_clean çıktısıyla kıyaslanabilir.
+
+    v12 değişiklikleri (slot-farkındalığı — run_forecast.py ile tam senkron):
+      5. load_data() yerine run_forecast.py::load_dataset() (wide/slot format).
+      6. build_feature_matrix artık target_columns=[target_column,
+         sibling_target_column] (liste) kullanıyor.
+      7. n_rows SADECE bu slotun gerçek kayıtları üzerinden hesaplanıyor.
+      8. drop_cols artık forecasters.py::_get_drop_columns ile birebir aynı
+         (leakage-safe) — bkz. get_drop_columns().
     """
     t0 = time.time()
     logger.info("=" * 60)
@@ -747,22 +855,30 @@ def optimize(
     else:
         logger.info("   γ = 0 → Simetrik WAPE modu (asimetrik ceza devre dışı)")
 
-    # Veri
-    full_df = load_data(data_path)
-    n_rows  = len(full_df[full_df[TARGET_COL] > 0])  # sadece gerçek kayıtlar
+    logger.info(f"   Slot: target_column='{target_column}' | sibling_target_column='{sibling_target_column}'")
+
+    # Veri — v12: run_forecast.py::load_dataset() (wide/slot format)
+    full_df = load_dataset(data_path)
+    # v12: n_rows artık SADECE bu slotun gerçek kayıtları üzerinden
+    # hesaplanıyor (run_forecast.py::_fit_or_load_forecaster ile birebir
+    # aynı satır: n_real_rows = int((full_df[target_column] > 0).sum())).
+    n_rows  = int((full_df[target_column] > 0).sum())
     bucket  = _bucket_name(n_rows)
     space   = _search_space(n_rows)
 
-    logger.info(f"\n   Gerçek kayıt: {n_rows:,} | Bucket: {bucket}")
+    logger.info(f"\n   Gerçek kayıt ({target_column}): {n_rows:,} | Bucket: {bucket}")
 
     # Feature engineering
     # lags → veri büyüklüğüne göre uyarlanır (bkz. select_lags() ve LAG_21_MIN_ROWS/LAG_30_MIN_ROWS).
     # rolling_windows → run_forecast.py (DemandForecaster) ile birebir eşit.
     lags = select_lags(n_rows)
     logger.info(f"   Kullanılan lag'ler: {lags}  (eşikler: lag_21≥{LAG_21_MIN_ROWS:,}, lag_30≥{LAG_30_MIN_ROWS:,})")
+    # v12: target_columns artık LİSTE — forecasters.py::_engineer_features ile
+    # birebir aynı (hub/graph/hiyerarşik/cross-lag feature'lar her iki slotun
+    # da var olmasını gerektiriyor, bkz. get_drop_columns() ve build_feature_matrix).
     feat_df = build_feature_matrix(
         df             = full_df,
-        target_column  = TARGET_COL,
+        target_columns = [target_column, sibling_target_column],
         date_column    = DATE_COL,
         group_column   = GROUP_COL,
         lags           = lags,
@@ -771,17 +887,20 @@ def optimize(
     )
 
     # Anormal haftaları tespit et (tatil/birikim → temiz-WAPE hesabında dışlanır)
-    weekly_avg  = full_df[full_df[TARGET_COL] > 0].copy()
+    weekly_avg  = full_df[full_df[target_column] > 0].copy()
     weekly_avg["week"] = weekly_avg[DATE_COL].dt.isocalendar().week.astype(int)
     weekly_avg["year"] = weekly_avg[DATE_COL].dt.year
-    wk_means    = weekly_avg.groupby(["year", "week"])[TARGET_COL].mean()
+    wk_means    = weekly_avg.groupby(["year", "week"])[target_column].mean()
     threshold   = wk_means.mean() * 1.4
     abnormal_wk = set(wk_means[wk_means > threshold].index)
     if abnormal_wk:
         logger.info(f"⚠️  Anormal haftalar dışlandı: {abnormal_wk}")
 
-    # Sadece hedef ve tarih düşürülür; rota/kaynak_tm/varis_tm cat_features olarak modele girer.
-    drop_cols    = [TARGET_COL, DATE_COL]
+    # v12: leakage-safe drop — forecasters.py::_get_drop_columns ile birebir
+    # aynı (bkz. get_drop_columns() yukarıda). Naif [TARGET_COL, DATE_COL]
+    # yerine slot-farkındalıklı kural: 09:00 modeli için sibling
+    # (toplam_desi_1700) ve cross_lag_0900_same_day KESİNLİKLE drop edilir.
+    drop_cols    = get_drop_columns(target_column, sibling_target_column, feat_df.columns)
     feature_cols = [c for c in feat_df.columns if c not in drop_cols]
     cat_features = get_categorical_columns(feat_df[feature_cols])
 
@@ -801,9 +920,9 @@ def optimize(
     is_abnormal = val_df.apply(lambda r: (r["_year"], r["_week"]) in abnormal_wk, axis=1)
 
     X_val       = val_df[feature_cols]
-    y_val       = val_df[TARGET_COL].values
+    y_val       = val_df[target_column].values
     clean_mask  = (~is_abnormal).values
-    y_val_clean = val_df.loc[~is_abnormal, TARGET_COL].values
+    y_val_clean = val_df.loc[~is_abnormal, target_column].values
 
     # v6: --hpo-folds ile ARAMA sırasında kullanılan fold sayısı azaltılabilir
     # (hız için, örn. 2 → sadece son 2 hafta). Final "best params" raporlaması
@@ -874,13 +993,13 @@ def optimize(
                 continue
 
             X_ft = fold_train[feature_cols]
-            y_ft = fold_train[TARGET_COL]
+            y_ft = fold_train[target_column]
             fold_model = CatBoostRegressor(**params)
             fold_model.fit(Pool(X_ft, y_ft, cat_features=cat_features), verbose=False)
             models.append(fold_model)
 
             X_fv = fold_val[feature_cols]
-            y_fv = fold_val[TARGET_COL].values
+            y_fv = fold_val[target_column].values
             raw_fv = fold_model.predict(X_fv)
 
             fold_score, _, crossing = _correct_and_score(y_fv, raw_fv, gamma, BETA_WIDTH)
@@ -931,7 +1050,7 @@ def optimize(
         "allow_writing_files": False,
         "thread_count":        -1,
     }
-    best_models    = _fit_fold_ensemble(feat_df, feature_cols, cat_features, best_params_full)
+    best_models    = _fit_fold_ensemble(feat_df, feature_cols, cat_features, best_params_full, target_column)
     best_raw       = _ensemble_predict(best_models, X_val)
     best_preds     = best_raw[:, 1]
     best_q10_corr  = np.minimum(best_raw[:, 0], best_preds)
@@ -975,6 +1094,8 @@ def optimize(
     # alpha: forecasters.py'de loss_function içinde kullanılmalıdır.
     # -----------------------------------------------------------------------
     result_entry = {
+        "target_column":             target_column,          # v12: hangi slot (0900/1700) tune edildi — izlenebilirlik
+        "sibling_target_column":     sibling_target_column,   # v12: leakage kuralının hangi sibling'e uygulandığı
         "row_count":                 n_rows,
         "lags_used":                 lags,   # run_forecast.py'nin AYNI lag'leri kullanması gerekir — bkz. select_lags()
         "gamma":                     gamma,
@@ -999,10 +1120,23 @@ def optimize(
 
     # Mevcut JSON'u yükle, bucket'ı güncelle
     if HYPERPARAMS_PATH.exists():
-        with open(HYPERPARAMS_PATH) as f:
+        with open(HYPERPARAMS_PATH, encoding="utf-8") as f:
             hmap = json.load(f)
     else:
         hmap = {}
+
+    # v12: Adım 7'nin varsayımı — 09:00 (n≈24.9k → "small") ve 17:00
+    # (n≈41.1k → "medium") FARKLI bucket'lara düşer, bu yüzden normalde
+    # birbirini ezmezler. Ama veri değiştikçe bu garanti değil; aynı
+    # bucket'a farklı bir slot'un sonucu yazılmak üzereyse sessizce
+    # ezmek yerine uyar (izlenebilirlik).
+    prev = hmap.get(bucket)
+    if prev and prev.get("target_column") not in (None, target_column):
+        logger.warning(
+            f"⚠️  Bucket '{bucket}' daha önce farklı bir slot için tune edilmişti "
+            f"(önceki target_column='{prev.get('target_column')}', şimdiki='{target_column}'). "
+            f"Üzerine yazılıyor — bu iki slotun veri boyutu artık aynı bucket'a düşüyor demektir."
+        )
 
     hmap[bucket] = result_entry
 
@@ -1033,7 +1167,20 @@ Gamma kalibrasyonu:
   Asimetrik ceza kapalı   →  --gamma 0
         """
     )
-    parser.add_argument("--data",    default=str(_PROJECT_ROOT / "data" / "raw" / "Desi_talep.xlsx"), help="Veri dosyası")
+    # v12: varsayılan veri artık teknofest26_gelismis.xlsx (slot bazlı,
+    # run_forecast.py::DATA_PATH ile aynı) — eski Desi_talep.xlsx tek-slotlu
+    # akışına ait değildi.
+    parser.add_argument("--data",    default=str(_PROJECT_ROOT / "data" / "raw" / "teknofest26_gelismis.xlsx"), help="Veri dosyası")
+    # v12: Adım 7 — 09:00 ve 17:00 AYRI çalıştırmalar gerektiriyor (farklı
+    # v12: --slot artık ZORUNLU DEĞİL. Verilmezse (varsayılan "both") tek
+    # çalıştırmada 09:00 VE 17:00 SIRAYLA tune edilir (aşağıdaki döngüde) —
+    # farklı n_rows → farklı bucket → _search_space zaten otomatik ayrışıyor,
+    # bu yüzden aynı anda iki bucket'ı güvenle üretebiliyoruz. Tek bir slotu
+    # tune etmek istersen --slot 0900 veya --slot 1700 ile de çalıştırabilirsin.
+    parser.add_argument("--slot", default="both", choices=["0900", "1700", "both"],
+                        help="Hangi slot tune edilsin: '0900', '1700' veya 'both' "
+                             "(varsayılan — ikisini de SIRAYLA tek çalıştırmada tune eder). "
+                             "run_forecast.py'nin iki ayrı modeliyle (09:00/17:00) eşleşir.")
     parser.add_argument("--trials",  type=int,   default=50,           help="Optuna trial sayısı")
     parser.add_argument("--timeout", type=int,   default=1800,
                         help="Timeout (saniye) — 0 = sınırsız.")
@@ -1080,6 +1227,17 @@ Gamma kalibrasyonu:
     else:
         gamma, gamma_note = derive_gamma_from_costs(args.cost_file, fallback=DEFAULT_GAMMA)
 
+    # v12: --slot "both" (varsayılan) → tek çalıştırmada 09:00 VE 17:00
+    # SIRAYLA işlenir (aşağıdaki döngü). Tek bir slot istenirse liste tek
+    # elemanlı olur — kod yolu aynı, sadece döngü 1 kez döner.
+    slots_to_run = ["0900", "1700"] if args.slot == "both" else [args.slot]
+    if len(slots_to_run) > 1:
+        logger.info(
+            f"🔁 --slot both → 09:00 ve 17:00 SIRAYLA tune edilecek "
+            f"(toplam süre tek slota göre ~2 katı olur; her biri kendi "
+            f"--timeout/--trials sınırına tabidir)."
+        )
+
     if args.alpha_sweep:
         alphas = list(np.round(
             np.arange(args.sweep_start, args.sweep_end + 1e-9, args.sweep_step), 4
@@ -1091,16 +1249,29 @@ Gamma kalibrasyonu:
             "l2_leaf_reg":         args.sweep_l2,
             "bagging_temperature": args.sweep_bagging_temp,
         }
-        sweep_results = alpha_sweep(
-            args.data, fixed_params=fixed_params, gamma=gamma,
-            alphas=alphas, hpo_folds=args.hpo_folds,
-        )
-        print_alpha_sweep_table(sweep_results)
+        for slot in slots_to_run:
+            target_column, sibling_target_column = _SLOT_TARGETS[slot]
+            logger.info(f"\n{'='*60}\n🔬 Alpha Sweep — slot {slot} ({target_column})\n{'='*60}")
+            sweep_results = alpha_sweep(
+                args.data, fixed_params=fixed_params, gamma=gamma,
+                alphas=alphas, target_column=target_column,
+                sibling_target_column=sibling_target_column, hpo_folds=args.hpo_folds,
+            )
+            print_alpha_sweep_table(sweep_results)
         sys.exit(0)
 
-    result  = optimize(
-        args.data, n_trials=args.trials, timeout=timeout,
-        gamma=gamma, gamma_note=gamma_note, optuna_seed=args.seed,
-        hpo_folds=args.hpo_folds,
-    )
-    print(f"\nJSON'a yazılan parametreler:\n{json.dumps(result, indent=2)}")
+    all_results = {}
+    for slot in slots_to_run:
+        target_column, sibling_target_column = _SLOT_TARGETS[slot]
+        logger.info(f"\n{'='*60}\n🎯 Optimizasyon — slot {slot} ({target_column})\n{'='*60}")
+        all_results[slot] = optimize(
+            args.data, target_column=target_column, sibling_target_column=sibling_target_column,
+            n_trials=args.trials, timeout=timeout,
+            gamma=gamma, gamma_note=gamma_note, optuna_seed=args.seed,
+            hpo_folds=args.hpo_folds,
+        )
+
+    if len(slots_to_run) > 1:
+        print(f"\nJSON'a yazılan parametreler (her iki slot):\n{json.dumps(all_results, indent=2)}")
+    else:
+        print(f"\nJSON'a yazılan parametreler:\n{json.dumps(all_results[slots_to_run[0]], indent=2)}")

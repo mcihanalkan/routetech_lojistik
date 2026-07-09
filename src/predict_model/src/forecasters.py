@@ -46,13 +46,23 @@ logger = logging.getLogger(__name__)
 
 def _load_hyperparams(
     data_size: int,
+    target_column: str,
     logging_enabled: bool = True,
 ) -> tuple:
     """
-    hyperparams_map.json'dan veri boyutuna en yakın parametreleri yükler.
+    hyperparams_map.json'dan, hedef sütun adına (target_column) göre eşleşen
+    parametreleri yükler.
 
-    JSON'daki her entry'nin 'row_count' alanına göre en yakın büyük bucket
-    seçilir. Hiçbiri uymuyorsa en büyük bucket kullanılır.
+    Öncelik: JSON içindeki her entry'nin 'target_column' alanı, fonksiyona
+    geçilen target_column ile birebir eşleşiyor mu diye kontrol edilir.
+    Böylece 09:00 modeli her zaman kendi optimize edilmiş bucket'ını,
+    17:00 modeli de kendi bucket'ını alır — data_size üzerinden dolaylı
+    (ve yanlış eşleşmeye açık) bir kıyaslamaya gerek kalmaz.
+
+    Eşleşme bulunamazsa (ör. JSON eskidir / bu target_column için henüz
+    optimize edilmiş bir bucket yoktur), B Planı olarak eski row_count
+    tabanlı en-yakın-bucket mantığına düşülür. O da başarısız olursa
+    sabit fallback parametreler kullanılır.
 
     optimize.py ile yeni bucket'lar eklendiğinde bu fonksiyon
     otomatik olarak onları da kullanır — kod değişikliği gerekmez.
@@ -66,22 +76,47 @@ def _load_hyperparams(
         # Fallback: makul varsayılanlar
         if data_size < 50_000:
             p = {"iterations": 1000, "depth": 4, "learning_rate": 0.0476}
-            label = "FALLBACK-SMALL"
+            label = "FALLBACK-SMALL (JSON bulunamadı)"
         else:
             p = {"iterations": 900,  "depth": 6, "learning_rate": 0.0146}
-            label = "FALLBACK-LARGE"
+            label = "FALLBACK-LARGE (JSON bulunamadı)"
     else:
-        with open(map_path) as f:
+        with open(map_path, encoding="utf-8") as f:
             hmap = json.load(f)
 
-        # row_count'a göre sırala, data_size'a en uygun bucket'ı seç
-        entries = sorted(hmap.values(), key=lambda e: e["row_count"])
-        selected = entries[0]
+        entries = list(hmap.values())
+
+        # --- 1. Öncelikli eşleşme: target_column birebir aynı mı? ---
+        selected = None
         for entry in entries:
-            if data_size >= entry["row_count"]:
+            if entry.get("target_column") == target_column:
                 selected = entry
-        p     = selected["params"]
-        label = f"JSON ({selected['row_count']:,} satır bucket, WAPE={selected.get('best_wape', '?')})"
+                break
+
+        if selected is not None:
+            p     = selected["params"]
+            label = (
+                f"JSON (target_column='{target_column}' eşleşti, "
+                f"{selected['row_count']:,} satır, WAPE={selected.get('best_wape', '?')})"
+            )
+        else:
+            # --- 2. Fallback (B Planı): eski row_count tabanlı en-yakın-bucket ---
+            if logging_enabled:
+                logger.warning(
+                    f"⚠️  hyperparams_map.json içinde target_column='{target_column}' "
+                    f"ile eşleşen bir bucket bulunamadı — row_count tabanlı B Planı'na "
+                    f"düşülüyor (veri: {data_size:,} satır)."
+                )
+            entries_sorted = sorted(entries, key=lambda e: e["row_count"])
+            selected = entries_sorted[0]
+            for entry in entries_sorted:
+                if data_size >= entry["row_count"]:
+                    selected = entry
+            p     = selected["params"]
+            label = (
+                f"JSON (B Planı — row_count bucket eşleşmesi, "
+                f"{selected['row_count']:,} satır, WAPE={selected.get('best_wape', '?')})"
+            )
 
     iterations    = int(p["iterations"])
     depth         = int(p["depth"])
@@ -605,7 +640,7 @@ class DemandForecaster(BaseForecaster):
         data_size = len(df)
         self.iterations, self.depth, self.learning_rate, self.l2_leaf_reg, \
             self.bagging_temperature, self.optimized_alpha_, config_label = \
-            _load_hyperparams(data_size, self.logging_enabled)
+            _load_hyperparams(data_size, self.target_column, self.logging_enabled)
 
         # --- 1. Validasyon ---
 
@@ -736,15 +771,17 @@ class DemandForecaster(BaseForecaster):
 
         # --- 4. Zaman Serisi Cross-Validation ve Ensemble Eğitimi ---
         # 4 Fold (7'şer günlük) — her biri farklı haftayı validation seti olarak kullanır
-        # TODO: Veri artık 2026-06-28'e kadar uzandığından bu pencereler eski/dar
-        # kalıyor. optimize.py'deki "BİREBİR AYNI" fold_dates ile EŞZAMANLI
-        # güncellenmeli (dinamik "PREDICT_START'tan geriye 4 hafta" mantığı ya da
-        # elle güncel tarihler) — optimize.py adımına geçildiğinde netleştirilecek.
+        # NOT: Bu pencereler, gerçek tahmin penceresine (PREDICT_START/END =
+        # 2026-06-29 → 2026-07-05, run_forecast.py) en yakın, veri içindeki son
+        # 4 tam hafta olacak şekilde seçildi — optimize.py'deki FOLD_DATES ile
+        # BİREBİR AYNI tutulmalı (aksi halde optimize.py'nin bulduğu hiperparametreler
+        # bu fold pencerelerinde eğitilen gerçek modelden farklı bir dönem için
+        # tuned olur).
         fold_dates = [
-            ("Fold 1", "2026-04-14", "2026-04-20"),
-            ("Fold 2", "2026-04-21", "2026-04-27"),
-            ("Fold 3", "2026-04-28", "2026-05-04"),
-            ("Fold 4", "2026-05-05", "2026-05-10"),
+            ("Fold 1", "2026-05-31", "2026-06-06"),
+            ("Fold 2", "2026-06-07", "2026-06-13"),
+            ("Fold 3", "2026-06-14", "2026-06-20"),
+            ("Fold 4", "2026-06-21", "2026-06-27"),
         ]
         self.models_: List[CatBoostRegressor] = []
 

@@ -50,12 +50,16 @@ _PROJECT_ROOT  = _HERE.parent.parent                      # routetech_lojistik/
 DATA_PATH       = str(_PROJECT_ROOT / "data" / "raw" / "teknofest26_gelismis.xlsx")
 MODEL_FILE_PATH_0900 = str(_PROJECT_ROOT / "src" / "predict_model" / "trained_demand_model_0900.joblib")
 MODEL_FILE_PATH_1700 = str(_PROJECT_ROOT / "src" / "predict_model" / "trained_demand_model_1700.joblib")
-# NOT: Yeni veri 2026-01-01 → 2026-06-28 aralığını kapsıyor (179 gün).
-# PREDICT_START/END aşağıda placeholder olarak eski değerlerde bırakıldı —
-# kesin tahmin penceresi netleşince (muhtemelen 2026-06-28'in hemen sonrası)
-# güncellenecek. Bu adımda (load_dataset) önemli değil.
-PREDICT_START  = "2026-05-11"
-PREDICT_END    = "2026-05-17"
+# NOT: Veri 2026-01-01 → 2026-06-28 aralığını kapsıyor (179 gün).
+# Gerçek tahmin penceresi — veri sonrası ilk 7 gün (PDF'in "gelecek 7 günlük
+# tahmin" mantığına uyar). PREDICT_START artık verinin dışında kaldığı için
+# build_predict_grid()'deki buffer mantığı gerçek anlamda devreye giriyor:
+# buf_start = PREDICT_START - 35 gün = 2026-05-25, buffer de
+# 2026-05-25 → 2026-06-28 arasını (üst sınır zaten < PREDICT_START olduğu
+# için otomatik doğru çalışır — smoke-test sırasında eklenen düzeltme
+# tam burada işine yarıyor).
+PREDICT_START  = "2026-06-29"
+PREDICT_END    = "2026-07-05"
 OUTPUT_JSON    = str(_HERE / "alns_payload.json")# debug için; ALNS motoru RAM'den alır
 
 DATE_COL    = "tarih"
@@ -324,7 +328,31 @@ def _fit_or_load_forecaster(
     """
     if model_path.exists():
         logger.info(f"📦 [{label}] Hazır eğitilmiş model bulundu! Yükleniyor: {model_path.name}")
-        return DemandForecaster.load_model(str(model_path))
+        try:
+            forecaster = DemandForecaster.load_model(str(model_path))
+            # Hızlı bir doğrulama: yüklenen modelin feature importance'a
+            # erişimi çalışıyor mu kontrol et (predict() ile uyumsuz/bozuk
+            # bir .joblib varsa burada patlar). Bu satır, run()'ın ana
+            # akışında zaten çağrılan get_feature_importances()'ı ÖNCEDEN
+            # tetikleyerek, dosya üretim adımlarına gelmeden önce sorunu
+            # yakalayıp fallback'e düşmemizi sağlıyor — aksi halde model
+            # yüklendikten sonraki bir adımda (predict/importance) sessizce
+            # patlayan hatalar, ortools/xlsx çıktılarının HİÇ üretilmemesine
+            # (çünkü run() istisna fırlatıp yarıda kesiliyor) yol açıyordu.
+            forecaster.get_feature_importances()
+            return forecaster
+        except Exception as exc:
+            logger.warning(
+                f"⚠️ [{label}] Hazır model yüklenemedi/uyumsuz ({exc!r}). "
+                f"Model sıfırdan eğitilerek devam edilecek — çıktı dosyaları "
+                f"yine de üretilecek."
+            )
+            # Bozuk/uyumsuz model dosyasını temizle ki bir sonraki çalıştırmada
+            # tekrar aynı hatayla karşılaşılmasın.
+            try:
+                model_path.unlink()
+            except OSError:
+                pass
 
     logger.info(f"⚠️ [{label}] Hazır model dosyası bulunamadı. Model sıfırdan eğitiliyor...")
 
@@ -335,6 +363,8 @@ def _fit_or_load_forecaster(
         f"(eşikler: lag_21≥{LAG_21_MIN_ROWS:,}, lag_30≥{LAG_30_MIN_ROWS:,})"
     )
 
+    clip_mult = 5.0 if "0900" in target_column else 3.0
+
     forecaster = DemandForecaster(
         target_column          = target_column,
         sibling_target_column  = sibling_target_column,
@@ -344,6 +374,7 @@ def _fit_or_load_forecaster(
         forecast_horizon        = 7,
         lags                    = lags,   # veri büyüklüğüne göre uyarlanır — bkz. select_lags()
         rolling_windows         = [7, 14],
+        outlier_clip_multiplier = clip_mult,
         logging_enabled         = True,
         random_state            = 42,
     )
@@ -405,6 +436,16 @@ def run(save_json: bool = True) -> "pd.DataFrame":
         pd.date_range(PREDICT_START, PREDICT_END, freq="D").strftime("%Y-%m-%d")
     )
     raw_preds = [r for r in preds_0900 + preds_1700 if str(r[DATE_COL])[:10] in target_dates]
+
+    if not raw_preds:
+        raise RuntimeError(
+            "❌ Tahmin sonucu 0 kayıt döndü (raw_preds boş). Muhtemel neden: "
+            "yüklenen model ile mevcut predict_grid uyumsuz (ör. farklı "
+            f"tarih aralığı/feature seti). PREDICT_START={PREDICT_START}, "
+            f"PREDICT_END={PREDICT_END}. Modeli silip (trained_demand_model_"
+            "0900.joblib / _1700.joblib) yeniden çalıştırmayı deneyin — bu "
+            "durumda script otomatik olarak sıfırdan eğitim yapacaktır."
+        )
 
     logger.info(
         f"\n✅ Tahmin tamamlandı: {len(raw_preds)} kayıt "
@@ -468,11 +509,71 @@ def run(save_json: bool = True) -> "pd.DataFrame":
     df_ortools.to_excel(OUTPUT_EXCEL, index=False)
     logger.info(f"📊 Jüri (Raporlama) payload kaydedildi: {OUTPUT_EXCEL}")
 
+    # -------------------------------------------------------------------
+    # 3. PDF TESLİM FORMATI — Talep-Tahmini.xlsx
+    # -------------------------------------------------------------------
+    # df_ortools zaten talep_id sütununu taşıyor (bkz. uncertainty.py::
+    # UncertaintyBand.from_json — sıralı D00001... ataması). Burada sadece
+    # jürinin resmi TALEP_TAHMI_NI_.xlsx şablonuyla BİREBİR aynı sütun
+    # adları / sırası / hücre tipleriyle AYRI bir teslim dosyası
+    # üretiyoruz — ortools_payload.csv/xlsx (algoritma girdisi, risk_class
+    # vb. dahil zengin format) buna DOKUNULMADAN aynen kalıyor.
+    #
+    # Şablon (TALEP_TAHMI_NI_.xlsx) sütunları — birebir referans:
+    #   A: Talep ID                  → örn. 'D00001'          (metin)
+    #   B: Tarih                     → örn. '01.04.2026'       (metin, GG.AA.YYYY)
+    #   C: Talep Tamamlama Saati     → örn. 09:00 / 17:00      (datetime.time, hücre formatı 'h:mm')
+    #   D: Çıkış Transfer Merkezi    → örn. 'X'                (metin)
+    #   E: Varış Transfer Merkezi    → örn. 'Y'                (metin)
+    #   F: Tahmin Edilen Desi        → örn. 4.3                (sayı, hücre formatı '0.000')
+    from datetime import time as _dt_time
+
+    def _slot_to_time(slot_str: str) -> _dt_time:
+        """'09:00' / '17:00' -> datetime.time nesnesi (sablondaki C sutunu tipiyle birebir)."""
+        h, m = str(slot_str).split(":")
+        return _dt_time(int(h), int(m))
+
+    talep_tahmini_df = df_ortools.rename(columns={
+        "talep_id":    "Talep ID",
+        "source":      "Çıkış Transfer Merkezi",
+        "destination": "Varış Transfer Merkezi",
+    }).copy()
+
+    talep_tahmini_df["Tarih"] = pd.to_datetime(talep_tahmini_df["date"]).dt.strftime("%d.%m.%Y")
+    talep_tahmini_df["Talep Tamamlama Saati"] = talep_tahmini_df["slot"].apply(_slot_to_time)
+    talep_tahmini_df["Tahmin Edilen Desi"] = talep_tahmini_df["q50"].astype(float)
+
+    # Şablonla BİREBİR aynı sütun sırası
+    talep_tahmini_df = talep_tahmini_df[[
+        "Talep ID", "Tarih", "Talep Tamamlama Saati",
+        "Çıkış Transfer Merkezi", "Varış Transfer Merkezi", "Tahmin Edilen Desi",
+    ]]
+
+    OUTPUT_TALEP_XLSX = str(excel_dir / "Talep-tahmini.xlsx")
+    talep_tahmini_df.to_excel(OUTPUT_TALEP_XLSX, index=False)
+
+    # Hücre formatlarını da şablonla birebir eşleştir:
+    #   C sütunu (Talep Tamamlama Saati) -> 'h:mm'
+    #   F sütunu (Tahmin Edilen Desi)    -> '0.000'
+    from openpyxl import load_workbook
+    _wb_out = load_workbook(OUTPUT_TALEP_XLSX)
+    _ws_out = _wb_out.active
+    for _row in _ws_out.iter_rows(min_row=2, max_row=_ws_out.max_row):
+        _row[2].number_format = "h:mm"   # C: Talep Tamamlama Saati
+        _row[5].number_format = "0.000"  # F: Tahmin Edilen Desi
+    _wb_out.save(OUTPUT_TALEP_XLSX)
+
+    logger.info(f"📋 Jüri teslim formatı (şablona birebir uygun) kaydedildi: {OUTPUT_TALEP_XLSX}")
+
     logger.info(
         f"\n{'='*60}\n"
-        f"✅ Tamamlandı!\n"
+        f"✅ Tamamlandı! (model hazırdan yüklendi ya da sıfırdan eğitildi "
+        f"fark etmez — bu 3 dosya HER çalıştırmada yeniden üretilir)\n"
         f"   Tahmin sayısı  : {len(df_ortools)}\n"
         f"   Tarih aralığı  : {PREDICT_START} → {PREDICT_END}\n"
+        f"   1) {OUTPUT_CSV}\n"
+        f"   2) {OUTPUT_EXCEL}\n"
+        f"   3) {OUTPUT_TALEP_XLSX}\n"
         f"============================================================"
     )
     print("\n📋 OR-Tools Payload Örnek (İlk 5 Satır):")
