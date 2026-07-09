@@ -199,6 +199,16 @@ class DemandBand:
     # --- Saat dilimi (09:00 / 17:00) — sadece kimlik/etiketleme amaçlı ---
     slot: Optional[str] = None
 
+    # --- [PDF: Gelişmiş Çözüm Aşaması] Talep ID — zorunlu çıktı formatı ---
+    # PDF: "Kendi talep tahminlerinizi bize gönderirken de benzer şekilde her
+    # talep için talep ID oluşturmanızı bekliyoruz. Talep ID formatı:
+    # D00001, D00002, ..." Sıralı ID, UncertaintyBand.from_json() içinde
+    # bands_ listesi oluşturulduktan sonra atanır (bkz. _assign_talep_ids()).
+    # Burada sadece None varsayılanla alan tanımlanıyor; DemandBand tek
+    # başına örneklendiğinde (örn. testlerde) talep_id boş kalabilir —
+    # zorunluluk yalnızca UncertaintyBand üzerinden üretilen payload'larda.
+    talep_id: Optional[str] = None
+
     # buffer_ratio dataclass'a init parametresi olarak almıyoruz
     # (asdict() serileştirmesini karmaşıklaştırır); __post_init__'e geçiyoruz
     _buffer_ratio: float = field(default=DEFAULT_BUFFER_RATIO, repr=False)
@@ -313,6 +323,7 @@ class DemandBand:
     def to_dict(self) -> Dict[str, Any]:
         """ALNS payload formatına uygun sözlük döndürür."""
         return {
+            "talep_id":             self.talep_id,   # [PDF] D00001, D00002, ...
             "tarih":                self.tarih,
             "TM_ID":                self.tm_id,
             "slot":                 self.slot,
@@ -431,6 +442,16 @@ class UncertaintyBand:
                 _materiality_floor=self.materiality_floor,
             )
             self.bands_.append(band)
+
+        # [PDF: Gelişmiş Çözüm Aşaması] Talep ID ataması — D00001, D00002, ...
+        # Sıralı, 1-index. Bir talebin sonradan birden fazla araca bölünmesi
+        # durumunda (D00001-1, D00001-2) formatı PDF'te belirtiliyor, ancak
+        # bölme kararı optimizasyon/rota planlama aşamasında verildiği için
+        # burada YALNIZCA temel (bölünmemiş) talep ID'si üretilir — ALNS/
+        # OR-Tools motoru gerekirse bu ID'nin sonuna "-1", "-2" ekleyerek
+        # kendi bölme mantığını uygular.
+        for _i, _band in enumerate(self.bands_, start=1):
+            _band.talep_id = f"D{_i:05d}"
 
         if self.logging_enabled:
             self._log_summary()
@@ -552,6 +573,7 @@ class UncertaintyBand:
 
         Çıktı sütunlar
         --------------
+        talep_id            : [PDF] Sıralı talep kimliği (D00001, D00002, ...)
         date                : Tahmin tarihi
         slot                : Saat dilimi ("09:00" / "17:00") — ZORUNLU: bu olmadan
                                OR-Tools iki farklı saat dilimindeki talebi aynı
@@ -599,6 +621,7 @@ class UncertaintyBand:
             # OR-Tools için net talep = Medyan Tahmin + Risk Tamponu
             recommended_demand = b.q50 + b.safety_buffer
             records.append({
+                "talep_id":           b.talep_id,   # [PDF] D00001, D00002, ...
                 "date":               b.tarih,
                 "slot":               b.slot,       # ZORUNLU — bkz. docstring/madde 4 notu
                 "source":             source.strip(),
@@ -617,7 +640,7 @@ class UncertaintyBand:
         if self.logging_enabled:
             logger.info(
                 f"⚙️  OR-Tools payload'u hazırlandı: {len(df_ortools)} satır, "
-                f"{len(df_ortools.columns)} sütun (date, slot, source, destination, q10, q50, q90, "
+                f"{len(df_ortools.columns)} sütun (talep_id, date, slot, source, destination, q10, q50, q90, "
                 f"recommended_demand, risk_class, risk_score, risk_score_raw)."
             )
 
