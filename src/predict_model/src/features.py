@@ -30,7 +30,7 @@ Kural:
 """
 
 import logging
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -537,17 +537,46 @@ def add_holiday_features(
 # 3. Lag (Gecikme) Özellikleri
 # ---------------------------------------------------------------------------
 
+def _feature_suffix(target_column: str, target_columns: List[str]) -> str:
+    """
+    Birden fazla paralel hedef sütun varsa (wide format: toplam_desi_0900 /
+    toplam_desi_1700), çıktı feature adına eklenecek soneki üretir.
+
+    'toplam_desi_0900' -> '_0900'
+    'toplam_desi_1700' -> '_1700'
+
+    Tek hedef sütun varsa (eski/legacy tek-serili akış) -> ''
+    (sonek yok — eski sütun adları `lag_1`, `rolling_mean_7` vb. ile
+    birebir aynı kalır, geriye dönük uyumluluk bozulmaz.)
+    """
+    if len(target_columns) <= 1:
+        return ""
+    parts = target_column.rsplit("_", 1)
+    return f"_{parts[-1]}" if len(parts) > 1 else f"_{target_column}"
+
+
 def add_lag_features(
     df: pl.DataFrame,
-    target_column: str,
+    target_columns: Union[str, List[str]],
     group_column: Optional[str],
     lags: List[int] = DEFAULT_LAGS,
 ) -> pl.DataFrame:
     """
-    Hedef değişkenin gecikmeli değerlerini ekler.
+    Hedef değişken(ler)in gecikmeli değerlerini ekler.
 
     Polars .shift().over() ifadesi ile tamamen vektörize.
     Pandas'taki groupby().transform(lambda x: x.shift(n)) darboğazı YOK.
+
+    Wide format (09:00 / 17:00) desteği
+    -------------------------------------
+    target_columns birden fazla sütun içeriyorsa (örn.
+    ["toplam_desi_0900", "toplam_desi_1700"]), her sütun için AYRI AYRI
+    lag üretilir ve çıktı sütun adına slot soneki eklenir:
+      lag_1_0900, lag_7_0900, lag_14_0900, ...
+      lag_1_1700, lag_7_1700, lag_14_1700, ...
+    Satır zaten "gün" granülaritesinde olduğu için shift() mantığı
+    değişmiyor — shift(1).over(rota) hâlâ "dünkü değer" demek.
+    Tek sütun verilirse eski sütun adları (lag_1, lag_7, ...) korunur.
 
     ⚠️  Data Leakage Güvencesi:
       - Her grup kendi geçmişine bakar; başka grubun verisi sızmaz.
@@ -555,31 +584,32 @@ def add_lag_features(
 
     Parameters
     ----------
-    df            : Polars DataFrame (date'e göre sıralı olmalı)
-    target_column : Hedef sütun adı
-    group_column  : Grup sütunu; None ise tek seri
-    lags          : Gecikme günleri listesi
+    df             : Polars DataFrame (date'e göre sıralı olmalı)
+    target_columns : Hedef sütun adı (str) veya sütun listesi (List[str])
+    group_column   : Grup sütunu; None ise tek seri
+    lags           : Gecikme günleri listesi
 
     Returns
     -------
     pl.DataFrame
     """
-    if group_column and group_column in df.columns:
-        lag_exprs = [
-            pl.col(target_column)
-              .shift(lag)
-              .over(group_column)          # ← Polars'ın vektörize group-shift'i
-              .alias(f"lag_{lag}")
-            for lag in lags
-        ]
-    else:
-        lag_exprs = [
-            pl.col(target_column).shift(lag).alias(f"lag_{lag}")
-            for lag in lags
-        ]
+    target_cols: List[str] = [target_columns] if isinstance(target_columns, str) else list(target_columns)
+
+    lag_exprs = []
+    produced_names: List[str] = []
+    for tcol in target_cols:
+        suffix = _feature_suffix(tcol, target_cols)
+        base = pl.col(tcol)
+        for lag in lags:
+            alias = f"lag_{lag}{suffix}"
+            produced_names.append(alias)
+            if group_column and group_column in df.columns:
+                lag_exprs.append(base.shift(lag).over(group_column).alias(alias))
+            else:
+                lag_exprs.append(base.shift(lag).alias(alias))
 
     df = df.with_columns(lag_exprs)
-    logger.debug(f"✅ Lag özellikleri eklendi (Polars): {[f'lag_{l}' for l in lags]}")
+    logger.debug(f"✅ Lag özellikleri eklendi (Polars): {produced_names}")
     return df
 
 
@@ -589,76 +619,152 @@ def add_lag_features(
 
 def add_rolling_features(
     df: pl.DataFrame,
-    target_column: str,
+    target_columns: Union[str, List[str]],
     group_column: Optional[str],
     windows: List[int] = DEFAULT_ROLLING_WINDOWS,
 ) -> pl.DataFrame:
     """
-    Kayan pencere ortalaması ve standart sapmasını ekler.
+    Kayan pencere ortalaması, standart sapması ve varyasyon katsayısını ekler.
 
     Polars'ta .shift(1).rolling_mean(w).over(group) ifadesi ile tek
     with_columns çağrısında tüm pencereler hesaplanır.
     Pandas'taki iç içe lambda + transform zinciri tamamen ortadan kalktı.
+
+    Wide format (09:00 / 17:00) desteği
+    -------------------------------------
+    target_columns birden fazla sütun içeriyorsa, her sütun için AYRI AYRI
+    rolling istatistik üretilir ve çıktı sütun adına slot soneki eklenir:
+      rolling_mean_7_0900, rolling_std_7_0900, rolling_cov_7_0900, ...
+      rolling_mean_7_1700, rolling_std_7_1700, rolling_cov_7_1700, ...
+    Tek sütun verilirse eski sütun adları (rolling_mean_7, ...) korunur.
 
     ⚠️  shift(1) → bugünün verisini pencereye dahil etme (leakage önlemi).
     ⚠️  min_samples=1 → kısa geçmişli satırlar NaN üretmez.
 
     Parameters
     ----------
-    df            : Polars DataFrame
-    target_column : Hedef sütun
-    group_column  : Grup sütunu
-    windows       : Pencere boyutları (gün)
+    df             : Polars DataFrame
+    target_columns : Hedef sütun adı (str) veya sütun listesi (List[str])
+    group_column   : Grup sütunu
+    windows        : Pencere boyutları (gün)
 
     Returns
     -------
     pl.DataFrame
     """
+    target_cols: List[str] = [target_columns] if isinstance(target_columns, str) else list(target_columns)
+
     roll_exprs = []
+    produced_names: List[str] = []
 
-    for w in windows:
-        shifted = pl.col(target_column).shift(1)
+    for tcol in target_cols:
+        suffix = _feature_suffix(tcol, target_cols)
 
-        if group_column and group_column in df.columns:
-            # .over() ile grup bazında rolling — Polars 1.21+ API
-            mean_expr = (
-                shifted
-                .rolling_mean(window_size=w, min_samples=1)
-                .over(group_column)
-                .alias(f"rolling_mean_{w}")
-            )
-            std_expr = (
-                shifted
-                .rolling_std(window_size=w, min_samples=1)
-                .fill_null(0.0)
-                .over(group_column)
-                .alias(f"rolling_std_{w}")
-            )
-        else:
-            mean_expr = (
-                shifted
-                .rolling_mean(window_size=w, min_samples=1)
-                .alias(f"rolling_mean_{w}")
-            )
-            std_expr = (
-                shifted
-                .rolling_std(window_size=w, min_samples=1)
-                .fill_null(0.0)
-                .alias(f"rolling_std_{w}")
-            )
+        for w in windows:
+            shifted = pl.col(tcol).shift(1)
+            mean_alias = f"rolling_mean_{w}{suffix}"
+            std_alias  = f"rolling_std_{w}{suffix}"
+            cov_alias  = f"rolling_cov_{w}{suffix}"
 
-        roll_exprs += [mean_expr, std_expr]
+            if group_column and group_column in df.columns:
+                # .over() ile grup bazında rolling — Polars 1.21+ API
+                mean_expr = (
+                    shifted
+                    .rolling_mean(window_size=w, min_samples=1)
+                    .over(group_column)
+                    .alias(mean_alias)
+                )
+                std_expr = (
+                    shifted
+                    .rolling_std(window_size=w, min_samples=1)
+                    .fill_null(0.0)
+                    .over(group_column)
+                    .alias(std_alias)
+                )
+            else:
+                mean_expr = (
+                    shifted
+                    .rolling_mean(window_size=w, min_samples=1)
+                    .alias(mean_alias)
+                )
+                std_expr = (
+                    shifted
+                    .rolling_std(window_size=w, min_samples=1)
+                    .fill_null(0.0)
+                    .alias(std_alias)
+                )
 
-        # --- YENİ: Volatilite (Oynaklık) İndeksi ---
-        # Sıfıra bölme hatasını önlemek için paydaya küçük bir epsilon (1e-5) ekliyoruz.
-        cov_expr = (
-            (std_expr / (mean_expr + 1e-5))
-            .alias(f"rolling_cov_{w}")
-        )
-        roll_exprs.append(cov_expr)
+            roll_exprs += [mean_expr, std_expr]
+            produced_names += [mean_alias, std_alias]
+
+            # --- Volatilite (Oynaklık) İndeksi ---
+            # Sıfıra bölme hatasını önlemek için paydaya küçük bir epsilon (1e-5) ekliyoruz.
+            cov_expr = (std_expr / (mean_expr + 1e-5)).alias(cov_alias)
+            roll_exprs.append(cov_expr)
+            produced_names.append(cov_alias)
 
     df = df.with_columns(roll_exprs)
-    logger.debug(f"✅ Rolling özellikler eklendi (Polars): pencereler={windows}")
+    logger.debug(f"✅ Rolling özellikler eklendi (Polars): {produced_names}")
+    return df
+
+
+# ---------------------------------------------------------------------------
+# 4.5 Cross-Lag (Gün-İçi Slotlar Arası Bilgi Akışı) — 09:00 / 17:00
+# ---------------------------------------------------------------------------
+
+def add_cross_lag_features(
+    df: pl.DataFrame,
+    target_columns: Union[str, List[str]],
+) -> pl.DataFrame:
+    """
+    İki paralel (09:00 / 17:00) hedef arasındaki meşru gün-içi bilgi akışını
+    açık, isimlendirilmiş bir feature olarak ekler.
+
+    Mantık
+    ------
+    - 17:00 tahmini yapılırken, aynı günün 09:00 talebi ZATEN GERÇEKLEŞMİŞ ve
+      bilinen bir değerdir → shift YOK, doğrudan bugünkü değer feature olarak
+      kullanılabilir. Bu leakage DEĞİL, gerçek operasyonel bilgidir (17:00
+      tahmini yapıldığı anda sabahki gerçek talep zaten elde mevcuttur).
+    - 09:00 tahmini yapılırken, aynı günün 17:00 talebi HENÜZ GERÇEKLEŞMEMİŞTİR
+      → kullanılamaz. Bunun yerine sadece dünkü (shift(1)) 17:00 değeri
+      kullanılabilir — bu zaten add_lag_features()'ın ürettiği `lag_1_1700`
+      sütunuyla birebir aynıdır, burada tekrar üretilmez.
+
+    Bu fonksiyon SADECE meşru cross-lag'i açıkça isimlendirir; hangi sütunun
+    hangi model için "leakage" sayılıp düşürüleceğine (drop) karar vermez —
+    o ayrım forecasters.py'de, model bazında (09:00 modeli vs 17:00 modeli)
+    yapılacaktır. İki model de aynı zengin feature havuzundan beslenir.
+
+    Çıktı sütun
+    -----------
+    cross_lag_0900_same_day : Bugünün "…_0900" ile biten hedef sütununun
+                              ham (shift'siz) değeri. target_columns içinde
+                              "_0900" ile biten bir sütun yoksa hiçbir şey
+                              eklenmez (fonksiyon no-op döner).
+
+    Parameters
+    ----------
+    df             : Polars DataFrame
+    target_columns : Hedef sütun adı (str) veya sütun listesi (List[str])
+
+    Returns
+    -------
+    pl.DataFrame
+    """
+    target_cols: List[str] = [target_columns] if isinstance(target_columns, str) else list(target_columns)
+
+    slot_0900 = next((c for c in target_cols if c.endswith("_0900")), None)
+    if slot_0900 is None or slot_0900 not in df.columns:
+        return df
+
+    df = df.with_columns([
+        pl.col(slot_0900).alias("cross_lag_0900_same_day")
+    ])
+    logger.debug(
+        "✅ Cross-lag özelliği eklendi: cross_lag_0900_same_day "
+        f"(kaynak: '{slot_0900}', shift yok — bugünkü 09:00 değeri)."
+    )
     return df
 
 
@@ -725,7 +831,7 @@ def add_spatio_temporal_features(
 
 def build_feature_matrix(
     df: pd.DataFrame,
-    target_column: str,
+    target_columns: Union[str, List[str]],
     date_column: str,
     group_column: Optional[str] = "TM_ID",
     lags: List[int] = DEFAULT_LAGS,
@@ -740,30 +846,51 @@ def build_feature_matrix(
     İç hesaplamalar tamamen Polars üzerinde çalışır (7-10x hızlı).
     Son adımda tek bir .to_pandas() dönüşümü yapılır.
 
+    Wide format (09:00 / 17:00) — TEK ORTAK FEATURE MATRİSİ
+    -----------------------------------------------------------
+    target_columns birden fazla sütun içeriyorsa (örn.
+    ["toplam_desi_0900", "toplam_desi_1700"]) bu fonksiyon HALA TEK bir
+    feature matrisi üretir — hem iki hedef sütunu, hem her ikisi için ayrı
+    ayrı lag/rolling'leri, hem de meşru cross-lag sütununu (bugünkü 09:00
+    değeri) aynı tabloda barındırır. Hangi sütunun hangi model (09:00 vs
+    17:00) için "leakage" sayılıp drop edileceğine BURADA karar VERİLMEZ —
+    bu ayrım bir sonraki dosyada (forecasters.py), model bazında yapılır.
+    İki model de aynı zengin feature havuzundan beslenir.
+
     Adım sırası (data leakage riskine göre):
       1. Pandas → Polars dönüşümü + tarih sıralaması
-      2. Zaman özellikleri     (mevcut satırdan, leakage yok)
-      3. Tatil özellikleri     (mevcut tarihten, leakage yok)
-      3.5 Kampanya özellikleri  (e-ticaret zirveleri + arife, leakage yok)
-      4. Spatio-temporal       (grup × zaman etkileşimi)
-      5. Lag özellikleri       (shift() ile, leakage yok)
-      6. Rolling istatistikler (shift(1) + rolling, leakage yok)
-      6.5 Hub özellikleri      (hub_lag_1 — kaynak merkezi yığılma)
-      6.6 Ağ/Çizge özellikleri (KDD Cup şampiyonluk — Pressure Ratio,
-                                 Centrality, K-dereceli komşuluk)
+      2. Zaman özellikleri      (mevcut satırdan, leakage yok)
+      3. Tatil özellikleri      (mevcut tarihten, leakage yok)
+      3.5 Kampanya özellikleri   (e-ticaret zirveleri + arife, leakage yok)
+      4. Spatio-temporal        (grup × zaman etkileşimi)
+      5. Lag özellikleri        (her hedef sütun için AYRI AYRI, shift() ile leakage yok)
+      6. Rolling istatistikler  (her hedef sütun için AYRI AYRI, shift(1) + rolling, leakage yok)
+      6.3 Cross-lag             (bugünkü 09:00 → 17:00 modeli için meşru gün-içi bilgi)
+      6.4 Günlük toplam (geçici) (toplam_desi_0900 + toplam_desi_1700 — SADECE aşağıdaki
+                                  hub/graph/hierarchical/extreme fonksiyonlarının iç
+                                  hesaplarında kullanılır, ham haliyle ASLA nihai
+                                  matriste bırakılmaz — bkz. Adım 6.4 yorumları)
+      6.5 Hub özellikleri       (hub_lag_1 — kaynak merkezi yığılma, günlük toplam üzerinden)
+      6.6 Ağ/Çizge özellikleri  (KDD Cup şampiyonluk — Pressure Ratio,
+                                  Centrality, K-dereceli komşuluk, günlük toplam üzerinden)
       6.7 Hiyerarşik özellikler (M5/Grupo Bimbo — Hub-to-Route Ratio,
-                                 Çapraz-Grup agregasyonları)
+                                  Çapraz-Grup agregasyonları, günlük toplam üzerinden)
       6.8 Ekstrem olay özellikleri (Tweedie/SHOS — pencere eğrisi,
-                                    ekstrem aday skoru, log sinyal)
-      7. NaN satır temizliği   (lag'den gelen ilk N satır boş olur)
+                                    ekstrem aday skoru, log sinyal, günlük toplam üzerinden)
+      7. NaN satır temizliği    (lag'den gelen ilk N satır boş olur — iki hedefin
+                                  NaN zincirleri BİRLEŞTİĞİ için satır kaybı tek
+                                  hedefli akışa göre büyüyebilir, bkz. aşağıdaki log)
       8. Polars → Pandas dönüşümü (CatBoost için)
 
     Parameters
     ----------
-    df               : Ham giriş verisi (Pandas)
-    target_column    : Tahmin hedefi (örn. "desi_hacmi")
+    df               : Ham giriş verisi (Pandas) — wide format bekleniyor
+                        (bir satır = bir (rota, tarih))
+    target_columns   : Tahmin hedefi/hedefleri. Tek sütun (str, eski/legacy
+                        tek-serili akış) veya sütun listesi (List[str], yeni
+                        wide format: ["toplam_desi_0900", "toplam_desi_1700"])
     date_column      : Tarih sütunu (örn. "tarih")
-    group_column     : Grup/TM sütunu (örn. "TM_ID"); None ise tek seri
+    group_column     : Grup/TM sütunu (örn. "rota"); None ise tek seri
     lags             : Gecikme günleri
     rolling_windows  : Rolling pencere boyutları
     holiday_lead_days: Tatil arifesi kaç gün önceden başlasın
@@ -778,15 +905,19 @@ def build_feature_matrix(
     Examples
     --------
     >>> X = build_feature_matrix(
-    ...     df=raw_df,
-    ...     target_column="desi_hacmi",
+    ...     df=raw_wide_df,
+    ...     target_columns=["toplam_desi_0900", "toplam_desi_1700"],
     ...     date_column="tarih",
-    ...     group_column="TM_ID",
+    ...     group_column="rota",
     ... )
     >>> cat_cols = X.select_dtypes(include=["object", "category"]).columns.tolist()
-    >>> model.fit(X.drop("desi_hacmi", axis=1), X["desi_hacmi"],
-    ...           cat_features=cat_cols)
+    >>> # forecasters.py: 09:00 modeli X'i -> "toplam_desi_1700" ve
+    >>> # "toplam_desi_0900" (kendi target'ı) drop edilir.
+    >>> # 17:00 modeli X'i -> sadece "toplam_desi_1700" (kendi target'ı) drop
+    >>> # edilir; "toplam_desi_0900" / "cross_lag_0900_same_day" bilerek tutulur.
     """
+    target_cols: List[str] = [target_columns] if isinstance(target_columns, str) else list(target_columns)
+
     # --- Adım 1: Pandas → Polars + tarih garantisi ---
     df = df.copy()
     df[date_column] = pd.to_datetime(df[date_column])
@@ -823,16 +954,38 @@ def build_feature_matrix(
     if group_column and group_column in pl_df.columns:
         pl_df = add_spatio_temporal_features(pl_df, group_column, date_column)
 
-    # --- Adım 5: Lag ---
-    pl_df = add_lag_features(pl_df, target_column, group_column, lags=lags)
+    # --- Adım 5: Lag (her hedef sütun için ayrı ayrı, suffix'li) ---
+    pl_df = add_lag_features(pl_df, target_cols, group_column, lags=lags)
 
-    # --- Adım 6: Rolling ---
+    # --- Adım 6: Rolling (her hedef sütun için ayrı ayrı, suffix'li) ---
     pl_df = add_rolling_features(
-        pl_df, target_column, group_column, windows=rolling_windows
+        pl_df, target_cols, group_column, windows=rolling_windows
     )
 
+    # --- Adım 6.3: Cross-lag (bugünkü 09:00 → 17:00 modeli için meşru feature) ---
+    pl_df = add_cross_lag_features(pl_df, target_cols)
+
+    # --- Adım 6.4: Günlük toplam (GEÇİCİ — hub/graph/hierarchical/extreme için) ---
+    # add_hub_features / add_graph_network_features / add_hierarchical_features /
+    # add_extreme_event_features fiziksel olarak "o gün o hub'dan/rotadan geçen
+    # TOPLAM hacim"i bekliyor — bu artık toplam_desi_0900 + toplam_desi_1700.
+    # Bu sütun SADECE aşağıdaki 4 fonksiyona syöylenmek üzere üretilir; hepsi
+    # kendi içinde shift(1) uyguladığı için leakage yok. Ama HAM (shift'siz)
+    # haliyle nihai feature matrisinde KESİNLİKLE bırakılmaz: iki hedefin
+    # toplamı olduğu için, bir model bu sütun + kendi target'ından diğer
+    # modelin target'ını trivial şekilde geri çıkarabilir
+    # (gunluk - kendi_target = diğer_target). Bu yüzden Adım 7'den önce drop edilir.
+    _DAILY_TOTAL_COL = "_toplam_desi_gunluk_temp"
+    if len(target_cols) > 1:
+        pl_df = pl_df.with_columns([
+            pl.sum_horizontal([pl.col(c) for c in target_cols]).alias(_DAILY_TOTAL_COL)
+        ])
+        hub_graph_target = _DAILY_TOTAL_COL
+    else:
+        hub_graph_target = target_cols[0]
+
     # --- Adım 6.5: Hub Özellikleri ---
-    pl_df = add_hub_features(pl_df, target_column, date_column)
+    pl_df = add_hub_features(pl_df, hub_graph_target, date_column)
 
     # --- Adım 6.6: Ağ / Çizge Özellikleri (KDD Cup Şampiyonluk Mekanizması) ---
     # Kaynak ve hedef hub sütunlarını otomatik tespit et
@@ -845,7 +998,7 @@ def build_feature_matrix(
     if _graph_source and _graph_dest:
         pl_df = add_graph_network_features(
             pl_df,
-            target_column=target_column,
+            target_column=hub_graph_target,
             date_column=date_column,
             source_col=_graph_source,
             dest_col=_graph_dest,
@@ -860,29 +1013,57 @@ def build_feature_matrix(
     if _graph_source:
         pl_df = add_hierarchical_features(
             pl_df,
-            target_column=target_column,
+            target_column=hub_graph_target,
             date_column=date_column,
             source_col=_graph_source,
             dest_col=_graph_dest or "",
         )
 
     # --- Adım 6.8: Ekstrem Olay Özellikleri (Tweedie / SHOS / Pencere Eğrisi) ---
+    # NOT: Bu fonksiyon, tek-hedefli akışta üretilen literal "rolling_mean_7" /
+    # "rolling_std_7" sütunlarını arıyor. Wide format'ta rolling artık
+    # suffix'li (rolling_mean_7_0900 / _1700) olduğu için bu literal sütunlar
+    # bulunmayacak ve fonksiyon kendi tasarlanmış fallback'ine (statik grup
+    # quantile eşiği) düşecektir — bu bir hata değil, fonksiyonun zaten
+    # desteklediği bir davranış (bkz. add_extreme_event_features içindeki
+    # "else: Statik grup quantile" dalı).
     pl_df = add_extreme_event_features(
         pl_df,
-        target_column=target_column,
+        target_column=hub_graph_target,
         date_column=date_column,
         group_column=group_column,
     )
 
+    # Geçici günlük toplam sütununu nihai matristen temizle (leakage önlemi)
+    if _DAILY_TOTAL_COL in pl_df.columns:
+        pl_df = pl_df.drop(_DAILY_TOTAL_COL)
+
     # --- Adım 7: NaN temizliği ---
     rows_before = pl_df.height
     if drop_na:
+        # Wide format'ta iki hedefin (0900/1700) lag/rolling NaN zincirleri
+        # BİRLEŞİR (drop_nulls satır bazında AND değil OR mantığıyla çalışır —
+        # herhangi bir sütunda NaN varsa satır düşer). Bu yüzden düşürmeden
+        # önce, hangi lag/rolling sütununun en çok NaN ürettiğini logluyoruz;
+        # böylece kayıp "normal" mi (beklenen ilk-N-gün lag ısınması) yoksa
+        # "anormal" mi (örn. lag_30_0900 + lag_30_1700 ikiye katlanan kayıp)
+        # kolayca ayırt edilebilir.
+        lag_roll_cols = [c for c in pl_df.columns if c.startswith("lag_") or c.startswith("rolling_")]
+        if lag_roll_cols:
+            null_counts = pl_df.select(lag_roll_cols).null_count().to_dicts()[0]
+            top_offenders = sorted(null_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+            logger.info(
+                "🔎 Dropna öncesi en çok NaN üreten lag/rolling sütunları (ilk 5): "
+                + ", ".join(f"{name}={count}" for name, count in top_offenders)
+            )
+
         pl_df = pl_df.drop_nulls()
         dropped = rows_before - pl_df.height
         if dropped > 0:
             logger.info(
                 f"ℹ️  {dropped} satır lag NaN nedeniyle atıldı "
-                f"({rows_before} → {pl_df.height})"
+                f"({rows_before} → {pl_df.height}, "
+                f"{dropped / rows_before:.1%})"
             )
 
     # --- Adım 8: Polars → Pandas (CatBoost / sklearn uyumluluğu için) ---
@@ -890,7 +1071,8 @@ def build_feature_matrix(
 
     logger.info(
         f"✅ Feature matrix hazır (Polars backend): "
-        f"{result.shape[0]} satır × {result.shape[1]} sütun"
+        f"{result.shape[0]} satır × {result.shape[1]} sütun "
+        f"(hedef sütunlar: {target_cols})"
     )
     return result
 

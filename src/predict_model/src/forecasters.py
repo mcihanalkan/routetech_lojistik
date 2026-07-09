@@ -46,13 +46,23 @@ logger = logging.getLogger(__name__)
 
 def _load_hyperparams(
     data_size: int,
+    target_column: str,
     logging_enabled: bool = True,
 ) -> tuple:
     """
-    hyperparams_map.json'dan veri boyutuna en yakın parametreleri yükler.
+    hyperparams_map.json'dan, hedef sütun adına (target_column) göre eşleşen
+    parametreleri yükler.
 
-    JSON'daki her entry'nin 'row_count' alanına göre en yakın büyük bucket
-    seçilir. Hiçbiri uymuyorsa en büyük bucket kullanılır.
+    Öncelik: JSON içindeki her entry'nin 'target_column' alanı, fonksiyona
+    geçilen target_column ile birebir eşleşiyor mu diye kontrol edilir.
+    Böylece 09:00 modeli her zaman kendi optimize edilmiş bucket'ını,
+    17:00 modeli de kendi bucket'ını alır — data_size üzerinden dolaylı
+    (ve yanlış eşleşmeye açık) bir kıyaslamaya gerek kalmaz.
+
+    Eşleşme bulunamazsa (ör. JSON eskidir / bu target_column için henüz
+    optimize edilmiş bir bucket yoktur), B Planı olarak eski row_count
+    tabanlı en-yakın-bucket mantığına düşülür. O da başarısız olursa
+    sabit fallback parametreler kullanılır.
 
     optimize.py ile yeni bucket'lar eklendiğinde bu fonksiyon
     otomatik olarak onları da kullanır — kod değişikliği gerekmez.
@@ -66,22 +76,47 @@ def _load_hyperparams(
         # Fallback: makul varsayılanlar
         if data_size < 50_000:
             p = {"iterations": 1000, "depth": 4, "learning_rate": 0.0476}
-            label = "FALLBACK-SMALL"
+            label = "FALLBACK-SMALL (JSON bulunamadı)"
         else:
             p = {"iterations": 900,  "depth": 6, "learning_rate": 0.0146}
-            label = "FALLBACK-LARGE"
+            label = "FALLBACK-LARGE (JSON bulunamadı)"
     else:
-        with open(map_path) as f:
+        with open(map_path, encoding="utf-8") as f:
             hmap = json.load(f)
 
-        # row_count'a göre sırala, data_size'a en uygun bucket'ı seç
-        entries = sorted(hmap.values(), key=lambda e: e["row_count"])
-        selected = entries[0]
+        entries = list(hmap.values())
+
+        # --- 1. Öncelikli eşleşme: target_column birebir aynı mı? ---
+        selected = None
         for entry in entries:
-            if data_size >= entry["row_count"]:
+            if entry.get("target_column") == target_column:
                 selected = entry
-        p     = selected["params"]
-        label = f"JSON ({selected['row_count']:,} satır bucket, WAPE={selected.get('best_wape', '?')})"
+                break
+
+        if selected is not None:
+            p     = selected["params"]
+            label = (
+                f"JSON (target_column='{target_column}' eşleşti, "
+                f"{selected['row_count']:,} satır, WAPE={selected.get('best_wape', '?')})"
+            )
+        else:
+            # --- 2. Fallback (B Planı): eski row_count tabanlı en-yakın-bucket ---
+            if logging_enabled:
+                logger.warning(
+                    f"⚠️  hyperparams_map.json içinde target_column='{target_column}' "
+                    f"ile eşleşen bir bucket bulunamadı — row_count tabanlı B Planı'na "
+                    f"düşülüyor (veri: {data_size:,} satır)."
+                )
+            entries_sorted = sorted(entries, key=lambda e: e["row_count"])
+            selected = entries_sorted[0]
+            for entry in entries_sorted:
+                if data_size >= entry["row_count"]:
+                    selected = entry
+            p     = selected["params"]
+            label = (
+                f"JSON (B Planı — row_count bucket eşleşmesi, "
+                f"{selected['row_count']:,} satır, WAPE={selected.get('best_wape', '?')})"
+            )
 
     iterations    = int(p["iterations"])
     depth         = int(p["depth"])
@@ -135,6 +170,19 @@ class DemandForecaster(BaseForecaster):
     ----------
     target_column : str
         Tahmin edilecek hedef sütun. Varsayılan: "desi_hacmi"
+    sibling_target_column : str, optional
+        Wide-format iki-slotlu akışta (09:00 / 17:00) DİĞER slotun hedef
+        sütun adı. Bu sınıf hâlâ tek bir hedefi tahmin eder, ama artık
+        diğer slotun sütununun kendisi için feature mi yoksa leakage mi
+        olduğunu bilmesi gerekir (bkz. _get_drop_columns).
+        ⚠️  ZORUNLU: None bırakılırsa fit() hata fırlatır.
+        09:00 modeli   → target_column="toplam_desi_0900", sibling_target_column="toplam_desi_1700"
+        17:00 modeli   → target_column="toplam_desi_1700", sibling_target_column="toplam_desi_0900"
+    slot_label : str, optional
+        Bu model instance'ının insan-okunur slot etiketi (ör. "09:00" / "17:00").
+        predict() çıktısındaki "slot" alanında ve log tablolarında kullanılır.
+        Verilmezse target_column'dan otomatik türetilmeye çalışılır
+        (toplam_desi_0900 → "09:00", toplam_desi_1700 → "17:00").
     date_column : str
         Tarih sütunu adı. Varsayılan: "tarih"
     group_column : str, optional
@@ -151,7 +199,9 @@ class DemandForecaster(BaseForecaster):
     depth : int
         CatBoost ağaç derinliği. Varsayılan: 6
     lags : List[int]
-        Feature engineering lag günleri. Varsayılan: [1, 7, 14, 30]
+        Feature engineering lag günleri. Varsayılan: [1, 7, 14]
+        (run_forecast.py / optimize.py artık veri büyüklüğüne göre lag_21/lag_30'u
+        select_lags() ile otomatik ekleyip açıkça geçiyor — bkz. o dosyalardaki not)
     rolling_windows : List[int]
         Rolling istatistik pencereleri. Varsayılan: [7, 14]
     underestimation_penalty : float
@@ -185,9 +235,21 @@ class DemandForecaster(BaseForecaster):
     >>> # [{"tarih": "2026-01-08", "TM_ID": "IST-01", "q10": 120, ...}, ...]
     """
 
+    # 09:00 modelinin hedef sütun adı — cross_lag_0900_same_day sütununun
+    # (features.py: pl.col(slot_0900).alias("cross_lag_0900_same_day")) hangi
+    # slotun birebir kopyası olduğunu tespit etmek için kullanılır.
+    # TODO(run_forecast.py adımı): Bu sabiti burada tekrar tanımlamak yerine
+    # run_forecast.py / features.py'deki TARGET_COL_0900 sabitini import edip
+    # kullanmak daha sağlam olur (typo riskini azaltır). Şimdilik string olarak
+    # sabitleniyor — rehberde bu nokta ayrıca işaretlendi.
+    _TARGET_COL_0900 = "toplam_desi_0900"
+    _CROSS_LAG_0900_COL = "cross_lag_0900_same_day"
+
     def __init__(
         self,
         target_column: str = "desi_hacmi",
+        sibling_target_column: Optional[str] = None,
+        slot_label: Optional[str] = None,
         date_column: str = "tarih",
         group_column: Optional[str] = "TM_ID",
         train_test_split: float = 0.8,
@@ -218,11 +280,13 @@ class DemandForecaster(BaseForecaster):
         self.l2_leaf_reg           = 10.0   # JSON'dan yüklenince fit() içinde üzerine yazılır
         self.bagging_temperature   = 0.3    # JSON'dan yüklenince fit() içinde üzerine yazılır
         self.optimized_alpha_      = 0.50   # JSON'dan yüklenince fit() içinde üzerine yazılır (v4)
-        self.lags                  = lags or [1, 7, 14]
+        self.lags                  = lags or [1, 7, 14]  # güvenli varsayılan; run_forecast.py/optimize.py artık select_lags() ile veri büyüklüğüne göre açıkça geçiyor
         self.rolling_windows       = rolling_windows or [7, 14]
         self.underestimation_penalty = underestimation_penalty
         self.outlier_clip_multiplier = outlier_clip_multiplier
         self.log_transform_enabled   = log_transform_enabled
+        self.sibling_target_column   = sibling_target_column
+        self.slot_label              = slot_label or self._infer_slot_label(target_column)
 
         # Runtime'da dolacak
         self.model_: CatBoostRegressor = None
@@ -235,6 +299,79 @@ class DemandForecaster(BaseForecaster):
         # Her grup için son max(lags) satır + max(rolling_windows) satır
         # tutulur; fillna(0) yanılgısı bu sayede ortadan kalkar.
         self.context_buffer_: Optional[pd.DataFrame] = None
+
+    # -----------------------------------------------------------------------
+    # Slot-farkındalığı yardımcıları
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _infer_slot_label(target_column: str) -> Optional[str]:
+        """
+        target_column'dan insan-okunur slot etiketi türetir.
+
+        Açık bir slot_label verilmediğinde otomatik çıkarım için kullanılır.
+        Sütun adı formatına bağımlı olduğundan kırılgandır — mümkünse
+        çağıran taraf (run_forecast.py) slot_label'ı açıkça geçmeli.
+        """
+        if target_column == "toplam_desi_0900":
+            return "09:00"
+        if target_column == "toplam_desi_1700":
+            return "17:00"
+        return None
+
+    def _get_drop_columns(self, available_columns) -> List[str]:
+        """
+        Slot-farkındalıklı drop kolonlarını TEK bir yerden belirler.
+
+        Hem _split_X_y (fit sırasında train/test/fold ayrımı) hem de
+        predict() bu metodu çağırır — kod tekrarı önlenir, kural
+        değişirse tek yerden değişir (rehberin önerdiği en kritik refactor).
+
+        Kural
+        -----
+        - date_column            : HER ZAMAN drop edilir (leakage — model
+                                    tarihi doğrudan feature olarak görmemeli).
+        - target_column          : HER ZAMAN drop edilir (y olarak ayrılır).
+        - sibling_target_column  :
+            * Bu model 09:00 modeliyse (target_column == 09:00 hedefi):
+              DAİMA drop edilir. Çünkü 17:00 talebi, 09:00 tahmini yapıldığı
+              anda henüz gerçekleşmemiştir → kesin leakage.
+            * Bu model 17:00 modeliyse: DROP EDİLMEZ. 17:00 tahmini
+              yapıldığı anda sabahki (09:00) talep zaten gerçekleşmiştir,
+              dolayısıyla meşru bir feature'dır (features.py docstring'i
+              bunu açıkça destekler).
+        - cross_lag_0900_same_day (toplam_desi_0900'ün birebir kopyası,
+          bkz. features.py: pl.col(slot_0900).alias("cross_lag_0900_same_day")):
+            * 09:00 modeli için: kendi hedefinin trivial/sahte-mükemmel bir
+              kopyası olduğundan KESİNLİKLE drop edilir.
+            * 17:00 modeli için: toplam_desi_0900 zaten feature olarak
+              tutulduğundan bu sütun onun yedek bir kopyasıdır — zararsızdır,
+              tutulur (CatBoost fazladan kolonu sorunsuz idare eder ve ayrı
+              isim taşıması ileride hata ayıklamayı kolaylaştırır).
+
+        Parameters
+        ----------
+        available_columns : df.columns gibi bir iterable — sadece gerçekten
+            mevcut olan sütunlar drop listesine dahil edilir.
+
+        Returns
+        -------
+        List[str] : df.drop(columns=...) için hazır, mevcut sütunlarla
+            filtrelenmiş drop listesi.
+        """
+        is_0900_model = self.target_column == self._TARGET_COL_0900
+
+        drop_cols: List[str] = [self.date_column, self.target_column]
+
+        if self.sibling_target_column and is_0900_model:
+            # 17:00 modeli için sibling (toplam_desi_0900) BİLEREK drop edilmez.
+            drop_cols.append(self.sibling_target_column)
+
+        if is_0900_model:
+            drop_cols.append(self._CROSS_LAG_0900_COL)
+
+        available = set(available_columns)
+        return [c for c in drop_cols if c in available]
 
     # -----------------------------------------------------------------------
     # BaseForecaster abstract method: _build_model
@@ -418,10 +555,34 @@ class DemandForecaster(BaseForecaster):
         Returns
         -------
         pd.DataFrame : Feature matrix (kategorikler STRING olarak kalır)
+
+        Notlar
+        ------
+        Yeni features.py imzası `target_columns` (çoğul, Union[str, List[str]])
+        bekliyor. Burada TEK bir hedef değil, HER İKİ slotun hedef sütununu
+        birden geçiyoruz — çünkü build_feature_matrix'in iç mekanizması
+        (hub/graph/hiyerarşik özellikler, cross-lag) her iki hedefin de
+        var olmasını bekliyor; sadece kendi hedefini görseydi, diğer slotun
+        bilgisini feature'a hiç dönüştüremezdi.
+
+        Bunun sonucu olarak üretilen matriste her iki hedef sütun da
+        (toplam_desi_0900 ve toplam_desi_1700) ve bunların lag/rolling'leri
+        suffix'li olarak (lag_1_0900, lag_1_1700, ...) bulunur. Hangisinin bu
+        model instance'ı için "gerçek hedef", "feature" veya "tamamen drop"
+        olduğuna _get_drop_columns() / _split_X_y() karar verir.
         """
+        if not self.sibling_target_column:
+            raise ValueError(
+                "❌ sibling_target_column zorunludur — wide format "
+                "iki-slotlu akış (09:00/17:00) için hem kendi hedefin hem "
+                "diğer slotun hedef sütun adı gerekir.\n"
+                "   Örn: DemandForecaster(target_column='toplam_desi_0900', "
+                "sibling_target_column='toplam_desi_1700')"
+            )
+
         return build_feature_matrix(
             df=df,
-            target_column=self.target_column,
+            target_columns=[self.target_column, self.sibling_target_column],
             date_column=self.date_column,
             group_column=self.group_column,
             lags=self.lags,
@@ -435,11 +596,12 @@ class DemandForecaster(BaseForecaster):
         """
         Feature matrix'ten X ve y'yi ayırır.
 
-        Modele girmeyen sütunları (date, target) X'ten çıkarır.
-        Bu sayede date sütunu tahmine sızmaz (leakage önlemi).
+        Modele girmeyen sütunları (date, target ve slot-farkındalıklı
+        leakage sütunları) X'ten çıkarır — bkz. _get_drop_columns().
+        Bu sayede date sütunu ve (09:00 modeli için) sibling/cross-lag
+        sütunları tahmine sızmaz (leakage önlemi).
         """
-        drop_cols = [self.target_column, self.date_column]
-        drop_cols = [c for c in drop_cols if c in df.columns]
+        drop_cols = self._get_drop_columns(df.columns)
 
         X = df.drop(columns=drop_cols)
         y = df[self.target_column]
@@ -478,9 +640,23 @@ class DemandForecaster(BaseForecaster):
         data_size = len(df)
         self.iterations, self.depth, self.learning_rate, self.l2_leaf_reg, \
             self.bagging_temperature, self.optimized_alpha_, config_label = \
-            _load_hyperparams(data_size, self.logging_enabled)
+            _load_hyperparams(data_size, self.target_column, self.logging_enabled)
 
         # --- 1. Validasyon ---
+
+        # sibling_target_column zorunlu (base class bunu bilmiyor, burada kontrol ediyoruz)
+        if not self.sibling_target_column:
+            raise ValueError(
+                "❌ sibling_target_column zorunludur — wide format iki-slotlu "
+                "akış (09:00/17:00) için hem kendi hedefin hem diğer slotun "
+                "hedef sütun adı gerekir."
+            )
+        if self.sibling_target_column not in df.columns:
+            raise ValueError(
+                f"❌ df içinde sibling_target_column ('{self.sibling_target_column}') "
+                f"bulunamadı. Ham veri (full_df) her iki slotun hedef sütununu da "
+                f"içermelidir — build_feature_matrix ikisini de bekler."
+            )
 
         self._validate_input(df)
 
@@ -502,6 +678,31 @@ class DemandForecaster(BaseForecaster):
 
         # --- 3. Train/Test Split (walk-forward, zaman sıralı) ---
         train_df, test_df = self._train_test_split(df_features)
+
+        # --- 3.5 Anormal Hafta Tespiti (optimize.py ile BİREBİR AYNI mantık) ---
+        # Amaç: forecasters.py'nin kendi self-evaluation'ı (bu split, ör. son ~%15
+        # gün) ile optimize.py'nin raporladığı "best_wape_clean" (kendi Fold-4
+        # penceresi) arasında adil bir karşılaştırma yapılabilmesi. optimize.py
+        # zaten haftalık ortalama hacmin genel ortalamanın 1.4 katını aştığı
+        # haftaları (tatil/kampanya birikimi vb.) "anormal" sayıp WAPE'den dışlıyor;
+        # forecasters.py'nin kendi "WAPE (tatil hariç)" hesabı ise sadece
+        # is_holiday/Pazar bayrağını dışlıyordu — daha dar bir filtreydi. Aşağıda
+        # aynı 1.4x eşiğini uygulayıp _evaluate_on_test()'e aktarıyoruz ki
+        # "temiz WAPE" gerçekten optimize.py'nin metriğiyle kıyaslanabilir olsun.
+        self._abnormal_weeks_ = set()
+        if self.target_column in df_features.columns and self.date_column in df_features.columns:
+            _weekly_src = df_features[df_features[self.target_column] > 0].copy()
+            if not _weekly_src.empty:
+                _weekly_src["_week"] = _weekly_src[self.date_column].dt.isocalendar().week.astype(int)
+                _weekly_src["_year"] = _weekly_src[self.date_column].dt.year
+                _wk_means = _weekly_src.groupby(["_year", "_week"])[self.target_column].mean()
+                _wk_threshold = _wk_means.mean() * 1.4
+                self._abnormal_weeks_ = set(_wk_means[_wk_means > _wk_threshold].index)
+                if self.logging_enabled and self._abnormal_weeks_:
+                    logger.info(
+                        f"⚠️  Anormal haftalar tespit edildi (optimize.py ile aynı eşik, "
+                        f"ort. × 1.4): {sorted(self._abnormal_weeks_)}"
+                    )
 
         # --- 4. Veri Temizleme — SADECE train üzerinde fit et (leakage önlemi) ---
         # IQR eşikleri yalnızca train_df'ten öğrenilir.
@@ -541,6 +742,18 @@ class DemandForecaster(BaseForecaster):
                 log_transform = False,
             )
 
+        # Test satırlarının anormal-hafta maskesi — date_column X_test'ten
+        # düşürülmeden ÖNCE hesaplanmalı (bkz. 3.5 adımı).
+        abnormal_week_mask_test: Optional[np.ndarray] = None
+        if self._abnormal_weeks_ and self.date_column in test_df.columns:
+            _test_dates = pd.to_datetime(test_df[self.date_column])
+            _test_years = _test_dates.dt.year
+            _test_weeks = _test_dates.dt.isocalendar().week.astype(int)
+            abnormal_week_mask_test = np.array([
+                (y, w) in self._abnormal_weeks_
+                for y, w in zip(_test_years, _test_weeks)
+            ])
+
         X_train, y_train = self._split_X_y(train_df)
         X_test,  y_test  = self._split_X_y(test_df)
 
@@ -558,11 +771,17 @@ class DemandForecaster(BaseForecaster):
 
         # --- 4. Zaman Serisi Cross-Validation ve Ensemble Eğitimi ---
         # 4 Fold (7'şer günlük) — her biri farklı haftayı validation seti olarak kullanır
+        # NOT: Bu pencereler, gerçek tahmin penceresine (PREDICT_START/END =
+        # 2026-06-29 → 2026-07-05, run_forecast.py) en yakın, veri içindeki son
+        # 4 tam hafta olacak şekilde seçildi — optimize.py'deki FOLD_DATES ile
+        # BİREBİR AYNI tutulmalı (aksi halde optimize.py'nin bulduğu hiperparametreler
+        # bu fold pencerelerinde eğitilen gerçek modelden farklı bir dönem için
+        # tuned olur).
         fold_dates = [
-            ("Fold 1", "2026-04-14", "2026-04-20"),
-            ("Fold 2", "2026-04-21", "2026-04-27"),
-            ("Fold 3", "2026-04-28", "2026-05-04"),
-            ("Fold 4", "2026-05-05", "2026-05-10"),
+            ("Fold 1", "2026-05-31", "2026-06-06"),
+            ("Fold 2", "2026-06-07", "2026-06-13"),
+            ("Fold 3", "2026-06-14", "2026-06-20"),
+            ("Fold 4", "2026-06-21", "2026-06-27"),
         ]
         self.models_: List[CatBoostRegressor] = []
 
@@ -585,9 +804,14 @@ class DemandForecaster(BaseForecaster):
                     logger.warning(f"   ⚠️  {fold_name}: Train veya Val seti boş, atlanıyor.")
                 continue
 
-            X_fold_train = fold_train_df.drop(columns=[self.date_column, self.target_column], errors="ignore")
+            # NOT: Burada da _get_drop_columns() kullanılıyor (önceden burada
+            # sadece [date_column, target_column] drop ediliyordu — bu, sibling
+            # target ve cross_lag_0900_same_day sütunlarının 09:00 modelinin
+            # fold eğitimlerine LEAKAGE olarak sızmasına yol açan bir hataydı;
+            # _split_X_y ile aynı kurala bağlanarak düzeltildi).
+            X_fold_train = fold_train_df.drop(columns=self._get_drop_columns(fold_train_df.columns))
             y_fold_train = fold_train_df[self.target_column]
-            X_fold_val   = fold_val_df.drop(columns=[self.date_column, self.target_column], errors="ignore")
+            X_fold_val   = fold_val_df.drop(columns=self._get_drop_columns(fold_val_df.columns))
             y_fold_val   = fold_val_df[self.target_column]
 
             # Sütun uyumunu garantile
@@ -620,16 +844,22 @@ class DemandForecaster(BaseForecaster):
 
             fold_model.fit(
                 fold_train_pool,
-                eval_set=fold_val_pool,
-                early_stopping_rounds=50,
+                eval_set=fold_val_pool,   # sadece izleme/log amaçlı — aşağıdaki use_best_model=False ile durdurmuyor
+                use_best_model=False,
+                # ⚠️ KRİTİK: eval_set verilip use_best_model açıkça False yapılmazsa,
+                # CatBoost varsayılan olarak use_best_model=True kullanır ve modeli
+                # sessizce en iyi validation-skorlu iterasyona geri sarar — early_stopping_rounds
+                # kaldırılmış olsa bile! Önceki denemede tam olarak bu oldu: early_stopping_rounds
+                # kaldırıldı ama use_best_model=False unutulduğu için sonuç birebir aynı çıktı.
+                # Artık gerçekten her fold sabit self.iterations kadar eğitiliyor.
                 verbose=False,
             )
 
-            best_iter = fold_model.get_best_iteration()
+            best_iter = self.iterations
             if self.logging_enabled:
                 logger.info(
                     f"   ✅ {fold_name} eğitildi | "
-                    f"Durma İterasyonu: {best_iter} / {self.iterations}"
+                    f"Sabit iterasyon: {self.iterations} (use_best_model=False — gerçekten sabit)"
                 )
 
             self.models_.append(fold_model)
@@ -657,7 +887,10 @@ class DemandForecaster(BaseForecaster):
         # --- 6. Self-Evaluation ---
         if len(X_test) > 0:
             # Overfit analizi için X_train ve y_train'i de gönderiyoruz
-            self._evaluate_on_test(X_test, y_test, X_train, y_train)
+            self._evaluate_on_test(
+                X_test, y_test, X_train, y_train,
+                abnormal_week_mask=abnormal_week_mask_test,
+            )
 
         total_elapsed = time.time() - t_start
         if self.logging_enabled:
@@ -750,11 +983,9 @@ class DemandForecaster(BaseForecaster):
                 .bfill()
             )
 
-        # X'i hazırla (target ve date çıkar)
-        drop_cols = [
-            c for c in [self.target_column, self.date_column]
-            if c in df_features.columns
-        ]
+        # X'i hazırla (target, date ve slot-farkındalıklı leakage sütunlarını çıkar)
+        # _split_X_y (fit) ile AYNI kuralı kullanır — bkz. _get_drop_columns().
+        drop_cols = self._get_drop_columns(df_features.columns)
         X_pred = df_features.drop(columns=drop_cols)
 
         # Eksik feature sütunlarını sıfırla tamamla (train ile uyumsuzluk güvencesi)
@@ -838,6 +1069,10 @@ class DemandForecaster(BaseForecaster):
             record: Dict[str, Any] = {
                 self.date_column:       date_vals[i],
                 self.group_column:      str(group_vals[i]) if group_vals[i] else None,
+                # Slot bilgisi: iki instance (09:00/17:00) aynı formatta sonuç
+                # üretince hangi tahminin hangi slota ait olduğu kaybolmasın
+                # diye eklendi — uncertainty.py ve run_forecast.py buna bağımlı.
+                "slot":                 self.slot_label,
                 "q10":                  round(float(q10_vals[i]), 4),
                 "q50":                  round(float(q50_vals[i]), 4),
                 "q90":                  round(float(q90_vals[i]), 4),
@@ -875,9 +1110,18 @@ class DemandForecaster(BaseForecaster):
         Grup sütunu varsa her grup için ayrı ayrı son N satır alınır;
         böylece farklı TM_ID'lerin geçmişleri birbirine karışmaz.
 
+        ⚠️  VARSAYIM (wide-format iki-slotlu akış): `df` (run_forecast.py'den
+        gelen ham full_df) her iki hedef sütununu da (toplam_desi_0900 ve
+        toplam_desi_1700) içermelidir. df.groupby(...).tail(buffer_size)
+        tüm sütunları taşıdığı için bu fonksiyonun kendisi değişmedi —
+        ama varsayım burada açıkça belirtiliyor, çünkü _prepend_context_buffer
+        ve _engineer_features bu varsayıma bağımlı çalışıyor (build_feature_matrix
+        her iki hedefin de var olmasını bekliyor).
+
         Parameters
         ----------
-        df : Ham eğitim DataFrame'i (feature engineering öncesi)
+        df : Ham eğitim DataFrame'i (feature engineering öncesi), her iki
+             hedef sütunu da (target_column + sibling_target_column) içermeli.
         """
         # Kaç satır geriye bakmalıyız?
         buffer_size = max(self.lags) + max(self.rolling_windows)
@@ -923,9 +1167,19 @@ class DemandForecaster(BaseForecaster):
         Buffer yoksa (model henüz fit edilmemiş veya buffer kaydedilmemiş)
         orijinal DataFrame'i değiştirmeden döndürür.
 
+        ⚠️  VARSAYIM (wide-format iki-slotlu akış): predict() için hazırlanan
+        `df`, hem target_column hem sibling_target_column'u (adı ve tipiyle)
+        içermek ZORUNDADIR — ikisi de NaN/0 olabilir ama sütun olarak mevcut
+        olmalı. Aksi halde build_feature_matrix hata verir veya eksik sütun
+        uydurmaya çalışır. Bu, run_forecast.py'nin build_predict_grid()
+        fonksiyonunun tahmin ızgarasına her iki hedef sütununu da koyup
+        koymadığının kontrol edilmesini gerektirir (run_forecast.py adımında
+        netleştirilecek).
+
         Parameters
         ----------
-        df : Ham tahmin DataFrame'i
+        df : Ham tahmin DataFrame'i — hem target_column hem
+             sibling_target_column sütunlarını (NaN olsa da) içermeli.
 
         Returns
         -------
@@ -969,10 +1223,21 @@ class DemandForecaster(BaseForecaster):
         y_test: pd.Series,
         X_train: Optional[pd.DataFrame] = None,
         y_train: Optional[pd.Series] = None,
+        abnormal_week_mask: Optional[np.ndarray] = None,
     ) -> Dict[str, float]:
         """
         Test ve Train setleri üzerinde WAPE ve Decision Regret hesaplar,
         raporlama ve sunumlar için aşırı öğrenme (overfit) analizi basar.
+
+        Parameters
+        ----------
+        abnormal_week_mask : optimize.py ile aynı yöntemle (haftalık ortalama
+            > genel ortalama × 1.4) işaretlenmiş anormal-hafta maskesi.
+            Verilirse "WAPE (temiz)" hesabından bu satırlar da dışlanır —
+            böylece bu metrik, optimize.py'nin raporladığı "best_wape_clean"
+            ile gerçekten kıyaslanabilir hale gelir (aksi halde iki WAPE
+            farklı istisna kümeleriyle hesaplanıp yanıltıcı şekilde
+            karşılaştırılabiliyordu).
         """
         # --- TEST SETİ DEĞERLENDİRMESİ ---
         test_pool = Pool(data=X_test, cat_features=self.cat_features_)
@@ -1025,12 +1290,25 @@ class DemandForecaster(BaseForecaster):
             else:
                 sunday_mask = np.zeros(len(y_true_test), dtype=bool)
             normal_mask = ~(holiday_mask | sunday_mask)
+            # [Entegrasyon] optimize.py'nin anormal-hafta filtresi (ort. × 1.4)
+            # de aynı "temiz" tanımına dahil edilir — aksi halde bu metrik
+            # optimize.py'nin best_wape_clean'iyle kıyaslanamaz kalırdı.
+            n_abnormal_excluded = 0
+            if abnormal_week_mask is not None and len(abnormal_week_mask) == len(normal_mask):
+                abnormal_arr = np.asarray(abnormal_week_mask, dtype=bool)
+                n_abnormal_excluded = int((abnormal_arr & normal_mask).sum())
+                normal_mask = normal_mask & ~abnormal_arr
             if normal_mask.sum() >= 10:
                 wape_clean = (
                     float(np.sum(np.abs(y_true_test[normal_mask] - q50_preds_test[normal_mask]))
                           / np.sum(y_true_test[normal_mask]))
                     if np.sum(y_true_test[normal_mask]) > 0 else 0.0
                 )
+                if self.logging_enabled and n_abnormal_excluded > 0:
+                    logger.info(
+                        f"   ℹ️  WAPE (temiz) hesabından ayrıca {n_abnormal_excluded} "
+                        f"anormal-hafta günü dışlandı (optimize.py ile tutarlı tanım)."
+                    )
 
         diff_test = y_true_test - q50_preds_test
         regret_test = np.where(
@@ -1091,8 +1369,9 @@ class DemandForecaster(BaseForecaster):
                 status = "⚠️ OVERFIT"
 
             clean_note = f"{wape_clean:<12.4%}" if wape_clean != wape_test else f"{'(tatil yok)':<12}"
+            slot_note = f" — Slot: {self.slot_label}" if self.slot_label else ""
             log_table = (
-                f"\n📊 MODEL PERFORMANS VE OVERFIT ANALİZİ (q50):\n"
+                f"\n📊 MODEL PERFORMANS VE OVERFIT ANALİZİ (q50){slot_note}:\n"
                 f"   ┌───────────────────┬──────────────┬──────────────┬──────────────┐\n"
                 f"   │ Metrik            │ Train Seti   │ Test Seti    │ Durum        │\n"
                 f"   ├───────────────────┼──────────────┼──────────────┼──────────────┤\n"
@@ -1147,6 +1426,8 @@ class DemandForecaster(BaseForecaster):
             "underestimation_penalty": self.underestimation_penalty,
             "outlier_clip_multiplier": self.outlier_clip_multiplier,
             "log_transform_enabled":   self.log_transform_enabled,
+            "sibling_target_column":   self.sibling_target_column,
+            "slot_label":              self.slot_label,
         })
         return base_params
 
@@ -1159,7 +1440,8 @@ class DemandForecaster(BaseForecaster):
             "=" * 55,
             f"  Durum           : {status}",
             f"  Mimari          : {'Ensemble (' + str(len(self.models_)) + ' fold model)' if self.is_fitted_ and self.models_ else 'Tekli Model'}",
-            f"  Hedef           : {self.target_column}",
+            f"  Hedef           : {self.target_column}" + (f" (Slot: {self.slot_label})" if self.slot_label else ""),
+            f"  Sibling Hedef   : {self.sibling_target_column or '⚠️  YOK (zorunlu!)'}",
             f"  Grup            : {self.group_column}",
             f"  Horizon         : {self.forecast_horizon} gün",
             f"  Iterations      : {self.iterations}",

@@ -1,120 +1,92 @@
-# RouteTech Lojistik Projesi
+# RouteTech Lojistik - Anahat Optimizasyonu
 
-Bu klasor, yapay zeka destekli lojistik anahat optimizasyonu yarismasi icin
-veri okuma, mesafe hesaplama ve baseline talep tahmini akisini icerir.
+Yapay zeka destekli lojistik anahat optimizasyonu yarışması projesidir.
+ML tabanlı talep tahmini ve OR-Tools ile araç/rota optimizasyonu içerir.
 
-`src/optimization.py` eski haliyle korunmustur. Ahmet bu dosyayi OR-Tools ile
-iyilestirdikten sonra ana pipeline'a optimizasyon adimi baglanacaktir.
-`main.py` optimizasyonu calistirmaz; optimizasyon motoru icin girdi paketini hazirlar.
+## Toplam Maliyet Sonucu
 
-## Su Anki Ana Akis
+**Toplam Maliyet: 7,176,211 TL**
 
-`main.py` su islemleri yapar:
+| Kalem | Tutar (TL) |
+|---|---|
+| Kiralık araç sabit maliyeti | 802.704 |
+| Spot araç maliyeti (direkt) | 2,643,666 |
+| Spot araç maliyeti (uğrama) | 3,478,709 |
+| SLA gecikme cezası | 251,132 |
 
-1. `data/raw` altindaki Excel dosyalarini kolon semasina gore bulur.
-2. Talep, koordinat, kiralik arac ve arac maliyet tablolarini standart kolonlara cevirir.
-3. `haversine/haversine.py` ile rota mesafelerini hesaplar.
-4. `src/predict_model/run_forecast.py` motorunu calistirir ve yeni `alns_payload.json` uretir.
-5. Yeni JSON'daki rotalara gore mesafe ve ugrama adaylarini uretir.
-6. Arac maliyetleri ve kiralik limitlerini standart formatta yazar.
-7. OR-Tools icin `optimization_input.json` paketini olusturur.
+| İstatistik | Değer |
+|---|---|
+| Toplam araç sayısı | 443 |
+| Direkt kiralık araç | 98 |
+| Direkt spot araç | 162 |
+| Uğrama spot araç | 183 |
+| Toplam ertelenen yük | 62,783 desi |
+| Çözücü süresi | ~451 sn |
 
-Tahmin JSON'u ana girdidir. Baseline forecast ana akista kullanilmaz.
+## Test Ortamı
 
-Su anda arac optimizasyonu ana akista kapali.
+- **İşlemci**: AMD Ryzen 7 7735HS (16 thread, ~3.2 GHz)
+- **RAM**: 32 GB DDR5
+- **İşletim Sistemi**: Windows 11 Home 10.0.26200
+- **Cihaz**: ASUS TUF Gaming A15 FA507NV
+- **OR-Tools Çözücü Süresi**: 450 sn (max_time_seconds)
 
-## Klasor Yapisi
+## Pipeline
+
+1. **Talep Tahmini** (`src/predict_model/run_forecast.py`): Eğitilmiş `.joblib` model ile haftalık desi tahmini üretir.
+2. **Veri Hazırlama** (`main.py`): Excel girdilerini okur, mesafe matrisi hesaplar, optimizasyon girdisini paketler.
+3. **Optimizasyon** (`src/optimization.py`): OR-Tools CP-SAT ile araç atama, rota seçimi ve maliyet minimizasyonu yapar. Tüm CPU çekirdeklerini kullanır.
+
+## %10 Minimum Doluluk Kuralı ve Son Gün Yaklaşımı
+
+Spot araçlar için %10 minimum doluluk kuralı uygulanmaktadır. Doluluk oranını karşılamayan yükler o gün taşımaya alınmaz ve bir sonraki güne ertelenir (SLA cezası uygulanır).
+
+Ancak planlamanın son gününde (17 Mayıs) erteleme yapılacak bir sonraki gün bulunmadığı için, %10 doluluk kısıtı devre dışı bırakılır. Bu sayede kalan tüm yükler son gün teslim edilir ve karşılanmamış talep kalmaz.
+
+## SLA Gecikme Cezası
+
+Ertelenen her desi için 4 TL/desi ceza uygulanmaktadır. Bu ceza olmadan optimizer tüm yükleri sürekli ertelemeye bırakarak maliyeti düşürmeye çalışır. Ceza sayesinde erteleme caydırıcı olur ancak gerektiğinde erteleme yapılmasına da izin verir.
+
+## Klasör Yapısı
 
 ```text
 data/raw/                   Yarışma Excel girdileri
-data/outputs/               main.py çıktıları
+data/outputs/               Pipeline çıktıları (JSON, CSV)
 src/data.py                 Veri okuma ve kolon standardizasyonu
-haversine/haversine.py      Haversine matris ve rota mesafesi hesabi
-src/forecast.py             Baseline talep tahmini
-src/submission.py           CSV cikti yazimi
-src/forecast_payload.py     alns_payload.json -> forecast DataFrame donusumu
-src/optimization.py         Korunan eski OR-Tools deneme modeli
-src/predict_model/          Korunan gelismis ML tahmin calismasi
-scripts/haversine_matrix.py Haversine kontrol scripti
-scripts/build_complete_matrix.py Kesintisiz matris kontrol scripti
+src/optimization.py         OR-Tools CP-SAT optimizasyon modeli
+src/predict_model/          ML tahmin motoru ve eğitilmiş model (.joblib)
+haversine/haversine.py      Haversine mesafe hesabı
 ```
 
-## Calistirma
+## Gereksinimler
+
+- **Python**: 3.8 - 3.12 (önerilen: 3.10, 3.11 veya 3.12)
+- Bağımlılıkların tam listesi: `requirements.txt`
+
+## Çalıştırma
 
 ```bash
+pip install -r requirements.txt
 python main.py
 ```
 
-Farkli tarih araligi:
+Farklı tarih aralığı:
 
 ```bash
 python main.py --start 2026-05-11 --end 2026-05-17
 ```
 
-Calistirma:
-
-```bash
-python main.py
-```
-
-Bu komut once predict_model motorunu calistirir, sonra olusan JSON'u optimizasyon
-girdilerine cevirir.
-
-Mevcut bir JSON'u tekrar kullanmak istersen:
-
-```bash
-python main.py --forecast-json src/predict_model/alns_payload.json
-```
-
-Predict motorunu calistirmadan son JSON'u tekrar kullanmak istersen:
+Mevcut JSON'u tekrar kullanmak için:
 
 ```bash
 python main.py --skip-predict
 ```
 
-Ciktilar:
+## Çıktılar
 
-- `data/outputs/forecast_for_optimization.csv`
-- `data/outputs/route_distances.csv`
-- `data/outputs/stopover_candidates.csv`
-- `data/outputs/vehicle_costs.csv`
-- `data/outputs/rental_limits.csv`
-- `data/outputs/optimization_input.json`
-
-
-## Ugrama ve Konsolidasyon Ayrimi
-
-`stopover_candidates.csv` sadece geometrik olarak makul ugrama adaylarini verir.
-Bir satir `source -> stopover -> destination` rotasinin direkt rotaya gore tolerans
-icinde kaldigini gosterir. Bu, farkli araclarin yuklerini stopover noktasinda
-birlestirme izni degildir. OR-Tools tarafinda bu tablo yalnizca ayni aracin
-multi-stop guzergah secenegi olarak kullanilmalidir.
-- `data/outputs/route_distances.csv`
-
-Yardimci kontrol scriptleri:
-
-```bash
-python scripts/haversine_matrix.py
-python scripts/build_complete_matrix.py
-```
-
-Bu scriptler varsayilan olarak sadece kontrol ciktisi basar. Dosya uretmek icin:
-
-```bash
-python scripts/haversine_matrix.py --save
-python scripts/build_complete_matrix.py --save
-```
-
-## Bagimliliklar
-
-Temel akis:
-
-```bash
-pip install -r requirements.txt
-```
-
-Opsiyonel ML paketleri:
-
-```bash
-pip install -r requirements-ml.txt
-```
+- `data/outputs/optimization_input.json` — Optimizasyon girdisi (hatlar, mesafeler, araç bilgileri)
+- `src/predict_model/ortools_payload.csv` — Optimizasyon modeli için talep tahminleme çıktısı
+- `results/ortools_payload.xlsx` — Jüri için tahmin talepleme çıktısı (Excel formatında)
+- `results/optimization_results.xlsx` — Jüri için araç planlama çıktısı (Excel formatında)
+- `results/optimization_results.csv` — Optimizasyon sonuç verisi
+- `results/optimization_results.txt` — Detaylı sonuç raporu ve maliyet özeti

@@ -122,7 +122,7 @@ def main() -> None:
     parser.add_argument(
         "--max-time-seconds",
         type=float,
-        default=300.0,
+        default=450.0,
         help="Maximum OR-Tools solve time in seconds",
     )
     args = parser.parse_args()
