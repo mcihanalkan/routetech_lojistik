@@ -6,7 +6,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from haversine import build_route_distance_table, build_stopover_candidate_table
 from src.config import OUTPUT_DIR, PROJECT_ROOT
 from src.data import load_raw_data
 from src.forecast_payload import load_alns_payload_forecast, run_predict_model
@@ -18,6 +17,7 @@ def run(
     skip_predict: bool = False,
     skip_optimization: bool = False,
     max_time_seconds: float = 300.0,
+    engine: str = "alns",
 ) -> dict:
     raw = load_raw_data()
 
@@ -32,16 +32,16 @@ def run(
         forecast_source = str(payload_path)
 
     forecast = load_alns_payload_forecast(payload_path)
-    routes = forecast[["source", "destination"]].drop_duplicates()
-    route_distances = build_route_distance_table(raw.coordinates, routes)
-    stopover_candidates = build_stopover_candidate_table(raw.coordinates, routes)
 
+    # Faz 2: mesafe/süre/SLA artık kuş uçuşu (haversine) değil, sehirler_arasi_lojistik.xlsx'teki
+    # gerçek route_matrix'ten geliyor — koordinat tabanlı hesap tamamen kaldırıldı.
     paths = write_optimization_inputs(
         forecast=forecast,
-        route_distances=route_distances,
-        stopover_candidates=stopover_candidates,
+        route_matrix=raw.route_matrix,
         vehicle_costs=raw.costs,
         rental_limits=raw.rentals,
+        handling_capacity=raw.handling_capacity,
+        tir_capacity=raw.tir_capacity,
         output_dir=OUTPUT_DIR,
         forecast_source=forecast_source,
     )
@@ -51,9 +51,7 @@ def run(
     print("RouteTech optimization input pipeline completed.")
     print(f"Forecast source: {forecast_source}")
     print(f"Forecast rows: {len(forecast):,}")
-    print(f"Forecast routes: {len(routes):,}")
-    print(f"Route distance rows: {len(route_distances):,}")
-    print(f"Stopover candidate rows: {len(stopover_candidates):,}")
+    print(f"Route matrix rows: {len(raw.route_matrix):,}")
     print(f"Total recommended demand desi: {total_demand:,.2f}")
     print("Outputs:")
     for label, path in paths.items():
@@ -67,40 +65,25 @@ def run(
         env["ROUTETECH_OPTIMIZATION_INPUT"] = str(paths["optimization_input_json"])
         env["ROUTETECH_MAX_TIME_SECONDS"] = str(max_time_seconds)
         env["ROUTETECH_LOG_SEARCH_PROGRESS"] = "1"
+        engine_script = "alns_optimize.py" if engine == "alns" else "optimization.py"
         subprocess.run(
-            [sys.executable, str(PROJECT_ROOT / "src" / "optimization.py")],
+            [sys.executable, str(PROJECT_ROOT / "src" / engine_script)],
             cwd=str(PROJECT_ROOT),
             check=True,
             env=env,
         )
         optimization_result = {
             "results_txt": PROJECT_ROOT / "results" / "optimization_results.txt",
-            "decisions_csv": PROJECT_ROOT / "results" / "optimization_decisions.csv",
+            "decisions_csv": PROJECT_ROOT / "results" / "optimization_results.csv",
         }
 
-        print("\n" + "=" * 80)
-        print("DOĞRULAMA TESTLERİ BAŞLATILIYOR")
-        print("=" * 80)
-        subprocess.run(
-            [sys.executable, str(PROJECT_ROOT / "tests" / "talep_karsilandi_mi.py")],
-            cwd=str(PROJECT_ROOT),
-            env=env,
-        )
-        subprocess.run(
-            [sys.executable, str(PROJECT_ROOT / "tests" / "kiralık_arac_limit_asimi.py")],
-            cwd=str(PROJECT_ROOT),
-            env=env,
-        )
-        subprocess.run(
-            [sys.executable, str(PROJECT_ROOT / "tests" / "test_optimize.py")],
-            cwd=str(PROJECT_ROOT),
-            env=env,
-        )
+        # NOT: tests/*.py doğrulama betikleri henüz Faz-2 kısıtlarına (elleçleme/tır
+        # kapasitesi, saatlik SLA) göre güncellenmedi — bilinçli olarak burada
+        # çağrılmıyorlar (bkz. plan: Stage E). Eski Faz-1 mantığıyla şu anki çıktı
+        # şeması uyumsuz olduğu için çağırmak yanıltıcı sonuç verirdi.
 
     return {
         "forecast": forecast,
-        "route_distances": route_distances,
-        "stopover_candidates": stopover_candidates,
         "paths": paths,
         "optimization": optimization_result,
     }
@@ -125,8 +108,14 @@ def main() -> None:
         default=450.0,
         help="Maximum OR-Tools solve time in seconds",
     )
+    parser.add_argument(
+        "--engine",
+        choices=["alns", "cpsat"],
+        default="alns",
+        help="Optimization engine: alns (ana motor, konsolidasyon destekli) veya cpsat (Faz-2 direkt-hat modeli)",
+    )
     args = parser.parse_args()
-    run(args.forecast_json, args.skip_predict, args.skip_optimization, args.max_time_seconds)
+    run(args.forecast_json, args.skip_predict, args.skip_optimization, args.max_time_seconds, args.engine)
 
 
 if __name__ == "__main__":

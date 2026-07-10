@@ -8,19 +8,22 @@ import pandas as pd
 
 from src.config import (
     COST_COLUMNS,
-    COORD_COLUMNS,
-    DEMAND_COLUMNS,
+    HANDLING_CAPACITY_COLUMNS,
     RAW_DATA_DIR,
     RENTAL_COLUMNS,
+    ROUTE_MATRIX_COLUMNS,
+    TIR_CAPACITY_COLUMNS,
+    VEHICLE_DURATION_COLUMNS,
 )
 
 
 @dataclass(frozen=True)
 class RawData:
-    demand: pd.DataFrame
-    coordinates: pd.DataFrame
+    route_matrix: pd.DataFrame
     rentals: pd.DataFrame
     costs: pd.DataFrame
+    handling_capacity: pd.DataFrame
+    tir_capacity: pd.DataFrame
 
 
 def _ascii_key(value: object) -> str:
@@ -74,60 +77,49 @@ def _normalize_text_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataFram
 def load_raw_data(data_dir: Path = RAW_DATA_DIR) -> RawData:
     data_dir = Path(data_dir)
 
-    demand_path = _find_excel_by_columns(data_dir, list(DEMAND_COLUMNS.values()))
-    coord_path = _find_excel_by_columns(data_dir, list(COORD_COLUMNS.values()))
+    route_matrix_path = _find_excel_by_columns(data_dir, list(ROUTE_MATRIX_COLUMNS.values()))
     rental_path = _find_excel_by_columns(data_dir, list(RENTAL_COLUMNS.values()))
     cost_path = _find_excel_by_columns(data_dir, list(COST_COLUMNS.values()))
+    handling_path = _find_excel_by_columns(data_dir, list(HANDLING_CAPACITY_COLUMNS.values()))
+    tir_path = _find_excel_by_columns(data_dir, list(TIR_CAPACITY_COLUMNS.values()))
 
-    demand = _rename_columns(pd.read_excel(demand_path), DEMAND_COLUMNS)
-    coordinates = _rename_columns(pd.read_excel(coord_path), COORD_COLUMNS)
+    # _rename_columns only touches columns present in the mapping — the per-vehicle-type
+    # seyir süresi columns (Tir_Suresi_Saat, ...) pass through under their original names
+    # and are looked up later via config.VEHICLE_DURATION_COLUMNS.
+    route_matrix = _rename_columns(pd.read_excel(route_matrix_path), ROUTE_MATRIX_COLUMNS)
     rentals = _rename_columns(pd.read_excel(rental_path), RENTAL_COLUMNS)
     costs = _rename_columns(pd.read_excel(cost_path), COST_COLUMNS)
+    handling_capacity = _rename_columns(pd.read_excel(handling_path), HANDLING_CAPACITY_COLUMNS)
+    tir_capacity = _rename_columns(pd.read_excel(tir_path), TIR_CAPACITY_COLUMNS)
 
-    demand = _normalize_text_columns(demand, ["source", "destination"])
-    coordinates = _normalize_text_columns(coordinates, ["center"])
+    route_matrix = _normalize_text_columns(route_matrix, ["source", "destination"])
     rentals = _normalize_text_columns(rentals, ["source", "destination", "vehicle_type"])
     costs = _normalize_text_columns(costs, ["vehicle_type"])
+    handling_capacity = _normalize_text_columns(handling_capacity, ["center"])
+    tir_capacity = _normalize_text_columns(tir_capacity, ["center"])
 
-    demand["date"] = pd.to_datetime(demand["date"])
-    demand["demand"] = pd.to_numeric(demand["demand"], errors="coerce").fillna(0.0)
-    demand["demand"] = demand["demand"].clip(lower=0.0)
-
-    coordinates["lat"] = pd.to_numeric(coordinates["lat"], errors="raise")
-    coordinates["lon"] = pd.to_numeric(coordinates["lon"], errors="raise")
+    route_matrix["distance_km"] = pd.to_numeric(route_matrix["distance_km"], errors="raise")
+    route_matrix["target_delivery_days"] = pd.to_numeric(
+        route_matrix["target_delivery_days"], errors="raise"
+    )
+    for duration_col in VEHICLE_DURATION_COLUMNS.values():
+        route_matrix[duration_col] = pd.to_numeric(route_matrix[duration_col], errors="raise")
 
     rentals["vehicle_count"] = pd.to_numeric(
         rentals["vehicle_count"], errors="coerce"
     ).fillna(0).astype(int)
 
-    numeric_cost_cols = ["capacity", "rental_fixed", "rental_km", "spot_fixed", "spot_km"]
+    numeric_cost_cols = ["capacity", "rental_hourly", "rental_km", "spot_hourly", "spot_km"]
     for col in numeric_cost_cols:
         costs[col] = pd.to_numeric(costs[col], errors="raise")
 
+    handling_capacity["capacity"] = pd.to_numeric(handling_capacity["capacity"], errors="raise")
+    tir_capacity["capacity"] = pd.to_numeric(tir_capacity["capacity"], errors="raise")
+
     return RawData(
-        demand=demand.sort_values(["source", "destination", "date"]).reset_index(drop=True),
-        coordinates=coordinates.sort_values("center").reset_index(drop=True),
+        route_matrix=route_matrix.sort_values(["source", "destination"]).reset_index(drop=True),
         rentals=rentals.reset_index(drop=True),
         costs=costs.reset_index(drop=True),
+        handling_capacity=handling_capacity.sort_values("center").reset_index(drop=True),
+        tir_capacity=tir_capacity.sort_values("center").reset_index(drop=True),
     )
-
-
-def build_complete_demand_grid(
-    demand: pd.DataFrame,
-    start: str | None = None,
-    end: str | None = None,
-) -> pd.DataFrame:
-    start_date = pd.Timestamp(start) if start else demand["date"].min()
-    end_date = pd.Timestamp(end) if end else demand["date"].max()
-
-    routes = demand[["source", "destination"]].drop_duplicates()
-    dates = pd.DataFrame({"date": pd.date_range(start_date, end_date, freq="D")})
-    grid = routes.merge(dates, how="cross")
-
-    complete = grid.merge(
-        demand[["source", "destination", "date", "demand"]],
-        on=["source", "destination", "date"],
-        how="left",
-    )
-    complete["demand"] = complete["demand"].fillna(0.0)
-    return complete.sort_values(["source", "destination", "date"]).reset_index(drop=True)

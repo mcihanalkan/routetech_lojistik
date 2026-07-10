@@ -549,6 +549,9 @@ def run(save_json: bool = True) -> "pd.DataFrame":
         "Çıkış Transfer Merkezi", "Varış Transfer Merkezi", "Tahmin Edilen Desi",
     ]]
 
+    # --- Toplam Talep Tahmini (desi) — tüm rota/tarih/saat dilimi toplamı ---
+    total_desi_tahmini = float(talep_tahmini_df["Tahmin Edilen Desi"].sum())
+
     OUTPUT_TALEP_XLSX = str(excel_dir / "Talep-tahmini.xlsx")
     talep_tahmini_df.to_excel(OUTPUT_TALEP_XLSX, index=False)
 
@@ -561,6 +564,13 @@ def run(save_json: bool = True) -> "pd.DataFrame":
     for _row in _ws_out.iter_rows(min_row=2, max_row=_ws_out.max_row):
         _row[2].number_format = "h:mm"   # C: Talep Tamamlama Saati
         _row[5].number_format = "0.000"  # F: Tahmin Edilen Desi
+
+    # --- Toplam satırı: veri satırlarından bir boşluk sonra, E/F sütunlarına ---
+    _total_row_idx = _ws_out.max_row + 2
+    _ws_out.cell(row=_total_row_idx, column=5, value="TOPLAM TALEP TAHMİNİ (desi)")
+    _total_cell = _ws_out.cell(row=_total_row_idx, column=6, value=total_desi_tahmini)
+    _total_cell.number_format = "0.000"
+
     _wb_out.save(OUTPUT_TALEP_XLSX)
 
     logger.info(f"📋 Jüri teslim formatı (şablona birebir uygun) kaydedildi: {OUTPUT_TALEP_XLSX}")
@@ -571,6 +581,7 @@ def run(save_json: bool = True) -> "pd.DataFrame":
         f"fark etmez — bu 3 dosya HER çalıştırmada yeniden üretilir)\n"
         f"   Tahmin sayısı  : {len(df_ortools)}\n"
         f"   Tarih aralığı  : {PREDICT_START} → {PREDICT_END}\n"
+        f"   Toplam Talep Tahmini (desi) : {total_desi_tahmini:,.3f}\n"
         f"   1) {OUTPUT_CSV}\n"
         f"   2) {OUTPUT_EXCEL}\n"
         f"   3) {OUTPUT_TALEP_XLSX}\n"
@@ -578,6 +589,7 @@ def run(save_json: bool = True) -> "pd.DataFrame":
     )
     print("\n📋 OR-Tools Payload Örnek (İlk 5 Satır):")
     print(df_ortools.head().to_string(index=False))
+    print(f"\n🔢 Toplam Talep Tahmini (tüm rota/tarih/saat dilimi): {total_desi_tahmini:,.3f} desi")
 
     return df_ortools
 
@@ -587,4 +599,8 @@ def run(save_json: bool = True) -> "pd.DataFrame":
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    run(save_json=False)
+    # save_json=True: main.py -> forecast_payload.run_predict_model() bu betiği
+    # subprocess olarak çalıştırıp alns_payload.json'u okuyor. save_json=False
+    # kalırsa JSON hiç yenilenmez ve (slot bilgisi olmayan, eski tarihli) bayat
+    # bir dosya okunmaya devam eder — Faz 2 slot bazlı optimizasyonun önkoşulu.
+    run(save_json=True)
