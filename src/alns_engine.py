@@ -557,7 +557,7 @@ def force_insert(state: State, hat, gun, slot, desi) -> None:
     """
     src, dst = hat
     data = state.data
-    arac_turu = _pick_vehicle_type(data, desi)[-1]  # en kucuk kapasiteli (esnek) tur
+    arac_turu = _rank_spot_types_by_cost(data, hat, desi)[0]  # bu miktar icin en ucuz tur
     key = (src, dst, gun, slot, arac_turu)
     eski = state.leg_spot_desi.get(key, 0.0)
     kap = data.arac_parametreleri[arac_turu]["kapasite_desi"]
