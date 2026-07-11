@@ -55,11 +55,11 @@ from src.time_model import build_route_lookup  # noqa: E402
 # ============================================================================
 # 1. ORTAM DEĞİŞKENLERİ
 # ============================================================================
-ENV_MAX_TIME = float(os.environ.get("ROUTETECH_MAX_TIME_SECONDS", "300"))
-ENV_VERBOSE = os.environ.get("ROUTETECH_LOG_SEARCH_PROGRESS", "1") == "1"
+ENV_MAX_TIME = float(os.environ.get("ROUTETECH_MAX_TIME_SECONDS", "300")) # Algoritmanın çalışma süresi, terminalden parametre olarak verilebilir
+ENV_VERBOSE = os.environ.get("ROUTETECH_LOG_SEARCH_PROGRESS", "1") == "1" 
 
-DEFAULT_INPUT_JSON = PROJECT_ROOT / "data" / "outputs" / "optimization_input.json"
-INPUT_JSON_PATH = Path(os.environ.get("ROUTETECH_OPTIMIZATION_INPUT", str(DEFAULT_INPUT_JSON)))
+DEFAULT_INPUT_JSON = PROJECT_ROOT / "data" / "outputs" / "optimization_input.json" 
+INPUT_JSON_PATH = Path(os.environ.get("ROUTETECH_OPTIMIZATION_INPUT", str(DEFAULT_INPUT_JSON)))# Optimizasyon input dosyasının path'i
 
 if not INPUT_JSON_PATH.exists():
     raise FileNotFoundError(
@@ -69,23 +69,24 @@ if not INPUT_JSON_PATH.exists():
 with INPUT_JSON_PATH.open("r", encoding="utf-8") as f:
     payload = json.load(f)
 
-df_forecast = pd.DataFrame(payload["forecast"])
-df_route_matrix = pd.DataFrame(payload["route_matrix"])
-df_vehicle_costs = pd.DataFrame(payload["vehicle_costs"])
-df_rental_limits = pd.DataFrame(payload["rental_limits"])
-df_handling_capacity = pd.DataFrame(payload["handling_capacity"])
-df_tir_capacity = pd.DataFrame(payload["tir_capacity"])
+df_forecast = pd.DataFrame(payload["forecast"]) # Tahmin verileri
+df_route_matrix = pd.DataFrame(payload["route_matrix"]) # mesafeler
+df_vehicle_costs = pd.DataFrame(payload["vehicle_costs"]) # araç parametreleri
+df_rental_limits = pd.DataFrame(payload["rental_limits"]) # Kiralık stoklar
+df_handling_capacity = pd.DataFrame(payload["handling_capacity"]) # Elleçleme kapasiteleri
+df_tir_capacity = pd.DataFrame(payload["tir_capacity"]) # Tır kapasiteleri
 
 if df_forecast.empty:
     raise ValueError(f"Forecast payload bos: {INPUT_JSON_PATH}")
 
-route_lookup = build_route_lookup(df_route_matrix)
+route_lookup = build_route_lookup(df_route_matrix) # veri tablosunu hızlı sorgulanabilir bir dict'e çevirir.
 
-arac_turleri = df_vehicle_costs["vehicle_type"].tolist()
+arac_turleri = df_vehicle_costs["vehicle_type"].tolist() 
 tir_arac_turu = next(
     (v for v in arac_turleri if str(v).strip().casefold() in ("tır", "tir")), None
 )
 
+# Araç parametrelerine hızlı erişim için bir sözlük oluşturma.
 arac_parametreleri = {}
 for row in df_vehicle_costs.itertuples():
     arac_parametreleri[row.vehicle_type] = {
@@ -95,7 +96,7 @@ for row in df_vehicle_costs.itertuples():
         "spot_hourly": float(row.spot_hourly),
         "spot_km": float(row.spot_km),
     }
-
+# "(hat,gun) -> kiralik_stok" şeklinde bir dict.
 kiralik_stok_gunluk: dict = {}
 for row in df_rental_limits.itertuples():
     hat = (row.source, row.destination)
@@ -111,7 +112,7 @@ tir_capacity = {row.center: float(row.capacity) for row in df_tir_capacity.itert
 df_forecast = df_forecast.copy()
 df_forecast["date"] = pd.to_datetime(df_forecast["date"])
 df_forecast["gun_key"] = df_forecast["date"].dt.strftime("%Y-%m-%d")
-df_forecast["slot"] = df_forecast["slot"].astype(str)
+df_forecast["slot"] = df_forecast["slot"].astype(str) # 09:00 veya 17:00
 
 gunler = sorted(df_forecast["gun_key"].unique())
 merkezler = sorted(set(handling_capacity) | set(tir_capacity))
