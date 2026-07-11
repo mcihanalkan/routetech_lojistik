@@ -117,12 +117,14 @@ df_forecast["slot"] = df_forecast["slot"].astype(str) # 09:00 veya 17:00
 gunler = sorted(df_forecast["gun_key"].unique())
 merkezler = sorted(set(handling_capacity) | set(tir_capacity))
 
+# (hat,gun,slot) -> desi şeklinde bir dict. slot'tan kasıt 09:00, 17:00
 talep_verisi: dict = {}
 for row in df_forecast.itertuples():
     hat = (row.source, row.destination)
     key = (hat, row.gun_key, row.slot)
     talep_verisi[key] = talep_verisi.get(key, 0.0) + max(0.0, float(row.recommended_demand))
 
+# Desi'si 0 olan talepleri göz ardı etmek için yeni liste.
 demands = [
     (hat, gun, slot, round(desi))
     for (hat, gun, slot), desi in talep_verisi.items()
@@ -134,6 +136,7 @@ print(f"ALNS: {len(demands):,} talep parcasi, {len(gunler)} gun, {len(merkezler)
 # ============================================================================
 # 3. PROBLEM VERISI VE BASLANGIC COZUMU
 # ============================================================================
+# Lojistik problemimize ait tüm optimizasyon dataları.
 data = ProblemData(
     route_lookup=route_lookup,
     arac_turleri=arac_turleri,
@@ -147,9 +150,9 @@ data = ProblemData(
     demands=demands,
 )
 
-rng = rnd.default_rng(42)
+rng = rnd.default_rng(42) # Neden 42 seedini veriyoruz generator'ü oluşturmak için?
 
-initial_state = State(data)
+initial_state = State(data) 
 initial_state = greedy_repair(initial_state, rng)
 initial_obj = initial_state.objective()
 print(f"Baslangic (greedy) cozum maliyeti: {initial_obj:,.0f} TL")

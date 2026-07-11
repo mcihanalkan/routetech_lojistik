@@ -202,7 +202,7 @@ class State:
             birim = vehicle_leg_cost(self.data.route_lookup, hat, arac_turu, p["rental_hourly"], p["rental_km"])
             total += len(self.data.gunler) * stok * birim
         return total
-
+    
     def copy(self) -> "State":
         new = State.__new__(State)
         new.data = self.data
