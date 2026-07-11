@@ -32,8 +32,8 @@ from typing import Optional
 import numpy.random as rnd
 from ortools.sat.python import cp_model
 
-from src.cost_model import spot_vehicle_count, vehicle_leg_cost
-from src.time_model import (
+from src.alns.cost_model import spot_vehicle_count, vehicle_leg_cost
+from src.alns.time_model import (
     DISPATCH_SLOTS,
     RouteLookup,
     arrival_day,

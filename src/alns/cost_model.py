@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 
-from src.time_model import RouteLookup
+from src.alns.time_model import RouteLookup
 
 
 def vehicle_leg_cost(

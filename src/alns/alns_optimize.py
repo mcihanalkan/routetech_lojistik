@@ -40,8 +40,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.cost_model import spot_vehicle_count  # noqa: E402
-from src.alns_engine import (  # noqa: E402
+from src.alns.cost_model import spot_vehicle_count  # noqa: E402
+from src.alns.alns_engine import (  # noqa: E402
     ProblemData,
     State,
     cpsat_hat_repair,
@@ -50,7 +50,7 @@ from src.alns_engine import (  # noqa: E402
     tm_overload_removal,
     worst_removal,
 )
-from src.time_model import build_route_lookup  # noqa: E402
+from src.alns.time_model import build_route_lookup  # noqa: E402
 
 # ============================================================================
 # 1. ORTAM DEĞİŞKENLERİ

@@ -39,8 +39,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.cost_model import vehicle_leg_cost  # noqa: E402
-from src.time_model import (  # noqa: E402
+from src.alns.cost_model import vehicle_leg_cost  # noqa: E402
+from src.alns.time_model import (  # noqa: E402
     DISPATCH_SLOTS,
     arrival_day,
     build_route_lookup,
