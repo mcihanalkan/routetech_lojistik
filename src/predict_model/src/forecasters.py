@@ -906,12 +906,21 @@ class DemandForecaster(BaseForecaster):
     # predict → In-memory JSON (ALNS motoru için)
     # -----------------------------------------------------------------------
 
-    def predict(
+    def _predict_single_batch(
         self,
         df: pd.DataFrame,
         include_features: bool = False,
     ) -> List[Dict[str, Any]]:
         """
+        TEK SEFERDE (non-recursive) tahmin — asıl model/feature/heuristic
+        mantığının tamamı burada yaşıyor.
+
+        Bu metod self.context_buffer_'ı OLDUĞU GİBİ kullanır (değiştirmez).
+        `predict()` (geriye dönük uyumluluk) ve `predict_sequential()`
+        (gün-gün autoregressive akış) her ikisi de bu metodu çağırır;
+        predict_sequential() her gün için self.context_buffer_'ı geçici
+        olarak "rolling_context" ile değiştirip burayı tetikler.
+
         Talep tahminlerini in-memory JSON formatında döndürür.
 
         ⚠️  DISK I/O YOK — CSV/XLSX kaydedilmez.
@@ -976,12 +985,27 @@ class DemandForecaster(BaseForecaster):
         lag_cols  = [c for c in df_features.columns if c.startswith("lag_")]
         roll_cols = [c for c in df_features.columns if c.startswith("rolling_")]
         if lag_cols or roll_cols:
-            # ffill: son bilinen değeri taşı; ardından bfill: serinin başındaki boşlukları kapat
-            df_features[lag_cols + roll_cols] = (
-                df_features[lag_cols + roll_cols]
-                .ffill()
-                .bfill()
-            )
+            # [FIX] ffill/bfill artık rota (group_column) BAZINDA yapılıyor.
+            # ÖNCEKİ HALİ df_features[...].ffill().bfill() idi — bu, rota
+            # sınırını görmeden TÜM DataFrame boyunca aşağı doğru dolduruyordu.
+            # df_features rota+tarih sıralı olduğundan (_prepend_context_buffer
+            # bkz.), bir rotanın gerçek NaN'ı (örn. yetersiz buffer/kapanış
+            # sonrası ilk günler), SIRADAKİ SATIRDAKİ BAŞKA BİR ROTANIN
+            # değeriyle dolduruluyordu — sessiz, veri-sırasına-bağımlı bir
+            # doğruluk hatası. Şimdi her rota kendi zaman serisi içinde
+            # dolduruluyor; rotalar arası hiçbir sızıntı olmuyor.
+            if self.group_column and self.group_column in df_features.columns:
+                df_features[lag_cols + roll_cols] = (
+                    df_features.groupby(self.group_column)[lag_cols + roll_cols]
+                    .transform(lambda s: s.ffill().bfill())
+                )
+            else:
+                # ffill: son bilinen değeri taşı; ardından bfill: serinin başındaki boşlukları kapat
+                df_features[lag_cols + roll_cols] = (
+                    df_features[lag_cols + roll_cols]
+                    .ffill()
+                    .bfill()
+                )
 
         # X'i hazırla (target, date ve slot-farkındalıklı leakage sütunlarını çıkar)
         # _split_X_y (fit) ile AYNI kuralı kullanır — bkz. _get_drop_columns().
@@ -1089,11 +1113,179 @@ class DemandForecaster(BaseForecaster):
 
         if self.logging_enabled:
             logger.info(
-                f"✅ predict() tamamlandı: {len(results)} tahmin üretildi "
+                f"✅ _predict_single_batch() tamamlandı: {len(results)} tahmin üretildi "
                 f"(format: in-memory JSON, disk I/O yok)"
             )
 
         return results
+
+    # -----------------------------------------------------------------------
+    # predict → geriye dönük uyumluluk (tek seferde / tek günlük tahmin)
+    # -----------------------------------------------------------------------
+
+    def predict(
+        self,
+        df: pd.DataFrame,
+        include_features: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """
+        Eski davranış: TÜM tahmin ufkunu (ör. 7 gün) TEK bir batch olarak,
+        fit() sırasında kaydedilen context_buffer_'a göre tahmin eder.
+
+        Autoregressive/recursive DEĞİLDİR — 2. günün lag_1'i, 1. günün
+        GERÇEK tahminini değil, context_buffer_'daki (fit-zamanı) son
+        gerçek veriyi görür. Çok günlük ufuklarda hatayı azaltmak için
+        `predict_sequential()` kullanın; bu metod geriye dönük uyumluluk
+        ve tek günlük tahminler için hâlâ geçerlidir.
+        """
+        return self._predict_single_batch(df, include_features=include_features)
+
+    # -----------------------------------------------------------------------
+    # predict_sequential → Gün-gün Autoregressive/Recursive Tahmin
+    # -----------------------------------------------------------------------
+
+    def predict_sequential(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
+        """
+        Tahmin ufkunu (ör. 7 gün) TEK SEFERDE değil, GÜN GÜN tahmin eder;
+        her günün q50 tahmini "gerçekmiş gibi" bir sonraki günün
+        lag/rolling feature'larına beslenir (recursive/autoregressive).
+
+        Neden gerekli:
+          predict() (tek batch) modunda, tahmin ufkundaki TÜM günler aynı
+          anda, sadece fit-zamanındaki context_buffer_'a (gerçek geçmiş)
+          bakarak hesaplanır. 2. günün lag_1'i aslında 1. günün TAHMİNİ
+          değil, context_buffer_'daki son gerçek veridir. Ufuk uzadıkça
+          (7 gün) bu, lag feature'ların giderek daha stale/yanlış olmasına
+          yol açar. predict_sequential() her günü kendi (o ana kadarki
+          gerçek + tahmin edilmiş önceki günler) context'iyle tahmin
+          ederek bunu düzeltir.
+
+        Uygulama notu:
+          self.context_buffer_'ı KALICI OLARAK değiştirmez — bir kopyasını
+          (`rolling_context`) alır, her gün sonunda o günün q50 tahminini
+          bu kopyaya "sözde-gerçek" (pseudo-actual) olarak ekler ve
+          context_buffer_'ı SADECE _predict_single_batch() çağrısı
+          süresince GEÇİCİ olarak bu genişleyen kopyayla değiştirir, hemen
+          ardından orijinaline geri döndürür (try/finally ile — bir
+          _predict_single_batch çağrısı istisna fırlatsa bile
+          self.context_buffer_ bozulmadan kalır).
+
+        ⚠️ sibling_target_column (ör. 17:00 modeli için toplam_desi_0900):
+          Bu sütun bu sınıfta LAG'LANMIŞ bir feature olarak DEĞİL, AYNI
+          GÜNÜN feature'ı olarak kullanılıyor (bkz. _get_drop_columns
+          docstring'i — 17:00 tahmini yapıldığında o günün 09:00 talebi
+          zaten gerçekleşmiş sayılır, dolayısıyla leakage değildir). Yani
+          rolling_context'e eklenen pseudo_actual satırında sibling_target
+          sütunu, gün ilerledikçe "tahmin edilmesi gereken" bir şey
+          DEĞİLDİR — day_df içinde zaten ne geldiyse (run_forecast.py'nin
+          predict_grid'inden, bugün için 0.0 veya bilinen gerçek değer) o
+          kalır, dokunulmaz. Burada AYRICA doldurulmasına GEREK YOK: bu
+          modelin recursive/autoregressive döngüsünün konusu sadece
+          target_column'un KENDİ geçmişidir (lag_1, lag_7, ...,
+          rolling_7, rolling_14) — sibling ayrı bir konu.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Tahmin ufkunun TAMAMI (ör. 7 gün × N rota), aynı şema
+            (predict() ile aynı — target_column NaN/0 olabilir).
+
+        Returns
+        -------
+        List[Dict[str, Any]]
+            Tüm günlerin tahminlerini birleştiren liste (predict() ile
+            aynı kayıt formatı).
+        """
+        if not self.is_fitted_:
+            raise ValueError(
+                "❌ Model eğitilmedi. Önce fit() çağırın!\n"
+                "   Kullanım: forecaster.fit(train_df)"
+            )
+
+        df = df.copy()
+        df[self.date_column] = pd.to_datetime(df[self.date_column])
+        unique_dates = sorted(df[self.date_column].unique())
+
+        if len(unique_dates) > self.forecast_horizon:
+            logger.warning(
+                f"⚠️ predict_sequential(): {len(unique_dates)} gün geldi ama "
+                f"forecast_horizon={self.forecast_horizon}. Muhtemelen predict_grid'e "
+                f"buffer günleri de karışmış — sadece gelecek ufku geçirin."
+            )
+
+        # fit() sırasında kaydedilen context_buffer_'ı BOZMADAN bir kopyasını
+        # al — bu kopya, gün ilerledikçe "tahmin edilmiş" satırlarla büyüyecek.
+        rolling_context = (
+            self.context_buffer_.copy()
+            if self.context_buffer_ is not None
+            else pd.DataFrame(columns=df.columns)
+        )
+
+        buffer_size = max(self.lags) + max(self.rolling_windows)
+
+        all_results: List[Dict[str, Any]] = []
+
+        if self.logging_enabled:
+            logger.info(
+                f"🔁 predict_sequential() başladı: {len(unique_dates)} gün, "
+                f"tek seferde değil GÜN GÜN (autoregressive) tahmin edilecek."
+            )
+
+        for d in unique_dates:
+            day_df = df[df[self.date_column] == d].copy()
+
+            # O günü, o ana kadarki context (gerçek geçmiş + önceki günlerin
+            # TAHMİNLERİ) ile birlikte tek günlük bir batch olarak tahmin et.
+            # self.context_buffer_'ı GEÇİCİ olarak rolling_context ile
+            # değiştirip _predict_single_batch'i çağırıyoruz.
+            original_buffer = self.context_buffer_
+            self.context_buffer_ = rolling_context
+            try:
+                day_results = self._predict_single_batch(day_df)
+            finally:
+                self.context_buffer_ = original_buffer  # her koşulda geri al
+
+            all_results.extend(day_results)
+
+            # Bu günün tahminini (q50) "gerçekmiş gibi" rolling_context'e
+            # ekle ki BİR SONRAKİ günün lag_1'i bunu görsün.
+            d_str = pd.Timestamp(d).strftime("%Y-%m-%d")
+            pred_map = {
+                (r[self.group_column], r[self.date_column]): r["q50"]
+                for r in day_results
+            }
+            pseudo_actual = day_df.copy()
+            pseudo_actual[self.target_column] = pseudo_actual.apply(
+                lambda row: pred_map.get((row[self.group_column], d_str), 0.0),
+                axis=1,
+            )
+
+            rolling_context = pd.concat(
+                [rolling_context, pseudo_actual], ignore_index=True
+            )
+
+            # Buffer'ı sınırsız büyütmeyin — sadece gereken kadarını tutun
+            if self.group_column and self.group_column in rolling_context.columns:
+                rolling_context = (
+                    rolling_context.sort_values([self.group_column, self.date_column])
+                    .groupby(self.group_column, group_keys=False)
+                    .tail(buffer_size)
+                    .reset_index(drop=True)
+                )
+            else:
+                rolling_context = (
+                    rolling_context.sort_values(self.date_column)
+                    .tail(buffer_size)
+                    .reset_index(drop=True)
+                )
+
+        if self.logging_enabled:
+            logger.info(
+                f"✅ predict_sequential() tamamlandı: {len(all_results)} tahmin "
+                f"üretildi ({len(unique_dates)} gün, autoregressive)."
+            )
+
+        return all_results
 
     # -----------------------------------------------------------------------
     # Context Buffer — predict() lag güvencesi
@@ -1245,13 +1437,20 @@ class DemandForecaster(BaseForecaster):
         q50_preds_test = np.median(
             [model.predict(test_pool)[:, 1] for model in self.models_], axis=0
         )
+        # Ensemble: tüm modellerin q90 ([:, 2]) medyanı — Spot_Cost_Sim için gerekli
+        # (q50-vs-q90 strateji kıyaslaması eğitim log'unda görünür olsun diye)
+        q90_preds_test = np.median(
+            [model.predict(test_pool)[:, 2] for model in self.models_], axis=0
+        )
 
         y_true_test = y_test.values
         # ⚠️ EĞER DÖNÜŞÜM YAPILDIYSA, METRİK HESABINDAN ÖNCE GERİ ÇEVİR!
         if self.log_transform_enabled:
             q50_preds_test = np.square(q50_preds_test)
+            q90_preds_test = np.square(q90_preds_test)
             y_true_test = np.square(y_true_test)
         q50_preds_test = np.maximum(q50_preds_test, 0)
+        q90_preds_test = np.maximum(q90_preds_test, 0)
 
         # --- Hibrit Domain Heuristic (WAPE değerlendirmesi) ---
         if "is_campaign_eve" in X_test.columns and hasattr(self, "campaign_multipliers_"):
@@ -1318,12 +1517,45 @@ class DemandForecaster(BaseForecaster):
         )
         decision_regret_test = float(np.mean(regret_test))
 
+        # --- [Opsiyonel] Spot_Cost_Sim: q50-vs-q90 strateji kıyaslaması ---
+        # HPO'yu bekletmeden, fit sonrası eğitim log'unda alpha'nın (q90 asimetrik
+        # kaybı) gerçek maliyeti doğru yönde hareket ettirip ettirmediğini görmek
+        # için metrics.py::spot_cost_simulation() çağrılır. Opsiyonel olduğundan
+        # metrics.py bulunamazsa / imza uyuşmazsa sessizce atlanır — training
+        # akışını KIRMAZ.
+        # NOT: cost_per_unit_spot / cost_per_unit_idle, metrics.py'deki gerçek TL
+        # maliyet varsayılanlarıdır (1.0 / 0.2) — Decision Regret'teki 9x asimetrik
+        # ceza (underestimation_penalty) ile KARIŞTIRILMAZ; bilinçli olarak override
+        # edilmiyor, metrics.py'nin kendi varsayılanları kullanılıyor.
+        spot_cost_sim_result: Optional[Dict[str, float]] = None
+        try:
+            from .metrics import spot_cost_simulation
+            spot_cost_sim_result = spot_cost_simulation(
+                y_true=y_true_test,
+                y_pred_q50=q50_preds_test,
+                y_pred_q90=q90_preds_test,
+            )
+        except ImportError:
+            if self.logging_enabled:
+                logger.debug(
+                    "   ℹ️  Spot_Cost_Sim atlandı: metrics.py::spot_cost_simulation() "
+                    "bulunamadı (opsiyonel özellik)."
+                )
+        except Exception as exc:
+            if self.logging_enabled:
+                logger.warning(
+                    f"   ⚠️  Spot_Cost_Sim hesaplanamadı (opsiyonel, training "
+                    f"etkilenmedi): {exc}"
+                )
+
         # Geriye uyumluluk için eski anahtarları koruyoruz (optimize.py kırılmasın diye)
         self.eval_results_: Dict[str, float] = {
             "WAPE":            round(wape_test, 6),
             "Decision_Regret": round(decision_regret_test, 4),
             "test_samples":    len(y_true_test),
         }
+        if spot_cost_sim_result is not None:
+            self.eval_results_["Spot_Cost_Sim"] = spot_cost_sim_result
 
         # --- TRAIN SETİ DEĞERLENDİRMESİ (OVERFIT KONTROLÜ) ---
         wape_train = 0.0
@@ -1381,6 +1613,22 @@ class DemandForecaster(BaseForecaster):
                 f"   │ Örnek Sayısı      │ {len(y_train) if y_train is not None else 0:<12,} │ {len(y_true_test):<12,} │ {'-'*12} │\n"
                 f"   └───────────────────┴──────────────┴──────────────┴──────────────┘"
             )
+            if spot_cost_sim_result is not None:
+                q50_cost = spot_cost_sim_result.get("q50_total_cost")
+                q90_cost = spot_cost_sim_result.get("q90_total_cost")
+                savings  = spot_cost_sim_result.get("savings_with_q90")
+                if q50_cost is not None and q90_cost is not None:
+                    # savings_with_q90 = q50_cost - q90_cost (metrics.py tanımı)
+                    # Pozitif → q90 daha ucuz (az spot araç) | Negatif → q90 fazla ihtiyatlı (idle kapasite)
+                    yon = "q90 daha ucuz ✅" if savings > 0 else ("q50 daha ucuz ⚠️" if savings < 0 else "eşit")
+                    log_table += (
+                        f"\n💰 SPOT COST SIM (q50 vs q90 strateji, test seti — alpha yönü kontrolü):\n"
+                        f"   q50 strateji maliyeti : {q50_cost:,.2f}\n"
+                        f"   q90 strateji maliyeti : {q90_cost:,.2f}\n"
+                        f"   q90 Tasarrufu          : {savings:,.2f} → {yon}"
+                    )
+                else:
+                    log_table += f"\n💰 SPOT COST SIM (ham sonuç): {spot_cost_sim_result}"
             logger.info(log_table)
 
         return self.eval_results_

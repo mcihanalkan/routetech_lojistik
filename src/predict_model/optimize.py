@@ -81,12 +81,8 @@ gerçek eğitim mantığına birebir bağlı:
      2026-05-31 → 2026-06-27 (önceki 2026-04-14 → 2026-05-10 pencereleri
      eski/kopmuş veriye aitti — bu dosyanın kendi docstring uyarısının
      ihlal edildiği tam nokta buydu, artık düzeltildi).
-  6. ALPHA_MIN/MAX bandı [0.60, 0.78] halen ESKİ tek-serili veride
-     (skewness ≈1.3) kalibre edilmiş durumda. Yeni veride 09:00 için
-     skewness ≈+4.71, 17:00 için ≈+3.80 — bu bandın hâlâ doğru olduğu
-     GARANTİ DEĞİL. Adım 1-5 tamamlandıktan sonra her slot için ayrı
-     `--alpha-sweep --slot 0900` / `--alpha-sweep --slot 1700` çalıştırıp
-     knee noktasını yeniden bulun; gerekirse bandı güncelleyin.
+  6. [v13'te ÇÖZÜLDÜ — bkz. v13 notu aşağıda] ALPHA_MIN/MAX bandı artık
+     slot-bazlı (_SLOT_ALPHA_BANDS / _alpha_band_for()).
   7. --slot argümanı: varsayılan "both" ile TEK komutta 09:00 (n≈24.906 →
      "small" bucket) ve 17:00 (n≈41.118 → "medium" bucket) SIRAYLA tune
      edilir. İstenirse --slot 0900 / --slot 1700 ile tek tek de çalıştırılabilir.
@@ -95,6 +91,85 @@ gerçek eğitim mantığına birebir bağlı:
        python optimize.py --slot 1700     # sadece 17:00
      _bucket_name() otomatik ayrım yapar; doğru n_rows hesaplandığı sürece
      (madde 3) iki farklı bucket kendiliğinden JSON'da oluşur.
+
+--- v13 Değişiklikleri (rel_width Bug Düzeltmesi + Slot-Bazlı Alpha Bandı) ---
+  1. BUG DÜZELTMESİ — _correct_and_score() içindeki rel_width formülü
+     eskiden (q90-q10)/max(preds,1.0) idi; preds = MultiQuantile'ın
+     alpha-kuantili, yani ALPHA İLE BİRLİKTE KAYAN bir "mid" tahmini
+     (alpha kendisi Optuna'nın arama uzayında). alpha büyüdükçe preds de
+     sistematik olarak büyüdüğü için, bant GENİŞLİĞİ hiç değişmese bile
+     rel_width sadece alpha seçimi yüzünden küçülüyordu — Optuna gerçek
+     bandı daraltmadan, salt yüksek alpha seçerek bu cezadan kaçabiliyordu.
+     Bu, alpha seçimini objective üzerinden güvenilmez kılan asıl sebepti.
+     Düzeltme: rel_width artık Σ(q90c-q10c)/Σy_true ile normalize ediliyor
+     — WAPE'nin paydasıyla aynı, alpha'dan tamamen bağımsız SABİT bir
+     referans. Aynı düzeltme alpha_sweep() ve optimize()'daki üç ayrı
+     rel_width hesaplamasında da (kod tekrarı — _fit_fold_ensemble_and_score
+     zaten _correct_and_score()'u kullanıyordu, ama alpha_sweep() ve
+     optimize()'ın final raporlama bloğu formülü inline tekrarlıyordu)
+     tutarlı şekilde uygulandı.
+  2. Slot-bazlı ALPHA_MIN/ALPHA_MAX — v12'nin kendi uyarısı (madde 6, eski)
+     doğrulandı: yeni slot verisinde eski [0.60, 0.78] bandı 09:00 için
+     çok yüksekti. `python optimize.py --alpha-sweep --slot 0900` sonucuna
+     göre 09:00 için ~0.50-0.60 bandı çok daha makul (WAPE ~%46-48,
+     Underpred ~%32-37, hâlâ kabul edilebilir). Artık _SLOT_ALPHA_BANDS =
+     {"0900": (0.50, 0.60), "1700": (ALPHA_MIN, ALPHA_MAX)} — 17:00 kendi
+     --alpha-sweep --slot 1700 kanıtı gelene kadar eski bantta kalıyor.
+     optimize(), _alpha_band_for(target_column) ile doğru bandı otomatik
+     seçiyor; CLI/çağıran kod değişikliği gerekmiyor.
+  3. rel_width formülü değiştiği için (mean-of-ratio → sum-of-ratio) sayısal
+     ölçek bir miktar kayabilir — BETA_WIDTH (0.03) yeniden kalibre
+     edilmesi gerekebilir; ilk birkaç çalıştırmadan sonra gözlemleyip
+     ayarlayın (bkz. BETA_WIDTH yorumu).
+  ÖNEMLİ: Bu değişiklikler sonrası (ve yeni feature.py backlog/extreme-event
+  düzeltmeleriyle birlikte) 09:00 bucket'ı için TAM HPO'nun (sadece
+  --alpha-sweep değil) yeniden çalıştırılması gerekir:
+      python optimize.py --slot 0900 --trials 50 --timeout 1800
+  Bu, hyperparams_map.json'daki "small" (09:00) bucket'ını hem yeni
+  feature'lara hem de düzeltilmiş rel_width/alpha bandına göre günceller.
+
+--- v14 Değişiklikleri (Decision-Regret Sütunu — Sert Ceza) ---
+alpha_sweep() artık her alpha için metrics.py::decision_regret() ile
+(spot_multiplier=9.0) doğrudan operasyonel maliyet biriminde bir
+"decision_regret" sütunu da hesaplıyor ve print_alpha_sweep_table() bunu
+ayrı bir sütun olarak basıyor. Gerekçe: hybrid_score = WAPE + γ·underpred
++ β·rel_width + ... bir VEKİL (proxy); WAPE'yi minimize eden alpha ile
+decision_regret'i minimize eden alpha genelde FARKLI noktalarda knee
+yapar — bu ikisi arasındaki farkı görmeden hibrit skor minimumuna göre
+alpha seçmek de, salt WAPE'ye göre seçmekle aynı kör atış hatasına düşer.
+  ÖNEMLİ — bu değişikliğin ardından hâlâ YAPILMASI GEREKENLER (bu dosyanın
+  kodu bunları OTOMATİK yapmaz, elle çalıştırılıp sonuç gözlenmeli):
+    1. python optimize.py --alpha-sweep --slot 0900
+       python optimize.py --alpha-sweep --slot 1700
+       yeni decision_regret sütununa bakarak knee noktasını (saf minimum
+       değil, WAPE'nin hâlâ makul olduğu, regret kazancının düzleştiği
+       nokta) belirleyin.
+    2. _SLOT_ALPHA_BANDS'i bulunan knee'nin etrafında dar bir bantla
+       güncelleyin (örn. knee=0.65 → (0.62, 0.70)).
+    3. python optimize.py --slot 0900 --trials 50 --timeout 1800
+       python optimize.py --slot 1700 --trials 50 --timeout 1800
+       ile hyperparams_map.json'daki "small"/"medium" bucket'larını yeni
+       bant + v14 decision_regret kanıtına göre yeniden üretin — JSON'daki
+       09:00 girdisi hâlâ eski (alpha=0.5058, underpred=%40) kalibrasyona
+       ait olduğu sürece güncel değildir.
+
+  [0900 SONUÇLANDI] python optimize.py --alpha-sweep --slot 0900 gerçek veriyle
+  çalıştırıldı (21 alpha × 4 fold, varsayılan sweep parametreleriyle). Sonuç:
+  knee=0.66 (WAPE ~%47.94, decision_regret=866.2 — bkz. _SLOT_ALPHA_BANDS
+  yorumu). _SLOT_ALPHA_BANDS["0900"] = (0.62, 0.70) olarak güncellendi.
+  Sıradaki adım: python optimize.py --slot 0900 --trials 50 --timeout 1800
+  ile "small" bucket'ını bu yeni banda göre yeniden üretmek.
+  [1700 SONUÇLANDI] python optimize.py --alpha-sweep --slot 1700 gerçek veriyle
+  çalıştırıldı (21 alpha × 4 fold). Sonuç: knee=0.70 (WAPE ~%27.37,
+  decision_regret=3565.7 — bkz. _SLOT_ALPHA_BANDS yorumu).
+  _SLOT_ALPHA_BANDS["1700"] = (0.66, 0.74) olarak güncellendi.
+
+  [SIRADAKİ ADIM] Her iki slot için de tam HPO'nun yeni bantlarla yeniden
+  çalıştırılması gerekiyor — hyperparams_map.json'daki "small" (0900) ve
+  "medium" (1700) bucket'ları hâlâ eski (0900: alpha=0.5058, underpred=%40;
+  1700: alpha=0.6821) kalibrasyona ait, bu değişiklikten HENÜZ etkilenmedi:
+      python optimize.py --slot 0900 --trials 50 --timeout 1800
+      python optimize.py --slot 1700 --trials 50 --timeout 1800
 """
 
 import argparse
@@ -111,6 +186,11 @@ from catboost import CatBoostRegressor, Pool
 
 sys.path.insert(0, str(Path(__file__).parent))
 from src.features import build_feature_matrix, get_categorical_columns
+# v14: decision_regret() metrics.py'den import ediliyor — alpha_sweep()
+# artık sadece hibrit skoru değil, gerçek operasyonel maliyeti (spot araç
+# çarpanı ile ağırlıklandırılmış regret) de raporluyor. Bkz. alpha_sweep()
+# docstring'i ve print_alpha_sweep_table().
+from src.metrics import decision_regret
 # v12: load_dataset() artık run_forecast.py'den import ediliyor — iki dosyanın
 # birbirinden kopması (bkz. FOLD_DATES kopması, v11'de düzeltildi) tam olarak
 # bu kod tekrarından geliyordu. Slot sabitleri de aynı yerden alınıyor ki
@@ -274,17 +354,84 @@ DEFAULT_GAMMA = 0.5988
 # ve knee noktasını yeniden bulup gerekirse ALPHA_MIN/ALPHA_MAX'ı (slot
 # başına farklı olabilir — bu durumda _SLOT_TARGETS'e benzer bir
 # {"0900": (min,max), "1700": (min,max)} sözlüğüne geçirin) güncelleyin.
+# v13 UYARI ÇÖZÜLDÜ: v12'de bu bant [0.60, 0.78] ESKİ tek-serili Desi_talep.xlsx
+# verisinde (skewness ≈1.3) kalibre edilmiş, yeni slot verisinde (09:00
+# skewness ≈+4.71, 17:00 ≈+3.80) doğrulanmamıştı. --alpha-sweep --slot 0900
+# çalıştırıldı ve sonuç NET: 09:00 için knee noktası eski bandın (0.60-0.78)
+# İÇİNDE değil, daha DÜŞÜK bir aralıkta — ~0.50-0.60 bandında WAPE ~%46-48,
+# Underpred ~%32-37 ile en dengeli takas burada (0.60'ın ötesinde WAPE hızla
+# kötüleşiyor, Underpred kazancı ise düzleşiyor). 17:00 için henüz yeni bir
+# --alpha-sweep --slot 1700 kanıtı YOK — o slot şimdilik eski [0.60, 0.78]
+# bandında kalıyor (yeni veriyle doğrulanana kadar).
+#
+# Bu yüzden ALPHA_MIN/ALPHA_MAX artık TEK bir global bant değil, slot bazlı:
+# _SLOT_ALPHA_BANDS = {"0900": (min,max), "1700": (min,max)}. ALPHA_MIN/MAX
+# modül sabitleri, slot eşleşmezse (örn. ileride yeni bir slot eklenirse)
+# kullanılacak GERİYE DÖNÜK UYUMLU fallback olarak bırakıldı — optimize()
+# artık bunları DOĞRUDAN kullanmıyor, _alpha_band_for(target_column) ile
+# doğru slotun bandını seçiyor (bkz. aşağıda).
+#
+# Bu bantları periyodik olarak (özellikle veri belirgin şekilde değiştiğinde)
+# ilgili slot için --alpha-sweep ile yeniden doğrulayın:
+#     python optimize.py --alpha-sweep --slot 0900
+#     python optimize.py --alpha-sweep --slot 1700
 ALPHA_MIN = 0.60
 ALPHA_MAX = 0.78
 
-# Bant genişliği (q90-q10)/q_orta cezası — Optuna sadece WAPE+underprediction'a
+# Slot-bazlı alpha bandı — bkz. yukarıdaki v13 notu. 09:00, v14'te GERÇEK
+# --alpha-sweep --slot 0900 sonucuna (decision_regret sütunlu, 21 alpha × 4
+# fold) göre yeniden güncellendi; 17:00 de kendi --alpha-sweep --slot 1700
+# sonucuna göre güncellendi.
+_SLOT_ALPHA_BANDS = {
+    # v14 — gerçek sweep sonucu: decision_regret 0.50→0.66 arası 1143.6→866.2'ye
+    # (%24) düşerken WAPE bu aralıkta ~%47-50 arasında kalıp 0.66'da yeniden
+    # ~%47.94 lokal minimuma dönüyor. 0.66'dan sonra WAPE hızla tırmanıyor
+    # (0.80'de %58, 0.90'da %78) ama regret'in marjinal kazancı küçülüyor —
+    # knee=0.66. Saf decision_regret minimumu sınırın ucunda (0.90) çıkıyor
+    # çünkü spot_multiplier=9 çok agresif; model WAPE'yi hiç önemsemeden "hep
+    # yüksek tahmin et" stratejisiyle regret'i sürekli azaltabiliyor — knee
+    # kararı bu yüzden saf minimumdan değil, WAPE/regret ödünleşiminden verildi.
+    "0900": (0.62, 0.70),
+    # v14 — gerçek --alpha-sweep --slot 1700 sonucu: 0.50→0.58 arası WAPE zaten
+    # düşerken (25.38%→24.64%, hybrid_score minimumu da tam burada) regret
+    # %16 düşüyor — bedava kazanç. 0.58→0.70 arası WAPE ölçülü artıyor
+    # (+2.73 puan) ama regret ek %13 düşmeye devam ediyor (4105.6→3565.7) ve
+    # underpred_rate iyileşiyor (13.82%→11.26%) — hâlâ iyi bir takas.
+    # 0.70'ten sonra getiri hızla küçülüyor (0.70→0.74: sadece 50 birim regret
+    # kazancı için WAPE +1.99 puan). knee=0.70. Mevcut üretim parametresi
+    # (hyperparams_map.json medium bucket, alpha=0.6821) zaten bu bandın
+    # içinde — ek bir tutarlılık sinyali.
+    "1700": (0.66, 0.74),
+}
+
+
+def _alpha_band_for(target_column: str) -> tuple:
+    """
+    target_column'a (TARGET_COL_0900 / TARGET_COL_1700) göre doğru slotun
+    (alpha_min, alpha_max) bandını döndürür. Bilinmeyen bir target_column
+    gelirse (örn. ileride yeni bir slot eklenirse) modül sabiti
+    (ALPHA_MIN, ALPHA_MAX)'a düşer — sessizce yanlış banda düşmek yerine
+    güvenli, dokümante edilmiş bir varsayılan.
+    """
+    if target_column == TARGET_COL_0900:
+        return _SLOT_ALPHA_BANDS.get("0900", (ALPHA_MIN, ALPHA_MAX))
+    if target_column == TARGET_COL_1700:
+        return _SLOT_ALPHA_BANDS.get("1700", (ALPHA_MIN, ALPHA_MAX))
+    return (ALPHA_MIN, ALPHA_MAX)
+
+# Bant genişliği Σ(q90-q10)/Σy_true cezası — Optuna sadece WAPE+underprediction'a
 # bakınca, WAPE'i minik bir miktar iyileştirmek için bandı aşırı genişletebiliyordu
 # (gözlemlenen: rel_width=3.075, hiçbir cezası yokken). Bu ceza olmadan HPO,
 # hangi config'in üretimde dar/geniş bant üreteceğini önemsemiyordu.
+# v13: rel_width, alpha ile birlikte kayan "mid" tahmine (preds[:,1]) göre
+# DEĞİL, Σy_true (WAPE'nin paydasıyla aynı, alpha'dan bağımsız sabit referans)
+# ile normalize ediliyor — bkz. _correct_and_score() docstring'i.
 # ⚠️ Bu ağırlık İLK TAHMİN — kesin kalibre edilmiş bir değer değil. rel_width
 # tipik olarak 0.5-3.0 aralığında, WAPE ise 0.2-0.3 civarında; 0.03 ile
 # rel_width=1.0 → skora +0.03 eklenir (WAPE'nin ~%10-15'i kadar, anlamlı ama
-# baskın değil). Sonucu görüp gerekirse büyütün/küçültün.
+# baskın değil). v13'teki formül değişikliği rel_width'in SAYISAL ölçeğini de
+# bir miktar değiştirebilir (artık mean yerine sum-oranı) — sonucu görüp
+# gerekirse BETA_WIDTH'i yeniden kalibre edin.
 BETA_WIDTH = 0.03
 
 # ---------------------------------------------------------------------------
@@ -559,6 +706,26 @@ def _correct_and_score(y_true, raw_preds, gamma, beta_width):
     AYNI monotonluk düzeltmesini uygular ve hibrit+bant+çakışma skorunu
     hesaplar. rel_width bu düzeltmeden sonra hep ≥0 olur.
 
+    v13 BUG DÜZELTMESİ — rel_width artık HAREKETLİ "mid" tahminine göre
+    normalize edilmiyor:
+      Eskiden: rel_width = mean((q90c-q10c) / max(preds, 1.0))
+      preds = raw_preds[:, 1] = MultiQuantile'ın alpha-kuantili — ve alpha
+      kendisi Optuna'nın arama uzayında (ALPHA_MIN..ALPHA_MAX). alpha
+      büyüdükçe preds de (daha yüksek bir kuantil hedeflendiği için)
+      sistematik olarak büyür — bant GENİŞLİĞİ (q90-q10) hiç değişmese
+      bile rel_width SADECE alpha'nın kendisi büyüdüğü için küçülüyordu.
+      Sonuç: Optuna, gerçekte bandı daraltmadan, sırf yüksek alpha seçerek
+      rel_width cezasından "ucuza" kaçabiliyordu — bu da alpha seçimini
+      objective üzerinden güvenilmez kılan asıl mekanizmaydı.
+
+      Yeni: rel_width = Σ(q90c-q10c) / Σy_true — WAPE'nin paydasıyla
+      (gerçekleşen toplam hacim) AYNI, alpha'dan TAMAMEN bağımsız sabit
+      bir referans. Bant genişliği artık sadece kendi büyüklüğüyle
+      ölçülüyor, alpha'nın hangi kuantili hedeflediğiyle karışmıyor.
+      (Alternatif olarak ayrı, sabit bir 0.5-kuantil tahmini de kullanılabilir
+      ama bu, ek bir model/tahmin gerektirir; Σy_true zaten elde olan,
+      hesaplaması bedava ve WAPE ile tutarlı bir referanstır.)
+
     Dönüş: (score, rel_width_corrected, crossing_rate)
     """
     preds = raw_preds[:, 1]
@@ -566,7 +733,9 @@ def _correct_and_score(y_true, raw_preds, gamma, beta_width):
     q90c  = np.maximum(raw_preds[:, 2], preds)   # DemandBand: q90 = max(q90, q50)
 
     crossing_rate = float(np.mean(raw_preds[:, 2] < raw_preds[:, 0]))
-    rel_width = float(np.mean((q90c - q10c) / np.maximum(preds, 1.0)))
+
+    sum_true  = float(np.sum(y_true))
+    rel_width = float(np.sum(q90c - q10c) / sum_true) if sum_true > 0 else 0.0
 
     score = (
         _hybrid_score(y_true, preds, gamma=gamma)
@@ -667,11 +836,20 @@ def alpha_sweep(
         edildiğini belirler — n_rows, feature matrix ve leakage-safe
         drop_cols hep buna göre hesaplanır (bkz. optimize() ile aynı mantık).
 
+    v14: decision_regret sütunu eklendi (metrics.py::decision_regret,
+    spot_multiplier=9.0). WAPE'yi minimize eden alpha ile gerçek operasyonel
+    regret'i minimize eden alpha genelde FARKLI noktalarda knee yapar —
+    WAPE eksik tahminle fazla tahmini simetrik cezalandırırken,
+    decision_regret spot araç maliyetinin atıl kapasiteden ~9× pahalı
+    olduğunu doğrudan modele yansıtır. "En iyi alpha" kararı artık
+    hybrid_score'un değil, decision_regret'in makul bir WAPE artışı
+    karşılığında belirgin düştüğü noktanın (knee) esas alınmasıyla verilmeli.
+
     Returns
     -------
     List[Dict] : her alpha için {alpha, wape, underpred_rate, rel_width,
-                 crossing_rate, hybrid_score} — knee'yi görmek için
-                 sırayla yazdırılmaya hazır.
+                 crossing_rate, hybrid_score, decision_regret} — knee'yi
+                 görmek için sırayla yazdırılmaya hazır.
     """
     full_df = load_dataset(data_path)
     # v12: n_rows artık SADECE bu slotun gerçek kayıtları üzerinden
@@ -740,8 +918,18 @@ def alpha_sweep(
         sum_true = np.sum(y_true)
         wape_val = float(np.sum(np.abs(y_true - preds)) / sum_true) if sum_true > 0 else 1.0
         underpred_rate = float(np.sum(np.maximum(y_true - preds, 0.0)) / sum_true) if sum_true > 0 else 1.0
-        rel_width = float(np.mean((q90c - q10c) / np.maximum(preds, 1.0)))
+        # v13: rel_width artık preds (alpha-kuantili, alpha ile birlikte kayar)
+        # yerine Σy_true (alpha'dan bağımsız, sabit) ile normalize edilir —
+        # bkz. _correct_and_score() docstring'i. Bu düzeltme olmadan sweep
+        # tablosundaki rel_width sütunu, yüksek alpha'yı gerçekte bandı
+        # daraltmadan yapay olarak ödüllendiriyordu.
+        rel_width = float(np.sum(q90c - q10c) / sum_true) if sum_true > 0 else 0.0
         crossing_rate = float(np.mean(q90 < q10))
+        # v14: decision_regret — spot_multiplier=9.0, metrics.py::decision_regret
+        # ile aynı hesap. hybrid_score gibi bir vekil (proxy) değil, doğrudan
+        # operasyonel maliyet birimiyle ifade edilen regret; knee kararı buna
+        # göre verilmeli (bkz. fonksiyon docstring'i).
+        regret_val = float(decision_regret(y_true, preds, spot_multiplier=9.0))
 
         hybrid = (
             wape_val
@@ -751,17 +939,19 @@ def alpha_sweep(
         )
 
         row = {
-            "alpha":          round(alpha, 4),
-            "wape":           round(wape_val, 6),
-            "underpred_rate": round(underpred_rate, 6),
-            "rel_width":      round(rel_width, 4),
-            "crossing_rate":  round(crossing_rate, 4),
-            "hybrid_score":   round(hybrid, 6),
+            "alpha":            round(alpha, 4),
+            "wape":             round(wape_val, 6),
+            "underpred_rate":   round(underpred_rate, 6),
+            "rel_width":        round(rel_width, 4),
+            "crossing_rate":    round(crossing_rate, 4),
+            "hybrid_score":     round(hybrid, 6),
+            "decision_regret":  round(regret_val, 6),
         }
         results.append(row)
         logger.info(
             f"   alpha={alpha:.2f} | WAPE={wape_val:.4%} | Underpred={underpred_rate:.4%} | "
-            f"rel_width={rel_width:.3f} | crossing={crossing_rate:.2%} | hibrit={hybrid:.4%}"
+            f"rel_width={rel_width:.3f} | crossing={crossing_rate:.2%} | hibrit={hybrid:.4%} | "
+            f"regret={regret_val:.4f}"
         )
 
     return results
@@ -769,28 +959,43 @@ def alpha_sweep(
 
 def print_alpha_sweep_table(results: List[Dict[str, Any]]) -> None:
     """Sweep sonuçlarını okunaklı tablo + knee önerisi olarak yazdırır."""
-    print("\n" + "=" * 78)
+    print("\n" + "=" * 92)
     print("  ALPHA SWEEP SONUÇLARI")
-    print("=" * 78)
-    print(f"{'alpha':>7} | {'WAPE':>9} | {'Underpred':>10} | {'rel_width':>10} | {'crossing':>9} | {'hibrit':>9}")
-    print("-" * 78)
+    print("=" * 92)
+    print(
+        f"{'alpha':>7} | {'WAPE':>9} | {'Underpred':>10} | {'rel_width':>10} | "
+        f"{'crossing':>9} | {'hibrit':>9} | {'regret':>10}"
+    )
+    print("-" * 92)
     for r in results:
         print(
             f"{r['alpha']:>7.2f} | {r['wape']:>8.2%} | {r['underpred_rate']:>9.2%} | "
-            f"{r['rel_width']:>10.3f} | {r['crossing_rate']:>8.2%} | {r['hybrid_score']:>8.2%}"
+            f"{r['rel_width']:>10.3f} | {r['crossing_rate']:>8.2%} | {r['hybrid_score']:>8.2%} | "
+            f"{r['decision_regret']:>10.4f}"
         )
-    print("-" * 78)
+    print("-" * 92)
 
-    best = min(results, key=lambda r: r["hybrid_score"])
-    print(f"\n💡 Hibrit skora göre en iyi: alpha={best['alpha']:.2f}")
+    best_hybrid = min(results, key=lambda r: r["hybrid_score"])
+    best_regret = min(results, key=lambda r: r["decision_regret"])
+    print(f"\n💡 Hibrit skora göre en iyi: alpha={best_hybrid['alpha']:.2f}")
+    print(f"💡 Decision_regret'e göre en iyi (spot_multiplier=9.0): alpha={best_regret['alpha']:.2f}")
+    if best_hybrid["alpha"] != best_regret["alpha"]:
+        print(
+            "   ⚠️  Bu iki nokta FARKLI — hibrit skor minimumu WAPE + gamma·underpred\n"
+            "   ağırlıklı bir vekil (proxy); decision_regret ise doğrudan spot araç\n"
+            "   maliyeti biriminde. Alpha kararını hibrit minimumdan değil, aşağıdaki\n"
+            "   knee mantığıyla decision_regret'ten verin."
+        )
     print(
-        "   NOT: Tabloyu gözle de inceleyin — 'knee' noktası (WAPE'nin hızla\n"
-        "   artmaya başladığı, Underpred kazancının düzleştiği alpha) genelde\n"
-        "   saf minimum hibrit skordan 1-2 basamak farklı olabilir ve daha\n"
-        "   dengeli bir üretim seçimi olabilir (örn. hibrit min 0.84 ise ama\n"
-        "   0.68'den sonra WAPE ivmeleniyorsa, 0.68-0.70 daha güvenli bir seçim)."
+        "   NOT: Tabloyu gözle de inceleyin — 'knee' noktası (decision_regret'in\n"
+        "   makul bir WAPE artışı karşılığında belirgin düştüğü, sonrasında ise\n"
+        "   düzleştiği alpha) genelde saf minimum decision_regret'ten de 1-2\n"
+        "   basamak farklı, daha dengeli bir üretim seçimi olabilir (örn. regret\n"
+        "   minimumu alpha=0.74 ise ama 0.66-0.68 aralığında regret zaten çoğu\n"
+        "   kazanımı yakalamışsa ve WAPE hâlâ makulse, 0.66-0.68 daha güvenli bir\n"
+        "   seçim olabilir)."
     )
-    print("=" * 78)
+    print("=" * 92)
 
 
 # ---------------------------------------------------------------------------
@@ -846,11 +1051,16 @@ def optimize(
     logger.info("🔍 Optuna Hiperparametre Optimizasyonu  (v6 — Walk-Forward CV + Pruning)")
     logger.info("=" * 60)
 
+    # v13: alpha bandı artık slot-bazlı (bkz. _SLOT_ALPHA_BANDS / _alpha_band_for)
+    # — tek global ALPHA_MIN/ALPHA_MAX yerine, her slot kendi kanıtlanmış
+    # (--alpha-sweep) bandını kullanır.
+    alpha_min, alpha_max = _alpha_band_for(target_column)
+
     if gamma > 0:
         logger.info(
             f"   γ (gamma) = {gamma:.2f}  →  spot maliyet ≈ {gamma + 1:.1f}× atıl maliyet\n"
             f"   Objective : WAPE + {gamma:.2f} × Underprediction_Penalty\n"
-            f"   alpha arama aralığı: [{ALPHA_MIN}, {ALPHA_MAX}]"
+            f"   alpha arama aralığı: [{alpha_min}, {alpha_max}]  (slot='{target_column}')"
         )
     else:
         logger.info("   γ = 0 → Simetrik WAPE modu (asimetrik ceza devre dışı)")
@@ -948,13 +1158,16 @@ def optimize(
         s = space
 
         # alpha: Quantile seviyesi
-        # v9: ALPHA_MIN==ALPHA_MAX ise (--alpha-sweep ile knee bulunup
+        # v13: artık slot-bazlı bant (alpha_min/alpha_max, yukarıda
+        # _alpha_band_for(target_column) ile hesaplandı) kullanılıyor —
+        # tek global ALPHA_MIN/ALPHA_MAX DEĞİL.
+        # v9: alpha_min==alpha_max ise (--alpha-sweep ile knee bulunup
         # sabitlendiyse) Optuna'ya boş bir boyut açtırmıyoruz, direkt sabit
         # değeri kullanıyoruz — arama artık sadece diğer 5 parametrede.
-        if ALPHA_MIN == ALPHA_MAX:
-            alpha = ALPHA_MIN
+        if alpha_min == alpha_max:
+            alpha = alpha_min
         elif gamma > 0:
-            alpha = trial.suggest_float("alpha", ALPHA_MIN, ALPHA_MAX)
+            alpha = trial.suggest_float("alpha", alpha_min, alpha_max)
         else:
             alpha = 0.5
 
@@ -1055,7 +1268,9 @@ def optimize(
     best_preds     = best_raw[:, 1]
     best_q10_corr  = np.minimum(best_raw[:, 0], best_preds)
     best_q90_corr  = np.maximum(best_raw[:, 2], best_preds)
-    best_rel_width = float(np.mean((best_q90_corr - best_q10_corr) / np.maximum(best_preds, 1.0)))
+    # v13: Σy_val ile normalize (bkz. _correct_and_score) — alpha'dan bağımsız sabit referans.
+    _sum_y_val     = float(np.sum(y_val))
+    best_rel_width = float(np.sum(best_q90_corr - best_q10_corr) / _sum_y_val) if _sum_y_val > 0 else 0.0
     best_crossing_rate = float(np.mean(best_raw[:, 2] < best_raw[:, 0]))
 
     pure_wape    = float(np.sum(np.abs(y_val - best_preds)) / np.sum(y_val)) if np.sum(y_val) > 0 else 1.0
@@ -1076,8 +1291,8 @@ def optimize(
         f"   WAPE (tüm günler) : {pure_wape:.4%}\n"
         f"   WAPE (temiz)      : {wape_clean:.4%}   ← run_forecast.py'deki 'wape_clean' ile kıyaslanabilir\n"
         f"   alpha (kuantil)   : {best_alpha:.4f}\n"
-        f"   Bant genişliği    : (q90-q10)/q_orta ort. ≈ {best_rel_width:.3f}  "
-        f"(artık skora dahil - BETA_WIDTH={BETA_WIDTH}, monotonluk duzeltmeli)\n"
+        f"   Bant genişliği    : Σ(q90-q10)/Σy_val ≈ {best_rel_width:.3f}  "
+        f"(artık skora dahil - BETA_WIDTH={BETA_WIDTH}, monotonluk düzeltmeli, alpha'dan bağımsız sabit referans)\n"
         f"   Kuantil çakışması : {best_crossing_rate:.2%}  (ham q90<q10 oranı - 0 ideal)\n"
         f"   iterations        : {best['iterations']}  (sabit — early stopping YOK, forecasters.py ile aynı)\n"
         f"   depth             : {best['depth']}\n"
@@ -1104,7 +1319,7 @@ def optimize(
         "best_wape":                 round(pure_wape, 6),
         "best_wape_clean":           round(wape_clean, 6),   # YENİ: anormal hafta hariç WAPE
         "underprediction_rate":      round(underpred_rt, 6),
-        "rel_width_q90_q10":         round(best_rel_width, 4),  # v6: monotonluk duzeltmeli, artik negatif çıkmaz
+        "rel_width_q90_q10":         round(best_rel_width, 4),  # v13: Σy_val ile normalize, alpha'dan bağımsız (monotonluk düzeltmeli, artık negatif çıkmaz)
         "quantile_crossing_rate":    round(best_crossing_rate, 4),  # v6: ham q90<q10 oranı - tanı amaçlı
         "optimization_time_minutes": round(elapsed / 60, 2),
         "optuna_seed":               optuna_seed,  # YENİ: tekrarlanabilirlik izi
