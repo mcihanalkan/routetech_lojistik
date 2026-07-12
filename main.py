@@ -65,9 +65,13 @@ def run(
         env["ROUTETECH_OPTIMIZATION_INPUT"] = str(paths["optimization_input_json"])
         env["ROUTETECH_MAX_TIME_SECONDS"] = str(max_time_seconds)
         env["ROUTETECH_LOG_SEARCH_PROGRESS"] = "1"
-        engine_script = "alns_optimize.py" if engine == "alns" else "optimization.py"
+        engine_script_path = (
+            PROJECT_ROOT / "src" / "alns" / "alns_optimize.py"
+            if engine == "alns"
+            else PROJECT_ROOT / "src" / "optimization.py"
+        )
         subprocess.run(
-            [sys.executable, str(PROJECT_ROOT / "src" / engine_script)],
+            [sys.executable, str(engine_script_path)],
             cwd=str(PROJECT_ROOT),
             check=True,
             env=env,
