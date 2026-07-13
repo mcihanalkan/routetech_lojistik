@@ -3,3 +3,5 @@ __pycache__/
 .pytest_cache/
 /results/*
 /data/outputs/*
+/src/predict_model/alns_payload.json
+/src/predict_model/ortools_payload.csv

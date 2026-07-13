@@ -26,6 +26,14 @@ def run(
         forecast_source = str(payload_path)
     elif skip_predict:
         payload_path = PROJECT_ROOT / "src" / "predict_model" / "alns_payload.json"
+        if not payload_path.exists():
+            # Dosya artik git'te yok, yeni clone'da bulunmaz. Kullanilacak eski sonuc
+            # yoksa cokmek yerine tahmini calistirip uretiyoruz.
+            print(
+                f"UYARI: --skip-predict verildi ama {payload_path} bulunamadi. "
+                "Tahmin modeli calistirilarak sifirdan uretilecek (bu sefer daha uzun surecek)."
+            )
+            payload_path = run_predict_model(PROJECT_ROOT)
         forecast_source = str(payload_path)
     else:
         payload_path = run_predict_model(PROJECT_ROOT)
