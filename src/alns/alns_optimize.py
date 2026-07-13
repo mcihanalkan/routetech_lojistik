@@ -160,14 +160,21 @@ print(f"Baslangic (greedy) cozum maliyeti: {initial_obj:,.0f} TL")
 # ============================================================================
 # 4. ALNS KURULUMU
 # ============================================================================
-alns = ALNS(rng)
-alns.add_destroy_operator(random_removal, "random_removal")
+alns = ALNS(rng) # ALNS'yi generator ile kurduk
+# Destroy ve repair operatorleri olarak fonksiyonları atıyoruz.
+alns.add_destroy_operator(random_removal, "random_removal") 
 alns.add_destroy_operator(worst_removal, "worst_removal")
 alns.add_destroy_operator(tm_overload_removal, "tm_overload_removal")
 alns.add_repair_operator(greedy_repair, "greedy_repair")
 alns.add_repair_operator(cpsat_hat_repair, "cpsat_hat_repair")
 
-select = RouletteWheel(scores=[25, 5, 2, 0.5], decay=0.8, num_destroy=3, num_repair=2)
+# En iyi sonuç -> 25 puan
+# Eskisinden iyi sonuç -> 5 puan
+# Eskisinden kötü ama kabul edilen bir sonuç -> 2 puan
+# Reddedilen berbat bir sonuç -> 0.5 puan
+# decay -> unutma katsayısı. Eski başarılara takılıp kalmamak için puanlar her iterasyonda %80 korunur.
+
+select = RouletteWheel(scores=[25, 5, 2, 0.5], decay=0.8, num_destroy=3, num_repair=2) 
 # num_iters tahmini: cpsat_hat_repair en fazla 5 sn, greedy cok daha hizli -
 # ortalama ~2 sn/iterasyon varsayimi (kaba, autofit sicaklik egrisini olceklemek icin yeterli).
 tahmini_iterasyon = max(20, int(ENV_MAX_TIME / 2))
@@ -319,7 +326,8 @@ for key, toplam_desi in sorted(bucket_toplam_desi.items()):
         "Doluluk_Yuzde": round(100 * toplam_desi / (adet * kap), 1) if adet else 0,
     })
 
-kiralik_sabit_toplam = best._fixed_kiralik_cost
+# Kiralıklar sabit toplanamaz! Spotlar gibi dinamik toplanmalıdır!
+# kiralik_sabit_toplam = best._fixed_kiralik_cost
 spot_toplam_maliyet = sum(a.vehicle_cost for a in best.assignments)
 sla_ceza_toplam = sum(a.sla_cost for a in best.assignments)
 genel_toplam = best.objective()
@@ -329,7 +337,6 @@ ozet = f"""
 {'=' * 80}
 OZET ISTATISTIKLER (Faz 2 - ALNS, saat bazli, konsolidasyon destekli)
 {'=' * 80}
-  Kiralik Arac Sabit Maliyeti : {kiralik_sabit_toplam:>15,.0f} TL
   Spot Arac Maliyeti          : {spot_toplam_maliyet:>15,.0f} TL
   SLA Gecikme Cezasi          : {sla_ceza_toplam:>15,.0f} TL
 {'-' * 80}

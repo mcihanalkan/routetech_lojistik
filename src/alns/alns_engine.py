@@ -21,7 +21,6 @@ Kapsam sınırlamaları (v1 — bkz. plan dosyası):
     edilir — kiralık zorunlu/sabit kalkış olduğu için tır kapasitesine katkısı
     sabit bir sayıdır (hangi kargoyu taşıdığı hâlâ serbestçe optimize edilir,
     sadece kalkış SLOTU sabitlenmiştir; maliyeti zaten slot'tan bağımsızdır).
-  - %10 minimum spot doluluk kuralı bu motorda da uygulanıyor (bkz. try_insert_path).
 """
 
 from __future__ import annotations
@@ -68,7 +67,7 @@ class ProblemData:
     gunler: list
     merkezler: list
     demands: list  # (hat, gun, slot, desi)
-    zaman_sirali: list = field(default_factory=list)
+    zaman_sirali: list = field(default_factory=list) # Python'ın nesneler arası hafıza çakışmasını engeller, her nesneye özel ve bağımsız bir boş liste üretir.
     relay_candidates: dict = field(default_factory=dict)
     fixed_kiralik_tir_usage: dict = field(default_factory=dict)  # (tm, gun) -> adet
 
@@ -185,23 +184,30 @@ class Assignment:
 class State:
     def __init__(self, data: ProblemData):
         self.data = data
-        self.assignments: list = []
+        self.assignments: list = [] # (demand_hat, demand_gun, demand_slot, desi, legs, sla_cost, vehicle_cost)
         self.unassigned: list = list(data.demands)
         self.leg_spot_desi: dict = {}      # (src,dst,gun,slot,arac_turu) -> desi
         self.leg_kiralik_desi: dict = {}   # (src,dst,gun,slot,arac_turu) -> desi
         self.handling_usage: dict = {}     # (tm,gun) -> desi
         self.tir_usage: dict = {}          # (tm,gun) -> adet (spot kaynakli, kiralik ayrica sabit)
-        self._fixed_kiralik_cost = self._compute_fixed_kiralik_cost()
+        # self._fixed_kiralik_cost = self._compute_fixed_kiralik_cost()
 
-    def _compute_fixed_kiralik_cost(self) -> float:
-        total = 0.0
-        for (hat, arac_turu), stok in self.data.kiralik_stok_gunluk.items():
-            if stok <= 0:
-                continue
-            p = self.data.arac_parametreleri[arac_turu]
-            birim = vehicle_leg_cost(self.data.route_lookup, hat, arac_turu, p["rental_hourly"], p["rental_km"])
-            total += len(self.data.gunler) * stok * birim
-        return total
+    # def _compute_fixed_kiralik_cost(self) -> float:
+    #     total = 0.0
+    #     for (hat, arac_turu), stok in self.data.kiralik_stok_gunluk.items():
+    #         if stok <= 0:
+    #             continue
+    #         p = self.data.arac_parametreleri[arac_turu]
+    #         birim = vehicle_leg_cost(
+    #             self.data.route_lookup,
+    #             hat,
+    #             arac_turu,
+    #             p["rental_hourly"],
+    #             p["rental_km"],
+    #             tasinan_desi=0.0, # kiralık aracın sabit maliyeti hesaplanıyor
+    #         )
+    #         total += len(self.data.gunler) * stok * birim
+    #     return total
     
     def copy(self) -> "State":
         new = State.__new__(State)
@@ -302,24 +308,25 @@ class State:
             limit = min(limit, max(0.0, max_adet * kap - mevcut_desi))
         return max(0.0, limit)
 
-    # ---- bir bacağa desi commit et (trackerlari günceller, delta maliyet döndürür) ----
+    # ---- bir bacağa desi commit et (trackerlari günceller, delta maliyet döndürür) ----ü
+    # Örnek olarak, bir bacakta gidecek 15000 desi olsun. 2000 desi daha eklenecek.
     def _commit_leg(self, src, dst, gun, slot, arac_turu, desi, is_kiralik) -> float:
         key = (src, dst, gun, slot, arac_turu)
         if is_kiralik:
             self.leg_kiralik_desi[key] = self.leg_kiralik_desi.get(key, 0.0) + desi
             marjinal_maliyet = 0.0  # kiralik sabit maliyet zaten _fixed_kiralik_cost'ta
         else:
-            eski = self.leg_spot_desi.get(key, 0.0)
+            eski_desi = self.leg_spot_desi.get(key, 0.0)
             kap = self.data.arac_parametreleri[arac_turu]["kapasite_desi"]
-            eski_adet = spot_vehicle_count(eski, kap, MAX_SPOT)
-            yeni = eski + desi
-            yeni_adet = spot_vehicle_count(yeni, kap, MAX_SPOT)
-            self.leg_spot_desi[key] = yeni
+            eski_adet = spot_vehicle_count(eski_desi, kap, MAX_SPOT)
+            yeni_desi = eski_desi + desi
+            yeni_adet = spot_vehicle_count(yeni_desi, kap, MAX_SPOT) # Yeni desiye göre araç sayısı hesaplanır.
+            self.leg_spot_desi[key] = yeni_desi
             p = self.data.arac_parametreleri[arac_turu]
-            birim = vehicle_leg_cost(self.data.route_lookup, (src, dst), arac_turu, p["spot_hourly"], p["spot_km"])
-            marjinal_maliyet = (yeni_adet - eski_adet) * birim
+            birim = vehicle_leg_cost(self.data.route_lookup, (src, dst), arac_turu, p["spot_hourly"], p["spot_km"], tasinan_desi= desi)
+            delta_adet = yeni_adet - eski_adet # Yeni eklenecek araç sayısı
+            marjinal_maliyet = delta_adet * birim
             if arac_turu == self.data.tir_arac_turu:
-                delta_adet = yeni_adet - eski_adet
                 self.tir_usage[(src, gun)] = self.tir_usage.get((src, gun), 0) + delta_adet
                 varis_g = arrival_day(self.data.route_lookup, self.data.gunler, (src, dst), gun, slot, arac_turu)
                 if varis_g:
@@ -458,8 +465,10 @@ def try_insert_path(
                 # relay/ertelenmis slota yonlenir. Bu kural olmadan CP-SAT'in zamana
                 # yayarak sagladigi konsolidasyon verimliligi hic yakalanamiyordu
                 # (bkz. plan/sohbet gecmisi - asil maliyet farkinin nedeni buydu).
-                if mevcut <= 0 and not is_final_slot and onerilen < 0.10 * kap:
-                    continue
+                
+                # Spot araçlar için %10 kısıt kuralı kaldırıldı
+                # if mevcut <= 0 and not is_final_slot and onerilen < 0.10 * kap:
+                #     continue
                 best = (onerilen, arac_turu, False)
                 break
         if best is None:
