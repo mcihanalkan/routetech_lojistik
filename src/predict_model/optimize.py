@@ -484,6 +484,34 @@ _IDLE_COST_CANDIDATES = ["Kiralık Araç Günlük Kira (TL)", "Kiralık Araç G�
 _CAPACITY_CANDIDATES  = ["Kapasite (desi)", "kapasite", "capacity"]
 
 
+def _resolve_cost_file(project_root: Path) -> str:
+    """
+    v16: Maliyet dosyasının yolu proje boyunca zaten 2 kez değişti
+    (kök → sonra _arsiv_faz1/ altına arşivlendi, kökte onun yerine
+    Araç_Kapasite_Maliyet_Saat.xlsx belirdi). Tek bir sabit yol yerine,
+    BULUNAN İLK dosyayı kullanan bir öncelik listesi — klasör yapısı
+    tekrar değişirse optimize.py sessizce fallback gamma'ya düşüp
+    yanlışlıkla yanlış γ ile eğitim yapmak yerine, en azından gerçek
+    veriden türetilmiş bir γ bulma şansını en üst düzeye çıkarır.
+    Sıra: (1) yeni "_Saat" dosyası [en güncel/aktif olduğu varsayılır],
+          (2) arşivlenmiş orijinal, (3) eski kök konum (geri gelirse).
+    NOT: derive_gamma_from_costs() sütun adları uyuşmazsa zaten açıkça
+    uyarıp fallback'e düşüyor — yani _Saat dosyasının sütun yapısı
+    farklıysa bu SESSİZCE yanlış sonuç ÜRETMEZ, sadece uyarır.
+    """
+    candidates = [
+        project_root / "data" / "raw" / "Araç_Kapasite_Maliyet_Saat.xlsx",
+        project_root / "data" / "raw" / "_arsiv_faz1" / "Araç_Kapasite_Maliyet.xlsx",
+        project_root / "data" / "raw" / "Araç_Kapasite_Maliyet.xlsx",
+    ]
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    # Hiçbiri yoksa ilkini döndür — derive_gamma_from_costs() zaten
+    # "bulunamadı" uyarısını verip fallback gamma'ya düşecek.
+    return str(candidates[0])
+
+
 def derive_gamma_from_costs(cost_file: str, fallback: float = None) -> tuple:
     """
     Araç_Kapasite_Maliyet.xlsx'ten gamma türet: γ = (C_spot / C_atıl) - 1.
@@ -1404,8 +1432,10 @@ Gamma kalibrasyonu:
     parser.add_argument("--gamma",   type=float, default=None,
                         help="Asimetrik ceza katsayısı (C_spot/C_atıl - 1). "
                              "Verilmezse --cost-file'dan otomatik türetilir.")
-    parser.add_argument("--cost-file", default=str(_PROJECT_ROOT / "data" / "raw" / "Araç_Kapasite_Maliyet.xlsx"),
-                        help="Spot/atıl maliyet oranının türetileceği dosya (--gamma verilmezse kullanılır)")
+    parser.add_argument("--cost-file", default=_resolve_cost_file(_PROJECT_ROOT),
+                        help="Spot/atıl maliyet oranının türetileceği dosya (--gamma verilmezse kullanılır). "
+                             "Varsayılan: Araç_Kapasite_Maliyet_Saat.xlsx > _arsiv_faz1/Araç_Kapasite_Maliyet.xlsx "
+                             "> eski kök konum, sırayla bulunan ilki (bkz. _resolve_cost_file()).")
     parser.add_argument("--hpo-folds", type=int, default=4,
                         help="v6: ARAMA sırasında kullanılan fold sayısı (1-4). VARSAYILAN 4 — "
                              "--hpo-folds 2 testinde son 2 haftaya aşırı özelleşmiş, üretimde "
