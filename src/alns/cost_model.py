@@ -17,23 +17,24 @@ def vehicle_leg_cost(
     hat: tuple[str, str],
     arac_turu: str,
     hourly_rate: float,
-    km_rate: float,
-    tasinan_desi
+    km_rate: float
+    # tasinan_desi
 ) -> int:
     """Tek bir araç sevkiyatının maliyeti: saatlik_kira × seyir_süresi + mesafe × km_maliyeti.
+    NOT: SADECE SEYİR SÜRESİ ÜZERİNDEN SAATLİK KİRA HESABI YAPAR. ELLEÇLEME SÜRESİNİ DAHİL ETMEZ!
 
     PDF formülü: Toplam Araç Maliyeti = (Saatlik Kiralama Maliyeti × Kullanım Süresi)
     + (Kat Edilen Mesafe × Kilometre Başı Maliyet). CP-SAT tamsayı katsayı gerektirdiği
     için en yakın TL'ye yuvarlanır (ALNS için de tutarlılık amacıyla aynı yuvarlama).
     """
     toplam_sure = 0
-    ellecleme_suresi = tasinan_desi * 0.01 # dakika cinsinden
-    ellecleme_suresi_saat = ellecleme_suresi / 60
+    # ellecleme_suresi = tasinan_desi * 0.01 # dakika cinsinden
+    # ellecleme_suresi_saat = ellecleme_suresi / 60
     entry = route_lookup.get(hat)
     dist = entry["distance_km"] if entry else 0.0
     seyir_saat = entry[arac_turu] if entry else 0.0
-    toplam_sure = seyir_saat + ellecleme_suresi_saat
-    return int(round(hourly_rate * toplam_sure + dist * km_rate))
+    # toplam_sure = seyir_saat + ellecleme_suresi_saat
+    return int(round(hourly_rate * seyir_saat + dist * km_rate))
 
 
 def spot_vehicle_count(desi: float, capacity: float, max_spot: int) -> int:

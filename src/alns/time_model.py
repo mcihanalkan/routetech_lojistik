@@ -57,6 +57,14 @@ def ellecleme_suresi_dakika(desi: float, consolidation: bool = False) -> float:
     return sure * 2 if consolidation else sure
 
 
+def ellecleme_maliyet_hesapla(desi: float, kiralık_saat_maliyet: float) -> float:
+    """Elleçleme süresi = desi * 0.01 dk. Konsolidasyonda (indir + tekrar yükle) 2x sayılır."""
+    sure = desi * ELLECLEME_DAKIKA_PER_DESI
+    sure_saat = sure / 60
+    maliyet = sure_saat * kiralık_saat_maliyet
+    return maliyet
+
+
 def varis_zamani(kalkis: datetime, seyir_saat: float) -> datetime:
     return kalkis + timedelta(hours=seyir_saat)
 

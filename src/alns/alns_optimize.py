@@ -36,7 +36,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -153,8 +153,8 @@ data = ProblemData(
 rng = rnd.default_rng(42) # Neden 42 seedini veriyoruz generator'ü oluşturmak için?
 
 initial_state = State(data) 
-initial_state = greedy_repair(initial_state, rng)
-initial_obj = initial_state.objective()
+initial_state = greedy_repair(initial_state, rng) # Burada neden removal kullanmadan repair yapmış claude?
+initial_obj = initial_state.objective() # mevcut çözümün maliyeti
 print(f"Baslangic (greedy) cozum maliyeti: {initial_obj:,.0f} TL")
 
 # ============================================================================
@@ -327,7 +327,7 @@ for key, toplam_desi in sorted(bucket_toplam_desi.items()):
     })
 
 # Kiralıklar sabit toplanamaz! Spotlar gibi dinamik toplanmalıdır!
-# kiralik_sabit_toplam = best._fixed_kiralik_cost
+kiralik_sabit_toplam = best._fixed_kiralik_cost
 spot_toplam_maliyet = sum(a.vehicle_cost for a in best.assignments)
 sla_ceza_toplam = sum(a.sla_cost for a in best.assignments)
 genel_toplam = best.objective()
@@ -337,6 +337,7 @@ ozet = f"""
 {'=' * 80}
 OZET ISTATISTIKLER (Faz 2 - ALNS, saat bazli, konsolidasyon destekli)
 {'=' * 80}
+  Kiralık Sabit Maliyet       : {kiralik_sabit_toplam:>15,.0f} TL
   Spot Arac Maliyeti          : {spot_toplam_maliyet:>15,.0f} TL
   SLA Gecikme Cezasi          : {sla_ceza_toplam:>15,.0f} TL
 {'-' * 80}

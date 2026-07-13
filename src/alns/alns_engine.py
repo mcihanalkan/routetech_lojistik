@@ -36,6 +36,7 @@ from src.alns.time_model import (
     DISPATCH_SLOTS,
     RouteLookup,
     arrival_day,
+    ellecleme_maliyet_hesapla,
     ellecleme_tamamlanma_zamani,
     gecikme_saat,
     next_dispatch_slot,
@@ -191,6 +192,7 @@ class State:
         self.handling_usage: dict = {}     # (tm,gun) -> desi
         self.tir_usage: dict = {}          # (tm,gun) -> adet (spot kaynakli, kiralik ayrica sabit)
         # self._fixed_kiralik_cost = self._compute_fixed_kiralik_cost()
+        self._fixed_kiralik_cost = self._kiralik_bos_seyir_maliyeti()
 
     # def _compute_fixed_kiralik_cost(self) -> float:
     #     total = 0.0
@@ -208,7 +210,22 @@ class State:
     #         )
     #         total += len(self.data.gunler) * stok * birim
     #     return total
-    
+
+    def _kiralik_bos_seyir_maliyeti(self) -> float:
+        total = 0.0
+        for (hat, arac_turu), stok in self.data.kiralik_stok_gunluk.items():
+            if stok <= 0:
+                continue
+            p = self.data.arac_parametreleri[arac_turu]
+            # SADECE yolda geçen süre ve mesafe (elleçleme yok, desi = 0)
+            entry = self.data.route_lookup.get(hat)
+            seyir_saat = entry[arac_turu] if entry else 0.0
+            dist = entry["distance_km"] if entry else 0.0
+            birim_bos_maliyet = (seyir_saat * p["rental_hourly"]) + (dist * p["rental_km"])
+            
+            total += len(self.data.gunler) * stok * birim_bos_maliyet
+        return total
+        
     def copy(self) -> "State":
         new = State.__new__(State)
         new.data = self.data
@@ -311,22 +328,50 @@ class State:
     # ---- bir bacağa desi commit et (trackerlari günceller, delta maliyet döndürür) ----ü
     # Örnek olarak, bir bacakta gidecek 15000 desi olsun. 2000 desi daha eklenecek.
     def _commit_leg(self, src, dst, gun, slot, arac_turu, desi, is_kiralik) -> float:
-        key = (src, dst, gun, slot, arac_turu)
+        key = (src, dst, gun, slot, arac_turu) 
+        p = self.data.arac_parametreleri[arac_turu]
+        
+        # 1. Kiralık ve Spot saatlik/km ücretlerini belirle
+        hourly_rate = p["rental_hourly"] if is_kiralik else p["spot_hourly"]
+        km_rate = p["rental_km"] if is_kiralik else p["spot_km"]
+
+        # 2. O bacağın o anki TOPLAM faturasını hesaplayan yerel formül
+        def bacak_toplam_maliyeti(mevcut_desi, mevcut_arac_sayisi):
+            seyir_saat = self.data.route_lookup[(src, dst)][arac_turu]
+            mesafe = self.data.route_lookup[(src, dst)]["distance_km"]
+            
+            # Seyir maliyeti sadece araç sayısına bağlıdır
+            seyir_faturasi = mevcut_arac_sayisi * (seyir_saat * hourly_rate + mesafe * km_rate)
+            # Elleçleme maliyeti sadece toplam desiye bağlıdır (Araçlara nasıl dağıldığı önemsizdir)
+            ellecleme_faturasi = (mevcut_desi * 0.01 / 60) * hourly_rate 
+            
+            return seyir_faturasi + ellecleme_faturasi
+
         if is_kiralik:
             self.leg_kiralik_desi[key] = self.leg_kiralik_desi.get(key, 0.0) + desi
-            marjinal_maliyet = 0.0  # kiralik sabit maliyet zaten _fixed_kiralik_cost'ta
+            
+            # Kiralık aracın seyir maliyeti baştan ödendi! 
+            # Bize sadece bu desiyi yüklemek/indirmek için harcanan zamanın maliyeti yansır.
+            ellecleme_saati = (desi * 0.01) / 60
+            marjinal_maliyet = ellecleme_saati * p["rental_hourly"]
+            
         else:
             eski_desi = self.leg_spot_desi.get(key, 0.0)
-            kap = self.data.arac_parametreleri[arac_turu]["kapasite_desi"]
+            kap = p["kapasite_desi"]
             eski_adet = spot_vehicle_count(eski_desi, kap, MAX_SPOT)
+            
             yeni_desi = eski_desi + desi
-            yeni_adet = spot_vehicle_count(yeni_desi, kap, MAX_SPOT) # Yeni desiye göre araç sayısı hesaplanır.
+            yeni_adet = spot_vehicle_count(yeni_desi, kap, MAX_SPOT)
             self.leg_spot_desi[key] = yeni_desi
-            p = self.data.arac_parametreleri[arac_turu]
-            birim = vehicle_leg_cost(self.data.route_lookup, (src, dst), arac_turu, p["spot_hourly"], p["spot_km"], tasinan_desi= desi)
-            delta_adet = yeni_adet - eski_adet # Yeni eklenecek araç sayısı
-            marjinal_maliyet = delta_adet * birim
+            
+            # Spot aracta hem araç sayısı (seyir) hem de desi (elleçleme) artabilir. 
+            # İkisinin de yarattığı fiyat artışı kusursuzca yakalanır.
+            eski_maliyet = bacak_toplam_maliyeti(eski_desi, eski_adet)
+            yeni_maliyet = bacak_toplam_maliyeti(yeni_desi, yeni_adet)
+            marjinal_maliyet = yeni_maliyet - eski_maliyet
+
             if arac_turu == self.data.tir_arac_turu:
+                delta_adet = yeni_adet - eski_adet
                 self.tir_usage[(src, gun)] = self.tir_usage.get((src, gun), 0) + delta_adet
                 varis_g = arrival_day(self.data.route_lookup, self.data.gunler, (src, dst), gun, slot, arac_turu)
                 if varis_g:
@@ -336,6 +381,7 @@ class State:
         varis_g = arrival_day(self.data.route_lookup, self.data.gunler, (src, dst), gun, slot, arac_turu)
         if varis_g:
             self.handling_usage[(dst, varis_g)] = self.handling_usage.get((dst, varis_g), 0.0) + desi
+            
         return marjinal_maliyet
 
 
@@ -355,11 +401,13 @@ def _rank_spot_types_by_cost(data: ProblemData, hat: tuple, desi: float) -> list
     bir araç (Tır) seçmek maliyeti ciddi şekilde şişirir; bu yüzden her çağrıda
     gerçek maliyet karşılaştırılır."""
     def tahmini_maliyet(arac_turu: str) -> float:
-        p = data.arac_parametreleri[arac_turu]
-        kap = p["kapasite_desi"]
-        adet = spot_vehicle_count(desi, kap, 10 ** 9) if desi > 0 else 0
-        birim = vehicle_leg_cost(data.route_lookup, hat, arac_turu, p["spot_hourly"], p["spot_km"])
-        return adet * birim
+        p = data.arac_parametreleri[arac_turu] 
+        kap = p["kapasite_desi"] # Araç türünün kapasitesi
+        adet = spot_vehicle_count(desi, kap, 10 ** 9) if desi > 0 else 0 # Bu kadar araç
+        birim_maliyet = vehicle_leg_cost(data.route_lookup, hat, arac_turu, p["spot_hourly"], p["spot_km"])
+        maliyet = adet * birim_maliyet
+        ellecleme_maliyet = ellecleme_maliyet_hesapla(desi, p["spot_hourly"])
+        return maliyet + ellecleme_maliyet
 
     return sorted(data.arac_turleri, key=tahmini_maliyet)
 
@@ -573,10 +621,14 @@ def force_insert(state: State, hat, gun, slot, desi) -> None:
     eski_adet = spot_vehicle_count(eski, kap, 10 ** 9)
     yeni = eski + desi
     yeni_adet = spot_vehicle_count(yeni, kap, 10 ** 9)
+    delta_adet = (yeni_adet - eski_adet) 
     state.leg_spot_desi[key] = yeni
     p = data.arac_parametreleri[arac_turu]
+
+    ellecleme_maliyet = ellecleme_maliyet_hesapla(desi, p["spot_hourly"])
+    
     birim = vehicle_leg_cost(data.route_lookup, hat, arac_turu, p["spot_hourly"], p["spot_km"])
-    vehicle_cost = (yeni_adet - eski_adet) * birim
+    vehicle_cost = delta_adet * birim + ellecleme_maliyet
     state.handling_usage[(src, gun)] = state.handling_usage.get((src, gun), 0.0) + desi
     varis_g = arrival_day(data.route_lookup, data.gunler, hat, gun, slot, arac_turu) or gun
     state.handling_usage[(dst, varis_g)] = state.handling_usage.get((dst, varis_g), 0.0) + desi
@@ -686,11 +738,12 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
     hatlara ait unassigned parçalar varsa greedy_repair'e bırakılır.
     """
     state = state.copy()
+    # Atanmamış kargo yoksa direkt fonksiyonu bitir.
     if not state.unassigned:
         return state
 
     hat_counts: dict = {}
-    for (hat, *_rest) in state.unassigned:
+    for (hat, *_rest) in state.unassigned: # _rest listesinin unassigned tuple'ındaki kullanmayacağımız şeyleri attık. 
         hat_counts[hat] = hat_counts.get(hat, 0) + 1
     target_hat = max(hat_counts, key=hat_counts.get)
 
@@ -722,9 +775,10 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
     # paya sigmali. Once tum slotlarin yuk terimlerini (TM,gun) bazinda topluyoruz,
     # sonra TEK bir kisit ekliyoruz (slot slot ayri kisitlamak yanlis olurdu -
     # ayni gunun iki slotu ayni kapasiteyi paylasir).
+
     yuk_terimleri_by_slot = {}
     handling_terimleri_by_tm_gun: dict = {}
-
+    yuk_dict = {} # YENİ EKLENEN SÖZLÜK
     for idx, (g, s) in enumerate(zaman_sirali):
         bugun = int(round(talep.get((g, s), 0.0)))
         if idx == 0:
@@ -737,6 +791,7 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
         for a in data.arac_turleri:
             kap = int(data.arac_parametreleri[a]["kapasite_desi"])
             yuk = model.NewIntVar(0, (MAX_SPOT + 50) * kap, f"yuk_{g}_{s}_{a}")
+            yuk_dict[(g, s, a)] = yuk # YENİ EKLENEN SATIR: Değişkeni aşağısı için hafızaya alıyoruz
             model.Add(yuk <= (kiralik_x[(g, s, a)] + spot_y[(g, s, a)]) * kap)
             yuk_terimleri.append(yuk)
             varis_g = arrival_day(data.route_lookup, data.gunler, target_hat, g, s, a) or g
@@ -759,9 +814,19 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
     maliyet = []
     for a in data.arac_turleri:
         p = data.arac_parametreleri[a]
-        birim_spot = vehicle_leg_cost(data.route_lookup, target_hat, a, p["spot_hourly"], p["spot_km"])
+        # Seyir maliyetini senin güncellediğin vehicle_leg_cost fonksiyonundan alıyoruz
+        spot_birim_maliyet = vehicle_leg_cost(data.route_lookup, target_hat, a, p["spot_hourly"], p["spot_km"])
+        
+        # CP-SAT sadece tamsayı kabul ettiği için katsayıyı yuvarlıyoruz
+        ellecleme_katsayisi = int(round((0.01 / 60) * p["spot_hourly"])) # desi başına elleçleme maliyeti 
+        
         for (g, s) in zaman_sirali:
-            maliyet.append(spot_y[(g, s, a)] * birim_spot)
+            # 1. Spot aracın yola çıkma (seyir) maliyeti
+            maliyet.append(spot_y[(g, s, a)] * spot_birim_maliyet)
+            
+            # 2. O araca binen yükün (bilinmeyen değişkenin) elleçleme maliyeti
+            if ellecleme_katsayisi > 0:
+                maliyet.append(yuk_dict[(g, s, a)] * ellecleme_katsayisi)
     for idx, (g, s) in enumerate(zaman_sirali):
         if idx + 1 >= len(zaman_sirali):
             continue
