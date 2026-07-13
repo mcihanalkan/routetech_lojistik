@@ -358,7 +358,7 @@ def _rank_spot_types_by_cost(data: ProblemData, hat: tuple, desi: float) -> list
         p = data.arac_parametreleri[arac_turu]
         kap = p["kapasite_desi"]
         adet = spot_vehicle_count(desi, kap, 10 ** 9) if desi > 0 else 0
-        birim = vehicle_leg_cost(data.route_lookup, hat, arac_turu, p["spot_hourly"], p["spot_km"])
+        birim = vehicle_leg_cost(data.route_lookup, hat, arac_turu, p["spot_hourly"], p["spot_km"], tasinan_desi=desi)
         return adet * birim
 
     return sorted(data.arac_turleri, key=tahmini_maliyet)
@@ -575,7 +575,7 @@ def force_insert(state: State, hat, gun, slot, desi) -> None:
     yeni_adet = spot_vehicle_count(yeni, kap, 10 ** 9)
     state.leg_spot_desi[key] = yeni
     p = data.arac_parametreleri[arac_turu]
-    birim = vehicle_leg_cost(data.route_lookup, hat, arac_turu, p["spot_hourly"], p["spot_km"])
+    birim = vehicle_leg_cost(data.route_lookup, hat, arac_turu, p["spot_hourly"], p["spot_km"], tasinan_desi=desi)
     vehicle_cost = (yeni_adet - eski_adet) * birim
     state.handling_usage[(src, gun)] = state.handling_usage.get((src, gun), 0.0) + desi
     varis_g = arrival_day(data.route_lookup, data.gunler, hat, gun, slot, arac_turu) or gun
@@ -759,7 +759,7 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
     maliyet = []
     for a in data.arac_turleri:
         p = data.arac_parametreleri[a]
-        birim_spot = vehicle_leg_cost(data.route_lookup, target_hat, a, p["spot_hourly"], p["spot_km"])
+        birim_spot = vehicle_leg_cost(data.route_lookup, target_hat, a, p["spot_hourly"], p["spot_km"], tasinan_desi=0.0)
         for (g, s) in zaman_sirali:
             maliyet.append(spot_y[(g, s, a)] * birim_spot)
     for idx, (g, s) in enumerate(zaman_sirali):
