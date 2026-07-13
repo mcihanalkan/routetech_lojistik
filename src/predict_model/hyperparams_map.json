@@ -10,23 +10,23 @@
             21,
             30
         ],
-        "gamma": 0.5988248587570623,
-        "gamma_source": "gamma=kapasite-ağırlıklı ort. (sütun: 'Kapasite (desi)'): 0.5988 | araç-tipi bazlı: Tır=γ0.6714, Kamyon=γ0.5276, Hafif Kamyon=γ0.7500, Kamyonet=γ0.2667 [kaynak: Araç_Kapasite_Maliyet.xlsx, sütunlar: spot='Spot Araç Sabit Günlük Maliyet (TL)', atıl='Kiralık Araç Günlük Kira (TL)']",
-        "best_hybrid_score": 0.658155,
-        "best_wape": 0.472679,
-        "best_wape_clean": 0.4874,
-        "underprediction_rate": 0.334896,
-        "rel_width_q90_q10": 1.0362,
+        "gamma": 0.5988,
+        "gamma_source": "fallback (dosya bulunamadı): 0.5988",
+        "best_hybrid_score": 0.655888,
+        "best_wape": 0.47288,
+        "best_wape_clean": 0.47712,
+        "underprediction_rate": 0.345616,
+        "rel_width_q90_q10": 1.038,
         "quantile_crossing_rate": 0.0,
-        "optimization_time_minutes": 30.49,
+        "optimization_time_minutes": 30.58,
         "optuna_seed": 42,
         "params": {
-            "iterations": 500,  
-            "alpha": 0.642,
+            "iterations": 500,
+            "alpha": 0.6346,
             "depth": 6,
-            "learning_rate": 0.04337751557062343,
-            "l2_leaf_reg": 20.403013421592547,
-            "bagging_temperature": 0.2547604635626425
+            "learning_rate": 0.04249771609024699,
+            "l2_leaf_reg": 21.48558352030335,
+            "bagging_temperature": 0.4383936092336267
         }
     },
     "medium": {
@@ -40,23 +40,23 @@
             21,
             30
         ],
-        "gamma": 0.5988248587570623,
-        "gamma_source": "gamma=kapasite-ağırlıklı ort. (sütun: 'Kapasite (desi)'): 0.5988 | araç-tipi bazlı: Tır=γ0.6714, Kamyon=γ0.5276, Hafif Kamyon=γ0.7500, Kamyonet=γ0.2667 [kaynak: Araç_Kapasite_Maliyet.xlsx, sütunlar: spot='Spot Araç Sabit Günlük Maliyet (TL)', atıl='Kiralık Araç Günlük Kira (TL)']",
-        "best_hybrid_score": 0.274383,
-        "best_wape": 0.179086,
-        "best_wape_clean": 0.179086,
-        "underprediction_rate": 0.073306,
-        "rel_width_q90_q10": 0.5999,
-        "quantile_crossing_rate": 0.0025,
-        "optimization_time_minutes": 87.41,
+        "gamma": 0.5988,
+        "gamma_source": "fallback (sütun bulunamadı): 0.5988",
+        "best_hybrid_score": 0.33154,
+        "best_wape": 0.196232,
+        "best_wape_clean": 0.196232,
+        "underprediction_rate": 0.145321,
+        "rel_width_q90_q10": 0.4071,
+        "quantile_crossing_rate": 0.0094,
+        "optimization_time_minutes": 99.35,
         "optuna_seed": 42,
         "params": {
-            "iterations": 900,
-            "alpha": 0.6829,
+            "iterations": 1100,
+            "alpha": 0.6727,
             "depth": 6,
-            "learning_rate": 0.01677680588419784,
-            "l2_leaf_reg": 30.846518244578256,
-            "bagging_temperature": 0.45966043304297105
+            "learning_rate": 0.0472494524277697,
+            "l2_leaf_reg": 31.891859127259934,
+            "bagging_temperature": 0.42277999326270793
         }
     }
 }
