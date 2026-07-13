@@ -470,6 +470,7 @@ class DemandForecaster(BaseForecaster):
         surge_log_cosh_tau: float = 0.85,
         surge_min_rows: int = 40,
         surge_calibration_factor: float = 1.0,
+        surge_relative_cap_alpha: Optional[float] = None,
         logging_enabled: bool = True,
         random_state: Optional[int] = 42,
     ):
@@ -499,6 +500,10 @@ class DemandForecaster(BaseForecaster):
         self.surge_log_cosh_tau      = surge_log_cosh_tau
         self.surge_min_rows          = surge_min_rows
         self.surge_calibration_factor_ = surge_calibration_factor
+        # ADIM 5 / Faz 2 — Relative Cap: correction'ı baseline (düzeltme öncesi)
+        # hacmin bir oranıyla sınırlar. None = kapalı (varsayılan, geriye
+        # dönük uyumlu) — retrain gerekmeden backtest'te elle de atanabilir.
+        self.surge_relative_cap_alpha_ = surge_relative_cap_alpha
 
         # ADIM 2 (weekday bias calibration) — retrain sırasında fit() içinde
         # otomatik öğrenilip doldurulacak; elle de (backtest amaçlı) atanabilir.
@@ -1434,6 +1439,12 @@ class DemandForecaster(BaseForecaster):
             q50_vals = np.maximum(q50_vals, 0)
             q90_vals = np.maximum(q90_vals, 0)
 
+        # --- Faz 1 Teşhis: düzeltme öncesi ham q50 (Model-1 only) ---
+        # Surge/Residual ve Weekday Bias düzeltmelerinden ÖNCEKİ q50_vals'ın
+        # bir kopyası — mevcut q50 davranışını BOZMADAN, ne kadarının Model-1
+        # ne kadarının düzeltme katmanlarından geldiğini görmek için.
+        q50_base_vals = q50_vals.copy()
+
         # --- Surge/Residual Model Düzeltmesi (Model 2 — PDF Bölüm 1 + 3) ---
         # Model 1'in (ensemble) ardışık kapalı gün / kampanya sonrası
         # patlamalarda sistematik olarak eksik tahmin ettiği ("kapatılamayan
@@ -1452,6 +1463,20 @@ class DemandForecaster(BaseForecaster):
                 # negatif kalıntı üretirse q50'yi gereksiz aşağı çekmesin diye
                 # sıfırla kırpılır — ALNS'in asimetrik maliyet yapısıyla tutarlı.
                 residual_pred = np.maximum(residual_pred, 0.0) * getattr(self, "surge_calibration_factor_", 1.0)
+
+                # ADIM 5 / Faz 2 — Relative Cap: correction'ı baseline (düzeltme öncesi)
+                # hacmin belirli bir oranıyla sınırla. None = kapalı (varsayılan,
+                # geriye dönük uyumlu).
+                alpha = getattr(self, "surge_relative_cap_alpha_", None)
+                if alpha is not None:
+                    cap = alpha * q50_vals[surge_mask_pred]   # q50_vals burada henüz ham/base değer
+                    n_capped = int(np.sum(residual_pred > cap))
+                    residual_pred = np.minimum(residual_pred, cap)
+                    if self.logging_enabled and n_capped > 0:
+                        logger.info(
+                            f"   🧢 Relative Cap uygulandı (α={alpha}): {n_capped} satırda "
+                            f"correction baseline'ın %{alpha*100:.0f}'i ile sınırlandı."
+                        )
 
                 q50_vals[surge_mask_pred] = q50_vals[surge_mask_pred] + residual_pred
                 # q90 (spot araç alarm bandı) da aynı düzeltmeyi + %15 ek tampon
@@ -1554,6 +1579,10 @@ class DemandForecaster(BaseForecaster):
                 "q10":                  round(float(q10_vals[i]), 4),
                 "q50":                  round(float(q50_vals[i]), 4),
                 "q90":                  round(float(q90_vals[i]), 4),
+                # Faz 1 Teşhis: surge/weekday düzeltmesinden ÖNCEKİ ham q50
+                # (Model-1 only) — q50 ile q50_base arasındaki fark, düzeltme
+                # katmanlarının (Model 2 + weekday bias) o satıra kattığı miktar.
+                "q50_base":             round(float(q50_base_vals[i]), 4),
                 # Belirsizlik genişliği: ALNS için kapasite tamponu hesabında kullanılır
                 "uncertainty_range":    round(float(q90_vals[i] - q10_vals[i]), 4),
             }
