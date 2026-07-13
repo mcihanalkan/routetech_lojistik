@@ -106,6 +106,13 @@ def parse_args():
         "--model-1700", default=None,
         help="17:00 modeli için MODEL_FILE_PATH_1700 yerine kullanılacak .joblib yolu",
     )
+    p.add_argument(
+        "--surge-cap-alpha", type=float, default=None,
+        help="Faz 2 Relative Cap: surge correction'ı baseline (düzeltme öncesi) "
+             "hacmin bu oranıyla sınırla (ör. 0.20, 0.25, 0.30, 0.40). "
+             "Belirtilmezse retrain'de kaydedilmiş değer (varsayılan None=kapalı) kullanılır. "
+             "Retrain gerekmez — fc.surge_relative_cap_alpha_ çalışma zamanında elle atanır.",
+    )
     return p.parse_args()
 
 
@@ -168,9 +175,12 @@ def build_prediction_frame(full_df, target_dates):
     return pred_df
 
 
-def run_one_target(label, target_col, model_path, full_df, cutoff, start, end):
+def run_one_target(label, target_col, model_path, full_df, cutoff, start, end, surge_cap_alpha=None):
     fc = DemandForecaster.load_model(model_path)
     fc.surge_calibration_factor_ = 1.5
+    if surge_cap_alpha is not None:
+        fc.surge_relative_cap_alpha_ = surge_cap_alpha
+        log.info(f"ℹ️  [{label}] Faz 2 Relative Cap aktif: alpha={surge_cap_alpha}")
 
     # Context buffer'ı CUTOFF'a göre GEÇİCİ olarak yeniden hesapla
     # (fit-zamanı buffer'ı değiştirmiyoruz, sadece bu backtest için)
@@ -206,6 +216,34 @@ def run_one_target(label, target_col, model_path, full_df, cutoff, start, end):
         .rename(columns={target_col: "y_true"})
     )
     merged = preds_df.merge(actual_route_day, on=[GROUP_COL, "tarih"], how="inner")
+
+    # --- Faz 1 Teşhis: Volume vs Overprediction (Adım 5 öncesi) ---
+    diag = merged[merged["y_true"] >= 20].copy()   # çok küçük gerçek değerleri filtrele (% patlamasını önler)
+    diag["overpred_pct"] = (diag["q50"] - diag["y_true"]) / diag["y_true"] * 100
+    diag["abs_overpred"] = np.maximum(diag["q50"] - diag["y_true"], 0.0)
+    diag["volume_decile"] = pd.qcut(diag["q50"], 10, labels=False, duplicates="drop")
+
+    # --- Faz 1b: Baseline (düzeltme öncesi, q50_base) vs Düzeltilmiş (q50) ---
+    # q50_base = surge/weekday düzeltmesinden ÖNCEKİ ham Model-1 çıktısı
+    # (forecasters.py::predict() içinde eklendi). Bu, overprediction'ın
+    # ne kadarının Model-1'in kendisinden, ne kadarının düzeltme
+    # katmanlarından (Model 2 + weekday bias) geldiğini ayrıştırır.
+    if "q50_base" in diag.columns:
+        diag["base_overpred_pct"] = (diag["q50_base"] - diag["y_true"]) / diag["y_true"] * 100
+        diag["correction_contrib"] = diag["q50"] - diag["q50_base"]   # Model 2'nin eklediği miktar
+
+    print(f"\n📊 [{label}] Hacim-Bias Teşhisi (düzeltilmiş, y_true>=20 filtreli):")
+    agg_spec = dict(
+        n=("q50", "size"),
+        ort_hacim=("q50", "mean"),
+        medyan_overpred_pct=("overpred_pct", "median"),   # ortalama yerine medyan — outlier'a dayanıklı
+        toplam_abs_overpred=("abs_overpred", "sum"),        # gerçek desi cinsinden boyut
+    )
+    if "q50_base" in diag.columns:
+        agg_spec["medyan_base_overpred_pct"] = ("base_overpred_pct", "median")
+        agg_spec["ort_correction_contrib"] = ("correction_contrib", "mean")
+    decile_stats = diag.groupby("volume_decile").agg(**agg_spec).round(1)
+    print(decile_stats.to_string())
 
     print(f"\n🔬 [{label}] Backtest {start}→{end} (cutoff={cutoff}) — Tahmin vs Gerçek:")
     abs_pct_errors = []
@@ -251,6 +289,7 @@ def main():
         run_one_target(
             label, target_col, model_path, full_df,
             cutoff=args.cutoff, start=args.start, end=args.end,
+            surge_cap_alpha=args.surge_cap_alpha,
         )
 
 
