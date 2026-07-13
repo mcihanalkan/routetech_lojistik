@@ -110,10 +110,104 @@ logger = logging.getLogger(__name__)
 #     τ_base/κ/β/k_min/γ SABİT bırakıldı (yapısal U_rel tabanı hâlâ geçerli);
 #     bunun yerine ayrı bir materyalite ağırlığı katmanı eklendi.
 
+# --- [Tur 6] MAAPE / Arktanjant Dönüşümü ------------------------------------
+# NEDEN GEREKLİ (bkz. "Seyrek Talepte Standart Hata Metriklerinin Sıkıntısı" PDF):
+#   relative_uncertainty = uncertainty_range / max(q50, 1.0) matematiksel olarak
+#   SINIRSIZDIR. q50 sıfıra yakınsa (09:00 slotu, durgun rota) oran yüzlerce/
+#   binlerce % çıkabilir (gözlemlenen örnek: %3300). Tur 5'teki materyalite
+#   ağırlığı bunu SONRADAN (sigmoid skorunu çarparak) telafi ediyordu; ama
+#   relative_uncertainty alanının kendisi hâlâ patlak ve dynamic_threshold
+#   (τ_base=0.50 gibi normal-ölçek sabitlerle) karşılaştırıldığında tau_base'i
+#   yapay şekilde şişirmeye devam ediyordu (log: "τ_base 4.90'a şişiyor").
+#
+#   Çözüm — PDF'in önerdiği MAAPE (Arctan APE) mantığı: ham oranı arctan'dan
+#   geçirip [0, π/2) aralığını π/2'ye bölerek [0, 1) aralığına normalize
+#   ediyoruz. arctan asimptotik olduğu için x→∞ iken sonuç 1'e YAKLAŞIR ama
+#   ASLA AŞMAZ — payda küçüklüğü artık hiçbir şekilde skoru patlatamaz.
+#   Kapasite bazlı U_smart'tan (raporun alternatif önerisi) farkı: yeni bir
+#   dış parametre (araç/filo kapasitesi) gerektirmez, mevcut materiality_floor
+#   katmanıyla birlikte çalışır (iki savunma katmanı: 1) burada oran sınırlanır,
+#   2) Tur 5'teki sqrt(weight) düşük hacimde nihai skoru ayrıca bastırır).
+#
+#   ÖNEMLİ: derive_risk_params_from_data() içindeki tau_base türetimi de AYNI
+#   dönüşümden geçirilir (aşağıda _maape_scale kullanılıyor) — aksi halde
+#   runtime'daki bounded relative_uncertainty, unbounded ham veriden türetilmiş
+#   bir eşikle kıyaslanır ve sorun başka bir biçimde geri döner.
+#
+# --- [Tur 7] Ölçek (scale) parametresi — GERÇEK ÜRETİM VERİSİNDE BULUNAN KUSUR ---
+# run_forecast.py çalıştırıldığında 09:00 slotu için (seyrek/durgun, çarpıklık
+# +4.76) auto-derive edilen tau_base=0.872 çıktı — relative_uncertainty'nin
+# tavanı (1.0) ile arasında sadece 0.128 boşluk kalıyor, k(V)~7 civarı bir
+# eğimle HIGH eşiğine (sigmoid=0.82) ulaşmak için gereken ~0.22'lik fark hiçbir
+# satır için mümkün olamıyor → 2023 kayıtta HIGH=0 (bkz. gerçek log). Kök neden:
+# düz arctan(x), "tipik" (medyan) ham oranı DOĞRUDAN [0,1) ölçeğine taşıyor;
+# 09:00 gibi yapısal olarak seyrek bir slotta tipik ham oran zaten ~%491 gibi
+# devasa olduğundan, arctan(4.91)≈0.872 zaten tavana yapışıyor — outlier'lara
+# hiç yer kalmıyor.
+#
+# Çözüm: arctan(x) yerine arctan(x / scale) kullanılır; scale, o slotun/alt
+# kümenin KENDİ tipik (medyan) ham oranına eşitlenir. Böylece TANIM GEREĞİ
+# medyan satır tam olarak 0.5'e denk gelir (arctan(1)·2/π=0.5) — slotlar
+# arası "tipik büyüklük" farkı artık scale'e taşınır, tau_base HER SLOTTA
+# aynı, taşınabilir/sabit bir sayı (örn. 0.45) olarak kalabilir ve gerçekten
+# aşırı (medyanın kat kat üstü) satırlar hâlâ 1.0'a doğru ilerleyip HIGH
+# tetikleyebilir. scale <= 0 (örn. tüm gözlemler sıfırsa) ise 1.0'a düşülür
+# (eski/scale'siz davranışla aynı — geriye dönük güvenli varsayılan).
+def _maape_scale(raw_ratio: float, scale: float = 1.0) -> float:
+    """
+    MAAPE/Arktanjant dönüşümü: ham (sınırsız) oranı [0, 1) aralığına sıkıştırır.
+
+        f(x) = (2/π) · arctan(x / scale)
+
+    Özellikler:
+      f(0)        = 0.0    → belirsizlik yok
+      f(scale)    = 0.5    → oran, o alt kümenin TİPİK (medyan) değerine eşit → orta seviye
+      f(inf)      = 1.0    → asimptot, ASLA aşılmaz (klasik APE/MAPE'nin aksine)
+
+    Parameters
+    ----------
+    raw_ratio : Ham (sınırsız) oran, örn. uncertainty_range / max(q50, 1.0).
+    scale     : [Tur 7] Referans/tipik ölçek. Varsayılan 1.0 (Tur 6'daki eski
+                davranışla birebir aynı — geriye dönük uyumlu). Genelde o
+                slotun/alt kümenin ham oranının MEDYANI verilir (bkz.
+                derive_risk_params_from_data, "maape_scale" dönüş değeri) —
+                böylece farklı büyüklükteki slotlar (09:00 vs 17:00) kendi
+                doğal ölçeklerine göre normalize olur, tau_base sabit kalabilir.
+
+    raw_ratio negatif olamaz (uncertainty_range ve v_safe her zaman ≥ 0),
+    yine de savunma amaçlı 0'ın altına düşürülmez. scale <= 0 ise (degenerate
+    durum) 1.0'a düşülür — sıfıra bölme koruması.
+    """
+    raw_ratio = max(float(raw_ratio), 0.0)
+    scale = float(scale)
+    if scale <= 0.0:
+        scale = 1.0
+    return float((2.0 / np.pi) * np.arctan(raw_ratio / scale))
+
+
+# [Tur 7] Varsayılan ölçek — slot-bazlı türetim yapılmazsa (derive_risk_params_
+# from_data çağrılmazsa) bu kullanılır; Tur 6'daki eski (scale'siz) davranışla
+# birebir aynıdır, geriye dönük uyumluluk için.
+DEFAULT_MAAPE_SCALE: float = 1.0
+
+
 # τ(V) = τ_base + κ · V^(-β)  → hacme göre maks. kabul edilebilir U_rel eşiği
-DYNAMIC_TAU_BASE: float = 0.50   # Asimptotik taban eşik — modelin doğal U_rel tabanına (~%55) yakın
-DYNAMIC_KAPPA:    float = 5.0    # Düşük/orta hacim gevşeme çarpanı
-DYNAMIC_BETA:     float = 0.30   # Sönümleme oranı (Taylor güç yasası; bu filo ölçeğine göre kalibre)
+#
+# [Tur 7 KALİBRASYON NOTU] scale artık slotlar arası büyüklük farkını
+# kendi içinde emdiği için (bkz. yukarıdaki _maape_scale notu), tau_base
+# BAŞKA BİR ŞEYE ihtiyaç duymadan TÜM slotlarda aynı, taşınabilir bir sayı
+# olarak kalabilir — "medyan satır → 0.5" tanımı scale ile zaten sağlanıyor,
+# tau_base sadece bu 0.5 tipik noktasının etrafında ince ayar (headroom) yapar.
+# 0.45 seçildi: medyanın biraz altı → tipik/medyan civarındaki satırlar zaten
+# MEDIUM sınıfına yaklaşmaya başlasın, ama HIGH'a (sigmoid 0.82) ulaşmak için
+# hâlâ gerçek bir outlier (medyanın kat kat üstü ham oran) gerekiyor.
+# κ=0.35: en düşük hacimde (V=1) τ(V)=0.45+0.35=0.80 — 1.0 tavanının hâlâ
+# altında, düşük hacme gevşeme payı veriyor ama HIGH'ı imkânsız kılmıyor
+# (eski Tur 6 izdüşümünde κ=0.45 ile τ(1)=0.74 idi; burada tau_base 0.29'dan
+# 0.45'e çıktığı için κ hafifçe düşürüldü, aynı ~0.80 tavan mantığı korundu).
+DYNAMIC_TAU_BASE: float = 0.45   # [Tur 7] scale-normalize edilmiş taban — TÜM slotlarda taşınabilir/sabit
+DYNAMIC_KAPPA:    float = 0.35   # [Tur 7] düşük hacim gevşeme payı — τ(V=1)=0.80, 1.0 tavanının altında kalır
+DYNAMIC_BETA:     float = 0.30   # Sönümleme oranı (V^-β kuvvet yasası) — hacim ekseni değişmedi, AYNEN kalır
 
 # k(V) = k_min + γ · log(1 + V)  → hacme göre sigmoid eğri katılığı
 DYNAMIC_K_MIN: float = 2.0   # En küçük hacimlerde min. eğim
@@ -131,6 +225,26 @@ DYNAMIC_GAMMA: float = 1.0   # Hacim arttıkça eğrinin katılaşma hızı
 # bastırılır. q50=0 olan bir satır DAİMA weight=0 → risk_score=0 → LOW alır.
 MATERIALITY_FLOOR: float = 5000.0
 
+# --- [Düzeltme: derive_risk_params_from_data()] Sıfır-hariç istatistik + dinamik alt taban ---
+# compute_target_skewness'in zaten uyguladığı "gözlem, sıfır hariç" mantığıyla
+# tutarlı olacak şekilde: percentile/tau hesaplarına giren q50 dağılımından
+# sıfıra çok yakın (durgun/talep-yok) satırlar dışlanır — aksi halde bu
+# satırlar özellikle p25 gibi düşük bir persentili yapay şekilde aşağı çeker.
+MIN_NONZERO_THRESHOLD:    float = 1.0    # Bu eşiğin altındaki q50 "durgun" sayılır, istatistikten dışlanır
+ABSOLUTE_MIN_FLOOR:       float = 50.0   # materiality_floor asla bu değerin altına inmez (eski 1.0 anlamsız düşüktü)
+MIN_FLOOR_FRAC_OF_MEDIAN: float = 0.10   # min_floor elle verilmezse: nonzero q50 medyanının bu kesri
+
+# --- [Düzeltme: tau_base için ek alt eşik] ---
+# MIN_NONZERO_THRESHOLD (1.0) sadece tam sıfıra yakın satırları eler;
+# q50=2-5 gibi "teknik olarak nonzero ama slotun kendi ölçeğine göre
+# anlamsız derecede küçük" satırlar hâlâ tau hesabına dahil olur. Bu tür
+# satırlarda q90 birkaç kat büyük olsa bile (örn. q50=3, q90=45) U_rel
+# devasa çıkar ve tau_base'i yukarı şişirir. Bu yüzden tau_base hesabı,
+# floor hesabından daha SIKI bir alt eşikle (nonzero q50 dağılımının
+# kendi p10'u) filtrelenir — bkz. derive_risk_params_from_data(),
+# tau_min_volume_percentile parametresi.
+TAU_MIN_VOLUME_PERCENTILE: float = 10.0  # tau hesabına giren satırlar için nonzero q50'nin bu persentilinin üzerinde olmalı
+
 # Sürekli risk skorunu (0-1) operasyonel etiketlere bölen sınırlar (PDF Bölüm 9)
 RISK_SCORE_LOW_MAX:    float = 0.35   # Risk_Score < 0.35  → LOW
 RISK_SCORE_MEDIUM_MAX: float = 0.82   # 0.35 ≤ Risk_Score ≤ 0.82 → MEDIUM
@@ -147,6 +261,239 @@ RISK_THRESHOLD_MEDIUM: float = 1.00   # [DEPRECATED] eski sabit eşik (ratio < 1
 # Güvenlik tamponu: q90 ile q50 arasındaki farkın kaçı eklenir?
 # ALNS bunu "kapasite rezervasyonu" olarak kullanır
 DEFAULT_BUFFER_RATIO: float = 0.5
+
+
+# ---------------------------------------------------------------------------
+# derive_risk_params_from_data() — Slot-Bazlı / Veri-Türetimli Risk Parametreleri
+# ---------------------------------------------------------------------------
+#
+# NEDEN GEREKLİ:
+#   MATERIALITY_FLOOR (ve tau_base/kappa/beta) yukarıda TEK bir sabit sayı
+#   olarak tanımlı. Ancak 09:00 ve 17:00 slotlarının hacim (q50) dağılımları
+#   yapısal olarak çok farklı (bkz. to_ortools_dataframe altındaki slot-bazlı
+#   log notu: 09:00 ort. ~517, 17:00 ort. ~3225 — ~6 kat fark). Sabit bir
+#   materiality_floor kullanmak, düşük hacimli 09:00 slotunu ya gereğinden
+#   fazla bastırır ya da yüksek hacimli 17:00 slotunu yeterince bastırmaz.
+#
+#   Çözüm: derive_gamma_from_costs()'a benzer bir yaklaşım — floor'u sabit
+#   bir sayı yazmak yerine, o slotun KENDİ q50 dağılımından (örn. p25 ya da
+#   p50) türetmek. Böylece her slot kendi "yapısal olarak düşük ama hâlâ
+#   gerçek" hacim eşiğine göre kalibre olur, elle ayarlanan sihirli sayılara
+#   ihtiyaç kalmaz.
+def derive_risk_params_from_data(
+    q50_values: List[float],
+    floor_percentile: float = 25.0,
+    min_nonzero_threshold: float = MIN_NONZERO_THRESHOLD,
+    min_floor: Optional[float] = None,
+    min_floor_frac_of_median: float = MIN_FLOOR_FRAC_OF_MEDIAN,
+    absolute_min_floor: float = ABSOLUTE_MIN_FLOOR,
+    fallback_floor: float = MATERIALITY_FLOOR,
+    derive_tau: bool = False,
+    q10_values: Optional[List[float]] = None,
+    q90_values: Optional[List[float]] = None,
+    tau_headroom: float = 0.0,
+    tau_min_volume_percentile: float = TAU_MIN_VOLUME_PERCENTILE,
+) -> Dict[str, float]:
+    """
+    Bir slotun (örn. sadece 09:00 ya da sadece 17:00) kendi q50 dağılımından
+    materiality_floor'u — ve istenirse tau_base'i — türetir.
+
+    [Düzeltme] Sıfır-hariç istatistik
+    ---------------------------------
+    Percentile (ve tau_base) hesabına giren q50 dağılımından, `min_nonzero_
+    threshold`'un altındaki (durgun/talep-yok) satırlar DIŞLANIR —
+    compute_target_skewness'in zaten uyguladığı "gözlem, sıfır hariç"
+    mantığıyla tutarlı. Neden gerekli: durgun rotalarda q50 sık sık tam
+    sıfıra ya da sıfıra çok yakın çıkıyor; bu satırlar ham dağılıma dahil
+    edilirse, özellikle p25 gibi düşük bir persentil sıfıra doğru yapay
+    şekilde çekilir ve floor, slotun GERÇEK/anlamlı hacimli rotalarını
+    temsil etmeyen, yapay bir düşük sayıya düşer.
+
+    materiality_floor
+    ------------------
+    Nonzero q50 alt kümesinin `floor_percentile`'ına (varsayılan: p25)
+    eşittir. Sabit bir sayı yerine dağılımdan türetildiği için:
+      - Yapısal olarak düşük hacimli bir slotta (örn. 09:00) floor da
+        otomatik olarak düşük çıkar → o slotun rotaları gereksiz yere
+        materyalite ağırlığıyla bastırılmaz.
+      - Yapısal olarak yüksek hacimli bir slotta (örn. 17:00) floor da
+        yükselir → gerçekten düşük kalan (görece durgun) rotalar hâlâ
+        doğru şekilde bastırılır.
+    Nonzero gözlem yoksa (tüm slot durgunsa) `fallback_floor`'a (varsayılan:
+    modülün MATERIALITY_FLOOR sabiti) düşülür — asla None/0 dönmez,
+    UncertaintyBand her zaman geçerli bir sayı alır.
+
+    [Düzeltme] Dinamik/gerçekçi alt taban (min_floor)
+    ---------------------------------------------------
+    Eski davranışta min_floor=1.0 sabitti — 09:00 gibi düşük hacimli ama
+    q50 ortalaması onlarca/yüzlerce olan bir slot için pratikte anlamsız
+    bir tabandı (floor'un neredeyse hiç zemin oluşturmaması demekti).
+    Artık:
+      - `min_floor` elle (sabit bir sayı olarak) verilirse AYNEN kullanılır
+        (örn. filo için "500 desiden az asla anlamlı değildir" gibi
+        elle konmuş bir iş kuralınız varsa).
+      - Verilmezse (None, varsayılan davranış) DİNAMİK hesaplanır: nonzero
+        q50 medyanının `min_floor_frac_of_median` kesri (varsayılan: %10),
+        ama her durumda `absolute_min_floor`'un (varsayılan: 50.0 — eski
+        1.0'dan çok daha gerçekçi bir emniyet tabanı) altına inmez.
+
+    tau_base (opsiyonel, derive_tau=True)
+    --------------------------------------
+    O slotun kendi gözlemlenen U_rel dağılımının MEDYANINA (+ isteğe bağlı
+    bir `tau_headroom` payı) eşitlenir — Tur 3'teki "modelin gerçek U_rel
+    tabanına kalibre et" mantığının slot-bazlı hâli.
+
+    [Düzeltme] Neden mean değil median?
+    Ortalama (mean), birkaç uç değerden (örn. q50≈1-5 ama q90≈40-60 gibi
+    satırlardan — küçük mutlak farklar bile küçük paydada devasa U_rel
+    üretir) kolayca şişer; tau_base tüm dağılımı temsil etmesi gereken bir
+    "taban" olduğu için, birkaç uç satırın onu yukarı çekmesi istenmez.
+    Medyan bu tür uç değerlere karşı çok daha dayanıklıdır.
+
+    [Düzeltme] Ek hacim filtresi (tau_min_volume_percentile)
+    Sıfır-hariç mantığı (min_nonzero_threshold) sadece tam sıfıra yakın
+    satırları eler; q50=2-5 gibi "teknik olarak nonzero ama slotun kendi
+    ölçeğine göre anlamsız derecede küçük" satırlar hâlâ dahil olurdu. Bu
+    satırlarda küçük mutlak sapmalar bile U_rel'i devasa şişirebiliyor.
+    Bu yüzden tau_base hesabına giren alt küme, floor hesabından daha SIKI
+    bir eşikle filtrelenir: q50, nonzero q50 dağılımının kendi
+    `tau_min_volume_percentile`'ının (varsayılan: p10) ÜZERİNDE olmalı.
+    Bu, floor hesabının (`floor_percentile`, varsayılan p25) kullandığı
+    kümeden farklı/daha dar bir alt kümedir — kasıtlı: tau_base'in aşırı
+    düşük hacimli kuyruğa karşı floor'dan da hassas olması istenir.
+
+    q10_values/q90_values verilmezse tau_base hiç hesaplanmaz (params
+    sözlüğünde yer almaz) — bu, ikincil/kaba bir kaldıraçtır, önce
+    materiality_floor düzeltmesi denenmeli (bkz. modül üstü PDF notları).
+
+    Parameters
+    ----------
+    q50_values      : O slota ait ham tahminlerin q50 listesi.
+    floor_percentile: materiality_floor için kullanılacak persentil (0-100),
+                      nonzero alt küme üzerinden hesaplanır.
+    min_nonzero_threshold: Bu eşiğin altındaki/eşit q50 değerleri "durgun"
+                      sayılır ve percentile/tau istatistiklerinden dışlanır.
+    min_floor       : Elle sabit bir alt taban. None ise dinamik hesaplanır
+                      (bkz. yukarıdaki "Dinamik/gerçekçi alt taban" notu).
+    min_floor_frac_of_median: min_floor=None olduğunda kullanılan oran.
+    absolute_min_floor: Dinamik min_floor hesaplanırken asla altına
+                      inilmeyecek mutlak taban.
+    fallback_floor  : Nonzero q50 gözlemi yoksa kullanılacak varsayılan.
+    derive_tau      : True ise tau_base de q10/q90'dan türetilir.
+    q10_values, q90_values : derive_tau=True olduğunda gerekli, q50_values
+                      ile AYNI uzunlukta ve aynı sırada olmalı (satır bazlı
+                      hizalama için — indeks kayması olursa tau_base yanlış
+                      hesaplanır).
+    tau_headroom    : Türetilen tau_base'e eklenecek sabit pay (gevşetme).
+    tau_min_volume_percentile: tau_base hesabına giren satırlar için ek
+                      alt eşik — q50, nonzero q50 dağılımının bu
+                      persentilinin (varsayılan: p10) üzerinde olmalı.
+                      0 verilirse bu ek filtre devre dışı kalır (yalnızca
+                      min_nonzero_threshold uygulanır).
+
+    Returns
+    -------
+    Dict[str, float]
+        En az {"materiality_floor": ...} içerir; derive_tau=True ve
+        q10/q90 verilmişse ayrıca {"tau_base": ..., "maape_scale": ...} de
+        içerir. [Tur 7] "maape_scale", bu alt kümenin tipik (medyan) ham
+        U_rel oranıdır — UncertaintyBand(maape_scale=...) parametresine
+        aktarılmalıdır (bkz. _maape_scale). Aktarılmazsa DEFAULT_MAAPE_SCALE
+        (1.0) kullanılır ve tau_base yeniden tavana yapışabilir.
+    """
+    # None → NaN'a çevirip finite/nonzero maskelerini q50/q10/q90 arasında
+    # HİZALI tutuyoruz (eski sürümde arr, q10_arr/q90_arr'dan bağımsız
+    # filtrelendiği için None/NaN durumunda satır kayması riski vardı).
+    q50_arr = np.asarray(
+        [np.nan if v is None else v for v in q50_values], dtype=float
+    )
+    finite_mask = np.isfinite(q50_arr)
+
+    # [Düzeltme] Sıfır/neredeyse-sıfır (durgun) gözlemleri dışla
+    nonzero_mask = finite_mask & (q50_arr > min_nonzero_threshold)
+    nonzero_q50 = q50_arr[nonzero_mask]
+
+    if nonzero_q50.size == 0:
+        floor = fallback_floor
+        floor_min = absolute_min_floor if min_floor is None else min_floor
+    else:
+        floor = float(np.percentile(nonzero_q50, floor_percentile))
+        if min_floor is not None:
+            floor_min = min_floor
+        else:
+            floor_min = max(
+                absolute_min_floor,
+                min_floor_frac_of_median * float(np.median(nonzero_q50)),
+            )
+
+    floor = max(floor, floor_min)
+    params: Dict[str, float] = {"materiality_floor": round(floor, 4)}
+
+    if derive_tau and q10_values is not None and q90_values is not None:
+        q10_arr = np.asarray(
+            [np.nan if v is None else v for v in q10_values], dtype=float
+        )
+        q90_arr = np.asarray(
+            [np.nan if v is None else v for v in q90_values], dtype=float
+        )
+        if q10_arr.size == q50_arr.size == q90_arr.size:
+            # [Düzeltme] Ek hacim filtresi: floor hesabından daha SIKI bir
+            # alt eşik — q50=2-5 gibi "teknik olarak nonzero ama slotun
+            # kendi ölçeğine göre anlamsız derecede küçük" satırlar tau
+            # hesabından da dışlansın. Eşik = nonzero q50 dağılımının
+            # kendi p{tau_min_volume_percentile}'ı (varsayılan p10).
+            if tau_min_volume_percentile and nonzero_q50.size:
+                tau_volume_threshold = max(
+                    min_nonzero_threshold,
+                    float(np.percentile(nonzero_q50, tau_min_volume_percentile)),
+                )
+            else:
+                tau_volume_threshold = min_nonzero_threshold
+
+            tau_mask = (
+                finite_mask
+                & np.isfinite(q10_arr)
+                & np.isfinite(q90_arr)
+                & (q50_arr > tau_volume_threshold)
+            )
+            if tau_mask.any():
+                v_safe = np.maximum(q50_arr[tau_mask], 1.0)
+                urel_raw = (q90_arr[tau_mask] - q10_arr[tau_mask]) / v_safe
+                urel_raw = urel_raw[np.isfinite(urel_raw)]
+                if urel_raw.size:
+                    # [Tur 7] KRİTİK DÜZELTME (gerçek üretim çalıştırmasında
+                    # gözlemlendi — bkz. run_forecast.py log: 09:00 slotu için
+                    # tau_base=0.872 çıktı, HIGH sayısı 0'a düştü): scale=1.0
+                    # ile düz arctan kullanmak, seyrek/durgun bir slotta (09:00,
+                    # çarpıklık +4.76) TİPİK ham oranı bile doğrudan tavana
+                    # (1.0) yakın bir yere taşıyordu — outlier'lara hiç pay
+                    # kalmıyordu. Çözüm: scale'i, bu alt kümenin KENDİ tipik
+                    # (medyan) ham oranına eşitle. Böylece tanım gereği medyan
+                    # satır 0.5'e denk gelir, tau_base tüm slotlarda taşınabilir/
+                    # sabit kalabilir (bkz. DYNAMIC_TAU_BASE modül üstü notu),
+                    # ve gerçek outlier'lar (medyanın kat kat üstü) hâlâ 1.0'a
+                    # doğru ilerleyip HIGH tetikleyebilir.
+                    scale_c = float(np.median(urel_raw))
+                    if scale_c <= 0.0:
+                        scale_c = 1.0  # degenerate durum (tüm gözlemler sıfır) — güvenli varsayılan
+                    params["maape_scale"] = round(scale_c, 6)
+
+                    # [Tur 6] KRİTİK: tau_base, runtime'da _compute_dynamic_risk'in
+                    # ürettiği relative_uncertainty (MAAPE/arctan ile [0,1)'e
+                    # sınırlanmış, AYNI scale ile) ile AYNI ölçekte olmalı. Burada
+                    # hâlâ ham/sınırsız urel_raw üzerinden medyan alıp tau_base'e
+                    # yazsaydık, runtime'daki bounded metrik ile unbounded'dan
+                    # türetilmiş bir eşiği kıyaslamış olurduk. Bu yüzden medyan
+                    # alınmadan ÖNCE her gözlem _maape_scale'den (scale_c ile)
+                    # geçirilir — tanım gereği bu medyan ≈ 0.5 çıkar (+ tau_headroom).
+                    urel_bounded = np.array([_maape_scale(x, scale_c) for x in urel_raw])
+                    # [Düzeltme] mean → median: birkaç uç değerden (örn.
+                    # q50≈1-5 ama q90≈40-60 gibi satırlardan) kolayca
+                    # şişen ortalama yerine, aşırı değerlere karşı çok
+                    # daha dayanıklı olan medyan kullanılır.
+                    params["tau_base"] = round(float(np.median(urel_bounded)) + tau_headroom, 4)
+
+    return params
 
 
 # ---------------------------------------------------------------------------
@@ -170,8 +517,16 @@ class DemandBand:
     q50              : Medyan tahmin (operasyonel plan)
     q90              : Yüksek senaryo (spot araç alarm seviyesi)
     uncertainty_range   : q90 - q10 (toplam belirsizlik genişliği)
-    relative_uncertainty: U_rel = uncertainty_range / max(q50, 1.0)
-    dynamic_threshold   : τ(V) = τ_base + κ·V^(-β)  (hacme özel kabul edilebilir U_rel eşiği)
+    relative_uncertainty_raw: [Tur 6] Ham/sınırsız oran = uncertainty_range / max(q50, 1.0).
+                       SADECE tanı/denetim amaçlı — sigmoid/τ karşılaştırmasında KULLANILMAZ,
+                       çünkü q50→0 iken sınırsız büyüyebilir (bkz. relative_uncertainty).
+    relative_uncertainty: [Tur 6/7] U_rel = MAAPE/Arktanjant ile [0,1) aralığına sınırlanmış nihai
+                       oran = (2/π)·arctan(relative_uncertainty_raw / scale). q50 sıfıra yaklaştığında
+                       artık PATLAMAZ, 1.0'a asimptotik olarak yaklaşır. [Tur 7] `scale`, o slotun/alt
+                       kümenin TİPİK (medyan) ham oranıdır — bkz. derive_risk_params_from_data,
+                       "maape_scale". Verilmezse (scale=1.0) Tur 6'daki eski davranışla aynıdır.
+    dynamic_threshold   : τ(V) = τ_base + κ·V^(-β)  (hacme özel kabul edilebilir U_rel eşiği,
+                       artık relative_uncertainty ile AYNI [0,1) ölçeğinde kalibre edilmelidir)
     dynamic_steepness   : k(V) = k_min + γ·log(1+V) (hacme özel sigmoid eğri katılığı)
     risk_score_raw      : [Tur 5] Materyalite ağırlığından ÖNCEKİ ham sigmoid skoru (tanı amaçlı)
     risk_score          : [Tur 5] Materyalite ağırlıklı NİHAİ skor, 0.0 (kesin LOW) - 1.0 (kesin HIGH)
@@ -190,7 +545,8 @@ class DemandBand:
     recommended_qty:   float   = field(init=False)
 
     # --- Hacim Ağırlıklı Dinamik Sigmoid Risk Modeli ---
-    relative_uncertainty: float = field(init=False)  # U_rel = (q90-q10)/q50
+    relative_uncertainty_raw: float = field(init=False)  # [Tur 6] ham/sınırsız oran, tanı amaçlı
+    relative_uncertainty: float = field(init=False)  # [Tur 6] U_rel = (2/π)·arctan(ham oran), [0,1)
     dynamic_threshold:    float = field(init=False)  # τ(V)
     dynamic_steepness:    float = field(init=False)  # k(V)
     risk_score_raw:       float = field(init=False)  # [Tur 5] materyalite öncesi ham skor
@@ -223,6 +579,9 @@ class DemandBand:
 
     # --- [Tur 5] Materyalite ağırlığı tabanı ---
     _materiality_floor: float = field(default=MATERIALITY_FLOOR, repr=False)
+
+    # --- [Tur 7] Slot-bazlı ölçek (scale) — MAAPE/arctan dönüşümünün referans noktası ---
+    _maape_scale_c: float = field(default=DEFAULT_MAAPE_SCALE, repr=False)
 
     def __post_init__(self):
         # Negatif değer koruması
@@ -268,8 +627,17 @@ class DemandBand:
         """
         v_safe = max(self.q50, 1.0)
 
-        # 1. Göreceli belirsizlik (U_rel) — ham/tanısal, floor'dan etkilenmez
-        self.relative_uncertainty = round(self.uncertainty_range / v_safe, 4)
+        # 1a. Ham/sınırsız oran — SADECE tanı amaçlı, payload'a diagnostic alan
+        #     olarak eklenir. q50→0 iken sınırsız büyüyebilir (örn. %3300);
+        #     bu yüzden aşağıdaki adım 1b'den ÖNCE, sigmoid/τ karşılaştırmasına
+        #     hiç girmeden, sadece gözlemlenebilirlik için saklanır.
+        raw_ratio = self.uncertainty_range / v_safe
+        self.relative_uncertainty_raw = round(raw_ratio, 4)
+
+        # 1b. [Tur 6] MAAPE/Arktanjant dönüşümü — nihai U_rel, [0,1) ile SINIRLI.
+        #     f(x) = (2/π)·arctan(x): q50→0, uncertainty_range sabit kalsa bile
+        #     artık patlamaz; 1.0'a asimptotik yaklaşır (bkz. _maape_scale).
+        self.relative_uncertainty = round(_maape_scale(raw_ratio, self._maape_scale_c), 4)
 
         # 2. Dinamik eşik: τ(V) = τ_base + κ · V^(-β)
         self.dynamic_threshold = round(
@@ -331,7 +699,8 @@ class DemandBand:
             "demand_base":          self.q50,
             "demand_high":          self.q90,
             "uncertainty_range":    self.uncertainty_range,
-            "relative_uncertainty": self.relative_uncertainty,
+            "relative_uncertainty_raw": self.relative_uncertainty_raw,  # [Tur 6] tanı amaçlı, sınırsız
+            "relative_uncertainty": self.relative_uncertainty,  # [Tur 6] MAAPE-bounded, [0,1)
             "dynamic_threshold":    self.dynamic_threshold,
             "dynamic_steepness":    self.dynamic_steepness,
             "risk_score_raw":       self.risk_score_raw,   # [Tur 5] tanı amaçlı, ALNS okumak zorunda değil
@@ -384,6 +753,7 @@ class UncertaintyBand:
         k_min: float = DYNAMIC_K_MIN,
         gamma: float = DYNAMIC_GAMMA,
         materiality_floor: float = MATERIALITY_FLOOR,
+        maape_scale: float = DEFAULT_MAAPE_SCALE,
     ):
         self.buffer_ratio    = buffer_ratio
         self.logging_enabled = logging_enabled
@@ -397,6 +767,14 @@ class UncertaintyBand:
 
         # [Tur 5] Materyalite ağırlığı
         self.materiality_floor = materiality_floor
+
+        # [Tur 7] MAAPE/arctan ölçeği — bu slotun/alt kümenin tipik (medyan)
+        # ham U_rel oranı. derive_risk_params_from_data(..., derive_tau=True)
+        # çıktısındaki "maape_scale" buraya aktarılmalı; aksi halde
+        # DEFAULT_MAAPE_SCALE (1.0) kullanılır ve tau_base seyrek/durgun
+        # slotlarda tavana (1.0) yapışıp HIGH'ı imkânsız kılabilir (bkz.
+        # modül üstü "Tur 7" notu).
+        self.maape_scale = maape_scale
 
         self.bands_: List[DemandBand] = []
 
@@ -440,6 +818,7 @@ class UncertaintyBand:
                 _k_min=self.k_min,
                 _gamma=self.gamma,
                 _materiality_floor=self.materiality_floor,
+                _maape_scale_c=self.maape_scale,
             )
             self.bands_.append(band)
 
@@ -535,7 +914,9 @@ class UncertaintyBand:
                     "k_min":             self.k_min,
                     "gamma":             self.gamma,
                     "materiality_floor": self.materiality_floor,  # [Tur 5]
+                    "maape_scale": self.maape_scale,  # [Tur 7]
                     "materiality_function": "sqrt",  # [Tur 5]
+                    "relative_uncertainty_scale": "maape_arctan_0_1",  # [Tur 6]
                 },
             },
             "risk_summary": risk_summary,
@@ -623,7 +1004,7 @@ class UncertaintyBand:
             records.append({
                 "talep_id":           b.talep_id,   # [PDF] D00001, D00002, ...
                 "date":               b.tarih,
-                "slot":               b.slot,       # ZORUNLU — bkz. docstring/madde 4 notu
+                "demand_start_time":               b.slot,       # ZORUNLU — bkz. docstring/madde 4 notu
                 "source":             source.strip(),
                 "destination":        dest.strip(),
                 "q10":                round(b.q10, 2),
@@ -725,3 +1106,154 @@ class UncertaintyBand:
                     f"U_rel ort: {s_urel.mean():.3f} | "
                     f"Risk → LOW: {s_counts['LOW']} | MEDIUM: {s_counts['MEDIUM']} | HIGH: {s_counts['HIGH']}"
                 )
+
+
+# ---------------------------------------------------------------------------
+# combine_slot_bands() — Ayrı Slot Parametreleriyle İşlenen Bantları Birleştir
+# ---------------------------------------------------------------------------
+#
+# NEDEN GEREKLİ:
+#   to_ortools_dataframe() / to_alns_payload() TEK bir UncertaintyBand
+#   örneği üzerinden çalışır → tek bir parametre setine (materiality_floor,
+#   tau_base, ...) mahkûmdur. 09:00 ve 17:00'yi kendi (derive_risk_params_
+#   from_data() ile türetilmiş) parametreleriyle ayrı ayrı işlemek için iki
+#   ayrı UncertaintyBand örneği gerekir — bu fonksiyon ikisinin çıktısını
+#   TEK bir OR-Tools DataFrame'i ve TEK bir ALNS payload'ında birleştirir.
+#
+#   talep_id'ler: her bandın kendi from_json() çağrısı D00001'den başlar
+#   (bkz. from_json altındaki "_assign_talep_ids" notu) — yani iki bandı
+#   olduğu gibi yan yana koyarsak D00001 iki kez üretilir. Bu fonksiyon,
+#   birleştirdikten SONRA (tarih, slot, TM_ID) sırasına göre talep_id'leri
+#   YENİDEN ve sıralı atar; PDF'in zorunlu kıldığı "her talep için tekil
+#   D0000N kimliği" garantisi böylece slot sayısından bağımsız korunur.
+def combine_slot_bands(
+    bands: List["UncertaintyBand"],
+) -> Dict[str, Any]:
+    """
+    Her biri kendi (muhtemelen slot-bazlı türetilmiş) parametreleriyle
+    from_json() çağrılmış birden fazla UncertaintyBand örneğini TEK bir
+    OR-Tools DataFrame'i + TEK bir ALNS payload'ında birleştirir.
+
+    Parameters
+    ----------
+    bands : List[UncertaintyBand]
+        Her biri için önce from_json() (veya to_ortools_dataframe/
+        to_alns_payload) çağrılmış olmalı — yani `band.bands_` dolu olmalı.
+        Tipik kullanım: 09:00 için bir UncertaintyBand, 17:00 için bir
+        diğeri, her biri kendi materiality_floor/tau_base'iyle.
+
+    Returns
+    -------
+    Dict[str, Any]
+        {
+          "dataframe": pd.DataFrame,   ← to_ortools_dataframe ile aynı şema
+          "payload":   Dict[str, Any], ← to_alns_payload ile aynı şema,
+                                          ek olarak metadata.risk_model_by_slot
+        }
+
+    Examples
+    --------
+    >>> band_0900 = UncertaintyBand(materiality_floor=params_0900["materiality_floor"])
+    >>> band_0900.from_json(preds_0900, slot_key="slot")
+    >>> band_1700 = UncertaintyBand(materiality_floor=params_1700["materiality_floor"])
+    >>> band_1700.from_json(preds_1700, slot_key="slot")
+    >>> result = combine_slot_bands([band_0900, band_1700])
+    >>> df_ortools = result["dataframe"]
+    >>> alns_payload = result["payload"]
+    """
+    import pandas as pd
+
+    if not bands:
+        raise ValueError("❌ En az bir UncertaintyBand geçilmeli.")
+
+    all_dbands: List[DemandBand] = []
+    risk_model_by_slot: Dict[str, Dict[str, Any]] = {}
+
+    for band in bands:
+        if not band.bands_:
+            raise ValueError(
+                "❌ Her UncertaintyBand için önce from_json() (ya da "
+                "to_ortools_dataframe/to_alns_payload) çağrılmalı."
+            )
+        all_dbands.extend(band.bands_)
+        for b in band.bands_:
+            slot_label = b.slot or "N/A"
+            # Aynı slot birden fazla bandda geçerse ilkini koru (çakışma
+            # olmaması gerekir ama teşhis kolaylığı için sessizce üzerine yazma)
+            risk_model_by_slot.setdefault(slot_label, {
+                "name":                "volume_weighted_dynamic_sigmoid",
+                "tau_base":            band.tau_base,
+                "kappa":               band.kappa,
+                "beta":                band.beta,
+                "k_min":               band.k_min,
+                "gamma":               band.gamma,
+                "materiality_floor":   band.materiality_floor,  # slot-bazlı türetilmiş
+                "maape_scale":          band.maape_scale,  # [Tur 7] slot-bazlı türetilmiş
+                "materiality_function": "sqrt",
+                "relative_uncertainty_scale": "maape_arctan_0_1",  # [Tur 6]
+            })
+
+    # (tarih, slot, TM_ID) sırasına göre kararlı sıralama — SONRA talep_id ata
+    all_dbands.sort(key=lambda b: (b.tarih, b.slot or "", b.tm_id or ""))
+    for _i, _band in enumerate(all_dbands, start=1):
+        _band.talep_id = f"D{_i:05d}"
+
+    # --- OR-Tools DataFrame (to_ortools_dataframe ile birebir aynı şema) ---
+    records = []
+    for b in all_dbands:
+        group_id = b.tm_id or "Bilinmiyor"
+        source, dest = group_id, "Bilinmiyor"
+        if " → " in group_id:
+            source, dest = group_id.split(" → ", 1)
+        elif " -> " in group_id:
+            source, dest = group_id.split(" -> ", 1)
+        elif "-" in group_id:
+            source, dest = group_id.split("-", 1)
+
+        recommended_demand = b.q50 + b.safety_buffer
+        records.append({
+            "talep_id":           b.talep_id,
+            "date":               b.tarih,
+            "demand_start_time":  b.slot,
+            "source":             source.strip(),
+            "destination":        dest.strip(),
+            "q10":                round(b.q10, 2),
+            "q50":                round(b.q50, 2),
+            "q90":                round(b.q90, 2),
+            "recommended_demand": round(recommended_demand, 2),
+            "risk_class":         b.risk_class,
+            "risk_score":         b.risk_score,
+            "risk_score_raw":     b.risk_score_raw,
+        })
+    df_ortools = pd.DataFrame(records)
+
+    # --- ALNS Payload (to_alns_payload ile birebir aynı şema + risk_model_by_slot) ---
+    risk_summary = {"LOW": 0, "MEDIUM": 0, "HIGH": 0}
+    risk_summary_by_slot: Dict[str, Dict[str, int]] = {}
+    for b in all_dbands:
+        risk_summary[b.risk_class] += 1
+        slot_label = b.slot or "N/A"
+        bucket = risk_summary_by_slot.setdefault(slot_label, {"LOW": 0, "MEDIUM": 0, "HIGH": 0})
+        bucket[b.risk_class] += 1
+
+    dates = [b.tarih for b in all_dbands if b.tarih != "N/A"]
+    horizon_days = len(set(dates))
+
+    payload: Dict[str, Any] = {
+        "metadata": {
+            "generated_at":       datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "n_records":          len(all_dbands),
+            "horizon_days":       horizon_days,
+            "has_high_risk":      risk_summary["HIGH"] > 0,
+            "has_slot_dimension": True,
+            # [Slot-bazlı türetim] Artık TEK bir risk_model yerine, her
+            # slotun kendi (derive_risk_params_from_data ile türetilmiş)
+            # parametre setini ayrı ayrı raporluyoruz.
+            "risk_model_by_slot": risk_model_by_slot,
+        },
+        "risk_summary":          risk_summary,
+        "risk_summary_by_slot":  risk_summary_by_slot,
+        "demands":               [b.to_dict() for b in all_dbands],
+    }
+
+    return {"dataframe": df_ortools, "payload": payload}

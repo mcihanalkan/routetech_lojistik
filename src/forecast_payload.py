@@ -66,6 +66,9 @@ def load_alns_payload_forecast(payload_path: Path) -> pd.DataFrame:
         rows.append(
             {
                 "date": pd.to_datetime(record["tarih"]),
+                # Faz 2: talep 09:00/17:00 slotlarında oluşuyor — bu alan olmadan aynı
+                # (tarih, source, destination) için iki slot ayırt edilemez hale gelir.
+                "slot": str(record.get("slot", "UNKNOWN")),
                 "source": source,
                 "destination": destination,
                 "q10": float(record.get("demand_low", record.get("q10", 0.0))),
@@ -83,4 +86,8 @@ def load_alns_payload_forecast(payload_path: Path) -> pd.DataFrame:
             }
         )
 
-    return pd.DataFrame(rows).sort_values(["date", "source", "destination"]).reset_index(drop=True)
+    return (
+        pd.DataFrame(rows)
+        .sort_values(["date", "slot", "source", "destination"])
+        .reset_index(drop=True)
+    )

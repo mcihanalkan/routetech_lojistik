@@ -16,6 +16,9 @@ Strateji:
   Tatil özellikleri      : `holidays` kütüphanesi — TR resmi + dini bayram
   Spatio-temporal        : TM_ID × weekday etkileşimi
   Rolling stats          : rolling_mean_7/14, rolling_std_7/14
+  Momentum (ivme)        : ema_3 (üstel hareketli ortalama), momentum_ratio_3_14
+                            (kısa/uzun pencere oranı) — ani sıçramaları rolling
+                            mean'in "1 hafta bekleme" gecikmesi olmadan yakalar
   Ağ/Çizge özellikleri   : Pressure Ratio, Hub Centrality, K-dereceli komşuluk
                             (KDD Cup 2020 şampiyonluk mekanizması — PDF Bölüm 1)
   Hiyerarşik özellikler  : Hub-to-Route Ratio Lags, Çapraz-Grup Max/Mean/Std
@@ -169,9 +172,11 @@ def add_campaign_features(
     df: pl.DataFrame,
     date_column: str,
     lead_days: int = 5,
+    group_column: Optional[str] = None,
 ) -> pl.DataFrame:
     """
-    E-Ticaret kampanya günlerini ve kampanya öncesi sipariş dönemini ekler.
+    E-Ticaret kampanya günlerini, kampanya öncesi sipariş dönemini VE
+    kampanya SONRASI teslimat/birikim etkisini ekler.
 
     Lojistik gerçeği: Kargo patlaması kampanya gününde değil, kampanyadan
     önceki 3-5 gün yaşanır — müşteriler hediyelerini hafta içi sipariş eder,
@@ -180,14 +185,39 @@ def add_campaign_features(
       - is_campaign_eve : Kampanyadan lead_days gün öncesine kadar olan dönem
                           (kargo hacminin gerçekten arttığı sipariş penceresi)
 
-    Polars native pl.Date karşılaştırması kullanılır.
-    Eski epoch-bölme yaklaşımı Polars'ın yeni mikrosaniye Datetime'ında
-    sıfır ürettiğinden kaldırıldı.
+    v15 — Kampanya SONRASI Birikim/Sönüm (Post-Campaign Backlog):
+    Önceki sürümde kampanya sonrası etki sadece TEK günlük bir binary bayrak
+    (is_post_campaign, bkz. add_advanced_calendar_features) ile modelleniyordu.
+    Gerçek veride (bkz. debug_backtest.py, 2026 Babalar Günü ablasyon vakası)
+    teslimat/hacim etkisi kampanya gününden SONRA da günlerce (gözlemde
+    ~6 gün) yüksek kalmaya devam ediyor — tıpkı tatil sonrası birikim gibi,
+    ama tatildeki gibi bir birikim/sönüm mekanizması kampanya için hiç yoktu.
+    Aşağıda tatildeki AYNI çekirdek (_compute_streak_backlog_features)
+    is_campaign_eve bayrağına uygulanarak bu asimetri gideriliyor.
 
     Çıktı sütunlar
     --------------
     is_campaign_day : O gün ana kampanya günü mü?       (Int8, 0/1)
     is_campaign_eve : Kampanya öncesi sipariş dönemi mi? (Int8, 0/1)
+    accumulated_campaign_eve_days : Az önce sona eren "eve" bloğunun
+        ağırlıklı uzunluğu (Float64) — kampanya biter bitmez (campaign_day
+        ve sonrası) dolu, eve döneminde 0.
+    days_since_campaign_end : Kampanya bitiminden (eve sonu) itibaren geçen
+        aktif gün sayısı (Int64, 1-indeksli). Eve döneminde -1.
+    campaign_release_index : Kampanya sonrası üstel sönümlü "release" sinyali
+        (Float64) — campaign_release_alpha/max_campaign_release_days ile
+        ayarlanır (varsayılan: alpha=2.5, 6 gün — holiday'in 1.4/4'ünden
+        daha YAVAŞ sönüm, çünkü gözlemlenen etki daha uzun sürüyor).
+
+    Parameters
+    ----------
+    group_column : str, optional
+        _compute_streak_backlog_features için .over() grubu (rota bazında
+        leakage'sız shift/cum_sum). add_holiday_features ile aynı desen.
+
+    Polars native pl.Date karşılaştırması kullanılır.
+    Eski epoch-bölme yaklaşımı Polars'ın yeni mikrosaniye Datetime'ında
+    sıfır ürettiğinden kaldırıldı.
     """
     years = df.select(pl.col(date_column).dt.year()).to_series().unique().to_list()
     campaign_set = _build_campaign_set(years)
@@ -207,6 +237,24 @@ def add_campaign_features(
         pl.col(date_column).cast(pl.Date).is_in(camp_eve_days)
           .cast(pl.Int8).alias("is_campaign_eve"),
     ])
+
+    # v15: Kampanya SONRASI birikim/sönüm — tatildeki AYNI çekirdek, farklı
+    # bayrak (is_campaign_eve). alpha=2.5/max_release_days=6, holiday'in
+    # 1.4/4'ünden daha yavaş sönüyor çünkü gözlemlenen post-kampanya etkisi
+    # (bkz. fonksiyon docstring'i) daha uzun sürüyor. Bu iki parametre ilk
+    # tahmindir — yeniden HPO/backtest sonrası ayarlanabilir.
+    df = _compute_streak_backlog_features(
+        df,
+        flag_col="is_campaign_eve",
+        group_column=group_column,
+        alpha=2.5,
+        accumulated_col="accumulated_campaign_eve_days",
+        resumption_col="days_since_campaign_end",
+        release_col="campaign_release_index",
+        weight_col=None,
+        max_release_days=6,
+        tmp_prefix="_camp",
+    )
 
     logger.debug(
         f"✅ Kampanya özellikleri eklendi "
@@ -383,6 +431,156 @@ def add_advanced_calendar_features(df: pl.DataFrame, date_column: str, group_col
 
 
 # ---------------------------------------------------------------------------
+# 1.8 Ortak Çekirdek: Durgun-Gün-Serisi → Birikim → Release Mekanizması
+# ---------------------------------------------------------------------------
+
+def _compute_streak_backlog_features(
+    df: pl.DataFrame,
+    flag_col: str,
+    group_column: Optional[str],
+    alpha: float,
+    accumulated_col: str,
+    resumption_col: str,
+    release_col: str,
+    weight_col: Optional[str] = None,
+    max_release_days: int = 4,
+    tmp_prefix: str = "_tmp",
+) -> pl.DataFrame:
+    """
+    add_holiday_features'daki (is_closed → streak → shift(1) → exp decay)
+    mekanizmasının paylaşılan çekirdeği. `add_holiday_features` (takvimsel
+    kapanış) ve `add_organic_backlog_features` (takvimden bağımsız organik
+    durgunluk) bu tek mantığı, farklı bayrak/ağırlık sütunlarıyla çağırır —
+    böylece iki mekanizma birbirinin YERİNE değil, aynı çekirdeğin farklı
+    girdileri olarak var olur.
+
+    flag_col   : 0/1 "durgun/kapalı gün" bayrağı.
+    weight_col : None ise her durgun günün ağırlığı 1 sayılır (klasik streak
+                 uzunluğu — add_holiday_features'ın orijinal davranışı).
+                 Verilirse (örn. o günkü açık büyüklüğü / deficit), birikim
+                 sadece ardışık gün SAYISINI değil, durgunluğun BÜYÜKLÜĞÜNÜ
+                 de yansıtır ("weighted accumulated deficit").
+
+    Çıktı sütunlar
+    --------------
+    {accumulated_col} : Az önce sona eren durgun bloğun ağırlıklı toplamı
+                         (Float64) — aktif blok BOYUNCA (tek gün değil, bir
+                         sonraki durgun bloğa kadar) sabit kalır (forward-fill,
+                         v15 düzeltmesi — bkz. aşağıdaki not), durgun
+                         günlerde 0.
+    {resumption_col}  : Dönüşten itibaren geçen aktif gün sayısı (Int64).
+                         Durgun günlerde -1.
+    {release_col}     : Durgunluk biter bitmez tetiklenen üstel sönümlü
+                         "release" sinyali (Float64):
+                           {release_col} = {accumulated_col} * exp(-{resumption_col} / alpha)
+                         `max_release_days` gününden sonra etki sıfırlanır.
+
+    ⚠️  v15 BUG FIX: Önceki sürümde {accumulated_col} sadece durgunluğun
+        bittiği İLK aktif günde dolu, sonraki tüm günlerde 0'dı (forward-fill
+        yoktu). {release_col} da bunun üzerine AYRICA bir .shift(1)
+        uyguladığı için, sonuçta release sinyali `max_release_days` boyunca
+        sönümlü bir eğri değil, resumption=2'de TEK GÜNLÜK bir "blip" ve
+        diğer tüm günlerde 0 üretiyordu (max_release_days parametresi fiilen
+        etkisizdi). Bu, üretimdeki backlog_release_index (tatil sonrası
+        birikim) özelliğini de etkiliyordu — bkz. debug_backtest.py ile
+        tespit edilen kampanya-sonrası vakası. Şimdi accumulated_col aktif
+        blok boyunca forward-fill ediliyor ve release_col'daki fazladan
+        shift(1) kaldırıldı — sonuç gerçek bir max_release_days'lik üstel
+        sönüm eğrisi.
+
+    ⚠️  Tüm hesaplamalar `.shift(1).over(group_column)` ile leakage'sız
+        yapılır (mevcut desenle birebir aynı).
+    """
+    over_keys = [group_column] if group_column and group_column in df.columns else None
+
+    def _over(expr: pl.Expr) -> pl.Expr:
+        return expr.over(over_keys) if over_keys else expr
+
+    weight_expr = pl.col(weight_col) if weight_col else pl.col(flag_col).cast(pl.Float64)
+
+    reset_grp_col = f"{tmp_prefix}_reset_grp"
+    streak_col = f"{tmp_prefix}_streak_len"
+    raw_accum_col = f"{tmp_prefix}_raw_accum"
+
+    # _reset_grp: SADECE flag_col değer DEĞİŞTİRDİĞİNDE (kapalı↔açık geçişi)
+    # artar — böylece hem ardışık kapalı blok hem ardışık açık blok kendi
+    # içinde SABİT bir grup kimliği taşır.
+    # ESKİ (hatalı): (flag_col == 0).cum_sum() → her açık gün cum_sum'ı
+    # +1 artırdığı için HER açık gün kendi tekil (boyut=1) grubuna
+    # düşüyordu; bunun sonucu days_since_resumption hep 1'de kilitleniyor
+    # ve backlog_release_index sadece kapanıştan sonraki İLK aktif günün
+    # bir sonraki günü (yani her zaman aynı haftaiçi gün) için tetikleniyordu.
+    _flag_changed = (pl.col(flag_col) != pl.col(flag_col).shift(1)).fill_null(True)
+    df = df.with_columns([
+        _over(_flag_changed.cum_sum()).alias(reset_grp_col)
+    ])
+
+    # streak_len: o ana kadar süregelen ardışık durgunluğun AĞIRLIKLI toplamı
+    reset_keys = (over_keys or []) + [reset_grp_col]
+    df = df.with_columns([
+        pl.when(pl.col(flag_col) == 1)
+          .then(weight_expr.cum_sum().over(reset_keys))
+          .otherwise(0.0)
+          .alias(streak_col)
+    ])
+
+    # raw_accum: SADECE durgunluğun bittiği İLK aktif günde dolu (o günden
+    # önceki son durgun günün streak_len'i); diğer TÜM günlerde None
+    # (forward_fill'in dolduracağı bir şey olsun diye — 0.0 DEĞİL, çünkü
+    # forward_fill() sadece null'ları doldurur, 0.0 zaten "dolu" sayılır).
+    _row_idx_in_grp = pl.int_range(1, pl.len() + 1).over(reset_keys)
+    df = df.with_columns([
+        pl.when((pl.col(flag_col) == 0) & (_row_idx_in_grp == 1))
+          .then(_over(pl.col(streak_col).shift(1)).fill_null(0.0))
+          .otherwise(None)
+          .cast(pl.Float64)
+          .alias(raw_accum_col)
+    ])
+
+    # accumulated_{...}: raw_accum'ı aktif blok (reset_keys grubu) BOYUNCA
+    # forward-fill ediyoruz — v15 düzeltmesi. Böylece "az önce sona eren
+    # durgun bloğun büyüklüğü" bilgisi, sadece dönüşün ilk gününde değil,
+    # bir sonraki durgun bloğa kadar HER aktif günde erişilebilir kalıyor.
+    # Durgun günlerde her zaman 0 (forward_fill bunları etkilemez çünkü
+    # onlar zaten ayrı bir reset_grp'te ve raw_accum'ları null → 0'a düşer).
+    df = df.with_columns([
+        pl.when(pl.col(flag_col) == 0)
+          .then(pl.col(raw_accum_col).forward_fill().over(reset_keys).fill_null(0.0))
+          .otherwise(0.0)
+          .alias(accumulated_col)
+    ])
+
+    # days_since_{...}: aktif günlerde, mevcut aktif-blok içindeki 1-indeksli
+    # pozisyon; durgun günlerde -1
+    df = df.with_columns([
+        pl.when(pl.col(flag_col) == 0)
+          .then(pl.int_range(1, pl.len() + 1).over(reset_keys))
+          .otherwise(-1)
+          .alias(resumption_col)
+    ])
+
+    # {release_col}: accumulated (artık aktif blok boyunca sabit) *
+    # exp(-days_since/alpha). max_release_days gününden sonra etki
+    # sıfırlanır. v15: fazladan bir shift(1) KALDIRILDI — accumulated_col
+    # zaten her aktif günde doğru "ended-block" değerini taşıyor (yukarıya
+    # bkz.), o yüzden burada tekrar geriye kaydırmaya gerek yok (eski kod
+    # bunu yapıyordu ve sinyali tek güne sıkıştırıyordu).
+    df = df.with_columns([
+        pl.when(
+            (pl.col(flag_col) == 0) &
+            (pl.col(resumption_col) >= 1) &
+            (pl.col(resumption_col) <= max_release_days)
+        )
+        .then(pl.col(accumulated_col) * (-pl.col(resumption_col) / alpha).exp())
+        .otherwise(0.0)
+        .alias(release_col)
+    ])
+
+    df = df.drop([reset_grp_col, streak_col, raw_accum_col])
+    return df
+
+
+# ---------------------------------------------------------------------------
 # 2. Tatil Özellikleri
 # ---------------------------------------------------------------------------
 
@@ -472,63 +670,248 @@ def add_holiday_features(
         ).then(1).otherwise(0).cast(pl.Int8).alias("is_closed")
     ])
 
-    over_keys = [group_column] if group_column and group_column in df.columns else None
-
-    def _over(expr: pl.Expr) -> pl.Expr:
-        return expr.over(over_keys) if over_keys else expr
-
-    # _reset_grp: her açık günde 1 artar — ardışık kapalı blokları gruplar
-    df = df.with_columns([
-        _over((pl.col("is_closed") == 0).cum_sum()).alias("_reset_grp")
-    ])
-
-    # streak_len: o ana kadar süregelen ardışık kapalı gün sayısı
-    reset_keys = (over_keys or []) + ["_reset_grp"]
-    df = df.with_columns([
-        pl.when(pl.col("is_closed") == 1)
-          .then(pl.col("is_closed").cum_sum().over(reset_keys))
-          .otherwise(0)
-          .alias("_streak_len")
-    ])
-
-    # accumulated_closed_days: az önce sona eren kapalı bloğun boyu (açık günlerde dolu, kapalı günlerde 0)
-    df = df.with_columns([
-        pl.when(pl.col("is_closed") == 0)
-          .then(_over(pl.col("_streak_len").shift(1)).fill_null(0))
-          .otherwise(0.0)
-          .cast(pl.Float64)
-          .alias("accumulated_closed_days")
-    ])
-
-    # days_since_resumption: açık günlerde, mevcut açık-blok içindeki 1-indeksli pozisyon; kapalı günlerde -1
-    df = df.with_columns([
-        pl.when(pl.col("is_closed") == 0)
-          .then(pl.int_range(1, pl.len() + 1).over(reset_keys))
-          .otherwise(-1)
-          .alias("days_since_resumption")
-    ])
-
-    # backlog_release_index: önceki günün accumulated_closed_days'i * exp(-days_since_resumption/alpha)
-    # 4 günden sonra etki sıfırlanır
-    df = df.with_columns([
-        _over(pl.col("accumulated_closed_days").shift(1)).fill_null(0.0).alias("_prev_accum")
-    ])
-    df = df.with_columns([
-        pl.when(
-            (pl.col("is_closed") == 0) &
-            (pl.col("days_since_resumption") >= 0) &
-            (pl.col("days_since_resumption") <= 4)
-        )
-        .then(pl.col("_prev_accum") * (-pl.col("days_since_resumption") / backlog_alpha).exp())
-        .otherwise(0.0)
-        .alias("backlog_release_index")
-    ])
-
-    df = df.drop(["_reset_grp", "_streak_len", "_prev_accum"])
+    # Streak → Birikim (weight=None → is_closed'ın kendisi, yani klasik
+    # ardışık gün SAYISI) → exp-decay Release mekanizması, paylaşılan
+    # çekirdek üzerinden (bkz. _compute_streak_backlog_features).
+    df = _compute_streak_backlog_features(
+        df,
+        flag_col="is_closed",
+        group_column=group_column,
+        alpha=backlog_alpha,
+        accumulated_col="accumulated_closed_days",
+        resumption_col="days_since_resumption",
+        release_col="backlog_release_index",
+        weight_col=None,
+        max_release_days=4,
+        tmp_prefix="_closed",
+    )
 
     logger.debug(
         f"✅ Tatil özellikleri eklendi ({len(holiday_set)} tatil günü, "
         f"Polars native, BAI alpha={backlog_alpha})."
+    )
+    return df
+
+
+# ---------------------------------------------------------------------------
+# 2.5 Organik Backlog Özellikleri (Takvimden Bağımsız Durgunluk)
+# ---------------------------------------------------------------------------
+
+def add_organic_backlog_features(
+    df: pl.DataFrame,
+    target_column: str,
+    group_column: Optional[str] = None,
+    baseline_column: Optional[str] = None,
+    baseline_window: int = 14,
+    low_activity_ratio_threshold: float = 0.5,
+    release_alpha: float = 1.4,
+    max_release_days: int = 4,
+    combine_with_closed: bool = True,
+    output_suffix: str = "",
+) -> pl.DataFrame:
+    """
+    `add_holiday_features`'daki (is_closed → streak → shift(1) → exp decay)
+    mantığının TAKVİMDEN BAĞIMSIZ versiyonu.
+
+    Motivasyon
+    ----------
+    is_closed sadece resmi tatil/Pazar gibi TAKVİMSEL kapanışları yakalar.
+    Ama bir rota takvimsel olarak "açık" olsa bile haftalarca normalin çok
+    altında talep alabilir (sezon dışı, yerel bir kesinti, talep düşüşü vb.)
+    — bu "organik durgunluk" da holiday'e benzer bir birikim/patlama dinamiği
+    yaratır, ama holiday setinden asla yakalanmaz. Bu fonksiyon is_closed'ın
+    YERİNE değil, TAMAMLAYICISI olarak bu sinyali ekler; `combine_with_closed`
+    ile ikisini "genel düşük-aktivite" kavramında birleştirir (holiday, bu
+    genel kavramın takvimsel bir özel durumu haline gelir).
+
+    Mantık (add_holiday_features ile birebir aynı iskelet)
+    --------------------------------------------------------
+    1. İkili bayrak yerine SÜREKLİ bir "açık ama az" sinyali:
+       organic_activity_ratio = actual_lag1 / baseline
+       (rota bazlı `target_column.shift(1)` ile kendi `rolling_mean_{baseline_window}`
+       baseline'ı arasındaki oran — leakage'sız, `.shift(1).over(group_column)`.)
+    2. Bu oran belirli bir eşiğin (low_activity_ratio_threshold) altına
+       düşen günler "organik durgunluk günü" (is_organic_slowdown) sayılır
+       — holiday'den tamamen bağımsız, salt talep davranışına dayanır.
+    3. accumulated_closed_days'e benzer ama AĞIRLIKLI bir "accumulated
+       organic deficit": sadece ardışık gün sayısı değil, o günlerde talebin
+       baseline'ın ne kadar altında kaldığının (organic_deficit_magnitude)
+       büyüklüğü de birikime dahil edilir (bkz. _compute_streak_backlog_features
+       weight_col parametresi).
+    4. backlog_release_index'e benzer, durgunluk biter bitmez tetiklenen
+       exponential-decay "organic_release_index".
+    5. combine_with_closed=True ise, is_closed VE is_organic_slowdown'ı
+       birleştiren genel bir "is_low_activity" tetikleyicisi ve onun kendi
+       birikim/release sütunları da üretilir.
+
+    Çıktı sütunlar
+    --------------
+    organic_activity_ratio{suffix}      : actual_lag1 / baseline (Float64,
+                                           sürekli, takvimden bağımsız sinyal).
+    organic_deficit_magnitude{suffix}   : max(0, 1 - ratio) — o günkü
+                                           durgunluğun büyüklüğü (Float64).
+    is_organic_slowdown{suffix}         : ratio < threshold mü? (Int8, 0/1).
+    accumulated_organic_deficit{suffix} : Az önce sona eren organik durgunluk
+                                           bloğunun AĞIRLIKLI toplamı (Float64).
+    days_since_organic_resumption{suffix}: Organik durgunluktan dönüşten
+                                           itibaren geçen aktif gün sayısı
+                                           (Int64); durgun günlerde -1.
+    organic_release_index{suffix}       : Durgunluk biter bitmez üstel
+                                           sönümle tetiklenen release sinyali.
+    is_low_activity{suffix}             : is_closed VEYA is_organic_slowdown
+                                           (Int8, 0/1) — genel düşük-aktivite
+                                           tetikleyicisi. (Yalnızca is_closed
+                                           df'de mevcutsa ve combine_with_closed
+                                           True ise üretilir.)
+    accumulated_low_activity_days{suffix}, days_since_low_activity_resumption{suffix},
+    low_activity_release_index{suffix}  : is_low_activity için aynı ağırlıklı
+                                           birikim/release mekanizması (kapalı
+                                           günlerde ağırlık=1, organik durgun
+                                           günlerde ağırlık=deficit büyüklüğü).
+
+    Parameters
+    ----------
+    df                        : Polars DataFrame (date'e göre sıralı olmalı)
+    target_column             : Gerçekleşen talep sütunu (actual_lag1 buradan
+                                 türetilir)
+    group_column              : Rota/grup sütunu — None ise tek seri kabul
+                                 edilir (rotalar arası sızıntı riski oluşmaz)
+    baseline_column           : Kendi baseline'ı olarak kullanılacak hazır
+                                 sütun (örn. `rolling_mean_14`). Verilmezse
+                                 bu fonksiyon target_column üzerinden
+                                 `shift(1).rolling_mean(baseline_window)` ile
+                                 kendi baseline'ını hesaplar (leakage'sız).
+    baseline_window           : baseline_column verilmediğinde kullanılacak
+                                 rolling pencere boyutu (varsayılan: 14)
+    low_activity_ratio_threshold : organic_activity_ratio bu eşiğin altına
+                                 düşerse gün "organik durgunluk" sayılır
+                                 (varsayılan: 0.5 → baseline'ın yarısından az)
+    release_alpha              : Organik birikim erime hız sabiti (varsayılan: 1.4,
+                                 add_holiday_features'daki backlog_alpha ile aynı
+                                 ölçekte)
+    max_release_days           : Release etkisinin sıfırlandığı gün sayısı
+    combine_with_closed        : True ve df'de is_closed mevcutsa, is_closed
+                                 ile is_organic_slowdown'ı birleştiren genel
+                                 "is_low_activity" tetikleyicisini de üretir
+    output_suffix              : Wide-format (09:00/17:00 gibi) akışlarda,
+                                 tüm çıktı sütun adlarına eklenecek sonek
+                                 (örn. "_0900") — add_lag_features/
+                                 add_rolling_features'daki suffix deseniyle
+                                 tutarlı.
+
+    Returns
+    -------
+    pl.DataFrame
+    """
+    if group_column and group_column not in df.columns:
+        group_column = None
+    over_keys = [group_column] if group_column else None
+
+    EPS = 1e-5
+    s = output_suffix
+
+    # 1. actual_lag1: dünkü gerçekleşen talep (leakage yok)
+    actual_lag1_expr = pl.col(target_column).shift(1)
+    if over_keys:
+        actual_lag1_expr = actual_lag1_expr.over(over_keys)
+    df = df.with_columns([actual_lag1_expr.alias("_organic_actual_lag1")])
+
+    # 2. Baseline: verilen sütun varsa kullan, yoksa kendi rolling_mean'ini
+    #    (shift(1) ile leakage'sız) hesapla.
+    if baseline_column and baseline_column in df.columns:
+        df = df.with_columns([pl.col(baseline_column).alias("_organic_baseline")])
+    else:
+        base_expr = (
+            pl.col(target_column)
+            .shift(1)
+            .rolling_mean(window_size=baseline_window, min_samples=1)
+        )
+        if over_keys:
+            base_expr = base_expr.over(over_keys)
+        df = df.with_columns([base_expr.alias("_organic_baseline")])
+
+    # 3. Sürekli "açık ama az" sinyali
+    ratio_col = f"organic_activity_ratio{s}"
+    df = df.with_columns([
+        (pl.col("_organic_actual_lag1") / (pl.col("_organic_baseline") + EPS))
+        .alias(ratio_col)
+    ])
+
+    # 4. Günlük açık büyüklüğü (deficit) — sadece baseline altında kalan kısım
+    #    pozitif; üstündeyse (talep patlaması) 0 — burada sadece durgunluğu
+    #    ölçüyoruz, patlamayı değil.
+    deficit_col = f"organic_deficit_magnitude{s}"
+    df = df.with_columns([
+        (1.0 - pl.col(ratio_col)).clip(lower_bound=0.0, upper_bound=1.0).alias(deficit_col)
+    ])
+
+    # 5. İkili "organik durgunluk günü" bayrağı — takvimden tamamen bağımsız
+    flag_col = f"is_organic_slowdown{s}"
+    df = df.with_columns([
+        pl.when(
+            pl.col(ratio_col).is_not_null() & (pl.col(ratio_col) < low_activity_ratio_threshold)
+        ).then(1).otherwise(0).cast(pl.Int8).alias(flag_col)
+    ])
+
+    # 6. Ağırlıklı birikim + release (aynı çekirdek, ağırlık = deficit büyüklüğü)
+    df = _compute_streak_backlog_features(
+        df,
+        flag_col=flag_col,
+        group_column=group_column,
+        alpha=release_alpha,
+        accumulated_col=f"accumulated_organic_deficit{s}",
+        resumption_col=f"days_since_organic_resumption{s}",
+        release_col=f"organic_release_index{s}",
+        weight_col=deficit_col,
+        max_release_days=max_release_days,
+        tmp_prefix=f"_organic{s}",
+    )
+
+    # 7. Genel düşük-aktivite tetikleyicisi: takvim (is_closed) VE organik
+    #    sinyalin birleşimi — holiday bunun özel bir durumu haline gelir.
+    if combine_with_closed and "is_closed" in df.columns:
+        low_flag_col = f"is_low_activity{s}"
+        df = df.with_columns([
+            pl.when((pl.col("is_closed") == 1) | (pl.col(flag_col) == 1))
+              .then(1).otherwise(0).cast(pl.Int8)
+              .alias(low_flag_col)
+        ])
+        # Ağırlık: kapalı (takvimsel) günlerde tam ağırlık (1.0), organik
+        # durgun günlerde açık büyüklüğü kadar ağırlık.
+        low_weight_col = f"_low_activity_weight{s}"
+        df = df.with_columns([
+            pl.when(pl.col("is_closed") == 1).then(1.0)
+              .when(pl.col(flag_col) == 1).then(pl.col(deficit_col))
+              .otherwise(0.0)
+              .alias(low_weight_col)
+        ])
+        df = _compute_streak_backlog_features(
+            df,
+            flag_col=low_flag_col,
+            group_column=group_column,
+            alpha=release_alpha,
+            accumulated_col=f"accumulated_low_activity_days{s}",
+            resumption_col=f"days_since_low_activity_resumption{s}",
+            release_col=f"low_activity_release_index{s}",
+            weight_col=low_weight_col,
+            max_release_days=max_release_days,
+            tmp_prefix=f"_lowact{s}",
+        )
+        df = df.drop([low_weight_col])
+
+    df = df.drop(["_organic_actual_lag1", "_organic_baseline"])
+
+    logger.debug(
+        f"✅ Organik backlog özellikleri eklendi (suffix='{s}'): "
+        f"{ratio_col}, {deficit_col}, {flag_col}, "
+        f"accumulated_organic_deficit{s}, days_since_organic_resumption{s}, "
+        f"organic_release_index{s}"
+        + (
+            f", is_low_activity{s}, accumulated_low_activity_days{s}, "
+            f"days_since_low_activity_resumption{s}, low_activity_release_index{s}"
+            if combine_with_closed and "is_closed" in df.columns else ""
+        )
+        + " (Polars, takvimden bağımsız)."
     )
     return df
 
@@ -709,6 +1092,117 @@ def add_rolling_features(
 
 
 # ---------------------------------------------------------------------------
+# 4.2 Kısa Vadeli Momentum (İvme) Özellikleri
+# ---------------------------------------------------------------------------
+
+DEFAULT_MOMENTUM_EMA_SPAN: int = 3
+DEFAULT_MOMENTUM_SHORT_WINDOW: int = 3
+DEFAULT_MOMENTUM_LONG_WINDOW: int = 14
+
+
+def add_momentum_features(
+    df: pl.DataFrame,
+    target_columns: Union[str, List[str]],
+    group_column: Optional[str],
+    ema_span: int = DEFAULT_MOMENTUM_EMA_SPAN,
+    short_window: int = DEFAULT_MOMENTUM_SHORT_WINDOW,
+    long_window: int = DEFAULT_MOMENTUM_LONG_WINDOW,
+) -> pl.DataFrame:
+    """
+    Kısa vadeli momentum (ivme) özellikleri ekler.
+
+    Motivasyon: lag_14/lag_30 ve rolling_mean_7/14 gibi özellikler geçmişe
+    geniş bir pencereden bakar (smoothing). Bu, talep grafiği ANİDEN yukarı
+    kırıldığında (örn. Haziran sonu sıçraması) modelin trendi 1 hafta gibi
+    bir gecikmeyle fark etmesine yol açar — geniş pencere yeni sıçramayı
+    geçmişteki "sakin" günlerin ortalamasına gömer.
+
+    Bu fonksiyon, kısa pencereye ağırlık vererek trend kırılmasını ANINDA
+    yakalayan 2 özellik üretir:
+      1. ema_{span}        : Son `ema_span` günün üstel hareketli ortalaması
+                              (üstel ağırlıklandırma → en yakın gün en baskın,
+                              rolling_mean gibi tüm günlere eşit ağırlık vermez)
+      2. momentum_ratio_{short}_{long} : Son `short_window` günün ortalamasının,
+                              son `long_window` günün ortalamasına oranı.
+                              1.0'ın belirgin şekilde üzerinde  → talep hızla
+                              yükseliyor (momentum YUKARI).
+                              1.0'ın belirgin şekilde altında   → talep hızla
+                              düşüyor (momentum AŞAĞI).
+
+    Wide format (09:00 / 17:00) desteği
+    -------------------------------------
+    target_columns birden fazla sütun içeriyorsa, her sütun için AYRI AYRI
+    üretilir ve çıktı sütun adına slot soneki eklenir:
+      ema_3_0900, momentum_ratio_3_14_0900, ...
+      ema_3_1700, momentum_ratio_3_14_1700, ...
+    Tek sütun verilirse eski sütun adı deseniyle uyumlu, soneksiz üretilir.
+
+    ⚠️  Data Leakage Güvencesi:
+      - Tüm hesaplamalar shift(1) uygulanmış seri üzerinden yapılır
+        (add_rolling_features ile birebir aynı desen) → bugünün değeri
+        pencereye/EMA'ya dahil edilmez.
+      - Her grup kendi geçmişine bakar (.over(group_column)); başka
+        grubun verisi sızmaz.
+
+    Parameters
+    ----------
+    df             : Polars DataFrame (date'e göre sıralı olmalı)
+    target_columns : Hedef sütun adı (str) veya sütun listesi (List[str])
+    group_column   : Grup sütunu; None ise tek seri
+    ema_span       : EMA span'i (gün) — varsayılan 3
+    short_window   : Momentum oranının pay tarafındaki pencere — varsayılan 3
+    long_window    : Momentum oranının payda tarafındaki pencere — varsayılan 14
+
+    Returns
+    -------
+    pl.DataFrame
+    """
+    target_cols: List[str] = [target_columns] if isinstance(target_columns, str) else list(target_columns)
+
+    EPS = 1e-5
+    momentum_exprs = []
+    produced_names: List[str] = []
+
+    for tcol in target_cols:
+        suffix = _feature_suffix(tcol, target_cols)
+        shifted = pl.col(tcol).shift(1)
+
+        ema_alias = f"ema_{ema_span}{suffix}"
+        ratio_alias = f"momentum_ratio_{short_window}_{long_window}{suffix}"
+
+        if group_column and group_column in df.columns:
+            ema_expr = (
+                shifted
+                .ewm_mean(span=ema_span, min_samples=1, ignore_nulls=True)
+                .over(group_column)
+                .alias(ema_alias)
+            )
+            short_mean_expr = (
+                shifted.rolling_mean(window_size=short_window, min_samples=1).over(group_column)
+            )
+            long_mean_expr = (
+                shifted.rolling_mean(window_size=long_window, min_samples=1).over(group_column)
+            )
+        else:
+            ema_expr = (
+                shifted
+                .ewm_mean(span=ema_span, min_samples=1, ignore_nulls=True)
+                .alias(ema_alias)
+            )
+            short_mean_expr = shifted.rolling_mean(window_size=short_window, min_samples=1)
+            long_mean_expr = shifted.rolling_mean(window_size=long_window, min_samples=1)
+
+        ratio_expr = (short_mean_expr / (long_mean_expr + EPS)).fill_null(1.0).alias(ratio_alias)
+
+        momentum_exprs += [ema_expr, ratio_expr]
+        produced_names += [ema_alias, ratio_alias]
+
+    df = df.with_columns(momentum_exprs)
+    logger.debug(f"✅ Momentum (ivme) özellikleri eklendi (Polars): {produced_names}")
+    return df
+
+
+# ---------------------------------------------------------------------------
 # 4.5 Cross-Lag (Gün-İçi Slotlar Arası Bilgi Akışı) — 09:00 / 17:00
 # ---------------------------------------------------------------------------
 
@@ -862,9 +1356,16 @@ def build_feature_matrix(
       2. Zaman özellikleri      (mevcut satırdan, leakage yok)
       3. Tatil özellikleri      (mevcut tarihten, leakage yok)
       3.5 Kampanya özellikleri   (e-ticaret zirveleri + arife, leakage yok)
+      3.8 Organik backlog özellikleri (takvimden bağımsız durgunluk sinyali +
+                                  is_closed ile birleşen genel "is_low_activity"
+                                  tetikleyicisi; her hedef sütun için AYRI AYRI,
+                                  shift(1) ile leakage yok)
       4. Spatio-temporal        (grup × zaman etkileşimi)
       5. Lag özellikleri        (her hedef sütun için AYRI AYRI, shift() ile leakage yok)
       6. Rolling istatistikler  (her hedef sütun için AYRI AYRI, shift(1) + rolling, leakage yok)
+      6.2 Momentum (ivme)       (ema_3, momentum_ratio_3_14 — her hedef sütun için AYRI
+                                  AYRI, shift(1) tabanlı, leakage yok; kısa vadeli trend
+                                  kırılmalarını rolling_mean'in gecikmesi olmadan yakalar)
       6.3 Cross-lag             (bugünkü 09:00 → 17:00 modeli için meşru gün-içi bilgi)
       6.4 Günlük toplam (geçici) (toplam_desi_0900 + toplam_desi_1700 — SADECE aşağıdaki
                                   hub/graph/hierarchical/extreme fonksiyonlarının iç
@@ -942,13 +1443,27 @@ def build_feature_matrix(
     # lead_days=3: Anneler Günü gibi kampanyalarda 5 günlük arife
     # Nisan/Mayıs tatil birikim dönemleriyle çakışıyor.
     # 3 gün, gerçek e-ticaret sipariş penceresini daha temiz modelliyor.
-    pl_df = add_campaign_features(pl_df, date_column, lead_days=3)
+    pl_df = add_campaign_features(pl_df, date_column, lead_days=3, group_column=group_column)
 
     # --- Adım 3.7: Kaggle Takvim Özellikleri (Maaş günü + Rota-Gün + Birikim) ---
     # is_holiday ve is_campaign_eve sütunlarına bağımlı olduğu için
     # tatil/kampanya adımlarından SONRA çalıştırılır.
     pl_df = add_advanced_calendar_features(pl_df, date_column, group_column)
 
+    # --- Adım 3.8: Organik Backlog Özellikleri (Takvimden Bağımsız Durgunluk) ---
+    # is_closed'a bağımlı (genel "is_low_activity" tetikleyicisi için), bu
+    # yüzden tatil adımından SONRA, lag/rolling'den ÖNCE çalıştırılır (lag/
+    # rolling'e bağımlı değil — kendi actual_lag1/baseline'ını hesaplar).
+    # Wide format'ta her hedef sütun (09:00/17:00) için AYRI AYRI, lag/
+    # rolling ile aynı suffix desenine uyularak üretilir.
+    for _tcol in target_cols:
+        _suffix = _feature_suffix(_tcol, target_cols)
+        pl_df = add_organic_backlog_features(
+            pl_df,
+            target_column=_tcol,
+            group_column=group_column,
+            output_suffix=_suffix,
+        )
 
     # --- Adım 4: Spatio-temporal ---
     if group_column and group_column in pl_df.columns:
@@ -961,6 +1476,13 @@ def build_feature_matrix(
     pl_df = add_rolling_features(
         pl_df, target_cols, group_column, windows=rolling_windows
     )
+
+    # --- Adım 6.2: Kısa Vadeli Momentum (İvme) Özellikleri ---
+    # lag_14/lag_30 ve rolling_mean_7/14 geniş pencereden baktığı için ani
+    # sıçramalara (örn. Haziran sonu) geç tepki veriyordu (smoothing etkisi).
+    # ema_3 ve momentum_ratio_3_14, kısa pencereye ağırlık vererek trend
+    # kırılmasını rolling_mean'in "1 hafta bekleme" gecikmesi olmadan yakalar.
+    pl_df = add_momentum_features(pl_df, target_cols, group_column)
 
     # --- Adım 6.3: Cross-lag (bugünkü 09:00 → 17:00 modeli için meşru feature) ---
     pl_df = add_cross_lag_features(pl_df, target_cols)
@@ -1020,13 +1542,16 @@ def build_feature_matrix(
         )
 
     # --- Adım 6.8: Ekstrem Olay Özellikleri (Tweedie / SHOS / Pencere Eğrisi) ---
-    # NOT: Bu fonksiyon, tek-hedefli akışta üretilen literal "rolling_mean_7" /
-    # "rolling_std_7" sütunlarını arıyor. Wide format'ta rolling artık
-    # suffix'li (rolling_mean_7_0900 / _1700) olduğu için bu literal sütunlar
-    # bulunmayacak ve fonksiyon kendi tasarlanmış fallback'ine (statik grup
-    # quantile eşiği) düşecektir — bu bir hata değil, fonksiyonun zaten
-    # desteklediği bir davranış (bkz. add_extreme_event_features içindeki
-    # "else: Statik grup quantile" dalı).
+    # DÜZELTİLDİ: Bu fonksiyon eskiden literal "rolling_mean_7" / "rolling_std_7"
+    # sütun adlarını arıyordu; wide format'ta (suffix'li: _0900/_1700) ve
+    # hub_graph_target (_toplam_desi_gunluk_temp) ile çağrıldığında bu isimler
+    # hiç var olmadığından kontrol her zaman False dönüyor, fonksiyon her
+    # zaman statik-quantile fallback'ine düşüyor ve tasarlanan dinamik/anlık
+    # eşik dalı hiç çalışmıyordu. Artık add_extreme_event_features kendi
+    # rolling_mean_7/rolling_std_7'sini doğrudan target_column'dan (burada
+    # hub_graph_target) hesaplıyor — bu dal artık her zaman çalışır; statik
+    # quantile sinyali de is_extreme_event_candidate_static olarak ayrıca
+    # (fallback değil, tamamlayıcı olarak) üretiliyor.
     pl_df = add_extreme_event_features(
         pl_df,
         target_column=hub_graph_target,
@@ -1450,9 +1975,20 @@ def add_extreme_event_features(
                                   α = tatil öncesi beklenen yük (accumulated_closed_days
                                   varsa kullanılır, yoksa backlog_release_index).
                                   β = backlog_clearance_rate (ağın eritme hızı).
-    is_extreme_event_candidate : Tarihsel grup medyanının extreme_threshold_quantile
-                                  katını aşan gün sinyali (Int8, 0/1).
+    is_extreme_event_candidate : Anlık (rolling_mean_7 + 2*rolling_std_7)
+                                  eşiğini aşan gün sinyali (Int8, 0/1).
                                   SHOS Hurdle Modeli için "oluşma" hedefi.
+                                  NOT: rolling_mean_7/rolling_std_7 artık
+                                  target_column'dan doğrudan (shift(1) +
+                                  rolling window=7) hesaplanır — önceki
+                                  sürümde literal "rolling_mean_7" sütun adını
+                                  arıyordu ve wide-format akışında (suffix'li
+                                  sütunlar) bu isim hiç bulunmadığından bu dal
+                                  hiç çalışmıyordu; artık her zaman çalışır.
+    is_extreme_event_candidate_static : Tarihsel grup quantile'ının
+                                  (extreme_threshold_quantile) aşıldığı gün
+                                  sinyali (Int8, 0/1) — dinamik sinyale
+                                  tamamlayıcı, her zaman üretilir.
     extreme_event_prob_score   : Grup × tatil/kampanya kombinasyonunun geçmişte
                                   ekstrem olaya dönüşme oranı (0–1 arası Float).
                                   Model 1 (Sınıflandırma) çıktısını taklit eder;
@@ -1487,6 +2023,32 @@ def add_extreme_event_features(
 
     def _over(expr: pl.Expr) -> pl.Expr:
         return expr.over(over_keys) if over_keys else expr
+
+    # ------------------------------------------------------------------
+    # BUG DÜZELTMESİ: Bu fonksiyon eskiden literal "rolling_mean_7" /
+    # "rolling_std_7" sütun adlarını arıyordu. Wide-format akışında
+    # (add_rolling_features suffix'li üretir: rolling_mean_7_0900 /
+    # _1700) ve hub_graph_target ile çağrıldığında (_toplam_desi_gunluk_temp)
+    # bu literal isimler HİÇBİR ZAMAN var olmuyordu — kontrol her zaman
+    # False dönüyor, fonksiyon her zaman "statik grup quantile" fallback'ine
+    # düşüyordu ve tasarlanan dinamik/anlık eşik dalı asla çalışmıyordu.
+    #
+    # Çözüm: rolling_mean_7 / rolling_std_7'yi hazır bir sütuna bel bağlamak
+    # yerine DOĞRUDAN target_column üzerinden (aynı shift(1).rolling_mean/
+    # std(window=7).over(group) deseniyle, leakage'sız) yeniden hesapla.
+    # Bu, hem legacy tek-sütunlu akışta hem de wide-format / hub_graph_target
+    # akışında her zaman doğru, o fonksiyona özgü rolling istatistiklerini
+    # garanti eder ve statik fallback'e asla ihtiyaç kalmaz.
+    # ------------------------------------------------------------------
+    _ee_mean_expr = pl.col(target_column).shift(1).rolling_mean(window_size=7, min_samples=1)
+    _ee_std_expr = pl.col(target_column).shift(1).rolling_std(window_size=7, min_samples=1).fill_null(0.0)
+    if over_keys:
+        _ee_mean_expr = _ee_mean_expr.over(over_keys)
+        _ee_std_expr = _ee_std_expr.over(over_keys)
+    df = df.with_columns([
+        _ee_mean_expr.alias("_ee_rolling_mean_7"),
+        _ee_std_expr.alias("_ee_rolling_std_7"),
+    ])
 
     # ------------------------------------------------------------------
     # 1. Tatil/Kampanya Pencere Eğrisi (Window Intensity)
@@ -1526,26 +2088,31 @@ def add_extreme_event_features(
     # 2. Ekstrem Olay Adayı (SHOS Hurdle — "Oluşma" Sinyali)
     # Eğitim setindeki grup medyanının Q90 katını aşan günler → potansiyel ekstrem
     # ------------------------------------------------------------------
-    if "rolling_mean_7" in df.columns and "rolling_std_7" in df.columns:
-        # Anlık kayan ortalama ve std mevcut — eşiği dinamik tut
-        threshold_expr = (
-            pl.col("rolling_mean_7") +
-            2.0 * pl.col("rolling_std_7")
-        )
-        df = df.with_columns([
-            pl.when(
-                pl.col(target_column).shift(1) > threshold_expr
-            ).then(1).otherwise(0).cast(pl.Int8)
-            .alias("is_extreme_event_candidate")
-        ])
-    else:
-        # Statik grup quantile — leakage riski düşük (tüm geçmiş kullanılır)
-        q_expr = _over(pl.col(target_column).quantile(extreme_threshold_quantile))
-        df = df.with_columns([
-            pl.when(pl.col(target_column).shift(1) > q_expr)
-            .then(1).otherwise(0).cast(pl.Int8)
-            .alias("is_extreme_event_candidate")
-        ])
+    # Artık her zaman dinamik (anlık kayan ortalama + std bazlı) eşik dalı
+    # kullanılır — _ee_rolling_mean_7 / _ee_rolling_std_7 target_column'dan
+    # doğrudan hesaplandığı için (yukarıdaki bug düzeltmesi) legacy tek-sütun
+    # akışında da, wide-format / hub_graph_target akışında da her zaman
+    # mevcuttur. Statik grup-quantile artık sessiz bir fallback değil,
+    # açıkça `extreme_threshold_quantile` ile ayrı bir sinyal isteyenler
+    # için opsiyonel bir ek sütun (bkz. aşağıdaki 2b) haline getirildi.
+    threshold_expr = pl.col("_ee_rolling_mean_7") + 2.0 * pl.col("_ee_rolling_std_7")
+    df = df.with_columns([
+        pl.when(
+            pl.col(target_column).shift(1) > threshold_expr
+        ).then(1).otherwise(0).cast(pl.Int8)
+        .alias("is_extreme_event_candidate")
+    ])
+
+    # 2b. Statik grup-quantile sinyali — artık sessiz bir fallback değil,
+    # dinamik sinyalin yanında her zaman üretilen tamamlayıcı bir sütun
+    # (tüm geçmişi kullandığı için kısa geçmişli rotalarda dinamik sinyalden
+    # daha kararlı olabilir).
+    q_expr = _over(pl.col(target_column).quantile(extreme_threshold_quantile))
+    df = df.with_columns([
+        pl.when(pl.col(target_column).shift(1) > q_expr)
+        .then(1).otherwise(0).cast(pl.Int8)
+        .alias("is_extreme_event_candidate_static")
+    ])
 
     # ------------------------------------------------------------------
     # 3. Ekstrem Olay Olasılık Skoru (SHOS Proxy)
@@ -1575,17 +2142,18 @@ def add_extreme_event_features(
     # 4. Log Dönüşümü Sinyali (Tweedie / RMSLE ihtiyaç göstergesi)
     # Varyasyon katsayısı (CoV) = std / mean; yüksekse (>1.5) Tweedie önerilir
     # ------------------------------------------------------------------
-    if "rolling_std_7" in df.columns and "rolling_mean_7" in df.columns:
-        df = df.with_columns([
-            (pl.col("rolling_std_7") / (pl.col("rolling_mean_7") + EPS))
-            .alias("log_transform_signal")
-        ])
-    else:
-        df = df.with_columns([pl.lit(0.0).alias("log_transform_signal")])
+    df = df.with_columns([
+        (pl.col("_ee_rolling_std_7") / (pl.col("_ee_rolling_mean_7") + EPS))
+        .alias("log_transform_signal")
+    ])
+
+    # Ara (yardımcı) sütunları temizle — nihai matriste kalmamalı
+    df = df.drop(["_ee_rolling_mean_7", "_ee_rolling_std_7"])
 
     logger.debug(
         "✅ Ekstrem Olay özellikleri eklendi: "
         "backlog_window_intensity, is_extreme_event_candidate, "
+        "is_extreme_event_candidate_static, "
         "extreme_event_prob_score, log_transform_signal (Polars)."
     )
     return df

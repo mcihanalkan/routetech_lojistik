@@ -10,8 +10,42 @@ Mimari Kararlar (Teknofest kısıtlarına göre):
   │     (log uzayındaki küçük makas expm1 ile devasa aralığa döner) │
   │  ✅ Hibrit Heuristic    → Kampanya arifesi 1.8x/2.0x çarpanı    │
   │     (4.5 ay veri ile öğrenilemeyen sezonsallığa domain kuralı)  │
+  │  ✅ İki Aşamalı Surge   → Model 1 (ensemble) + Model 2 (Asimetrik │
+  │     Kalıntı Modeli       Log-Cosh, kalıntı) — bkz. PDF Bölüm 1+3 │
   │  ✅ In-memory JSON      → Disk I/O YOK (10 dk bütçesi korunur)  │
   └─────────────────────────────────────────────────────────────────┘
+
+Talep Patlaması (Surge) Entegrasyonu — PDF Referansı:
+  "Teknofest Lojistik Rota Optimizasyonunda Talep Patlamalarının ve Hata
+  Yayılımının İleri Düzey Modellenmesi" raporunun Bölüm 1 (Asimetrik
+  Log-Cosh) ve Bölüm 3'ü (İki Aşamalı Kalıntı Modellemesi / FTO), mevcut
+  mimariye ŞÖYLE entegre edildi:
+
+    Model 1 (Base — mevcut ensemble)
+        Değişmedi: 4-fold MultiQuantile (q10/q50/q90) ensemble, tüm
+        günlerde stabil tahmin üretir. Rapor'un tespit ettiği gibi,
+        ardışık kapalı günler / büyük kampanyalar sonrasında 14-30
+        günlük hareketli ortalamaların ataleti yüzünden sistematik
+        eksik tahmin (underprediction) üretmeye devam eder — bu
+        BEKLENEN bir durumdur, Model 2 bunu telafi eder.
+
+    Model 2 (Surge / Residual — YENİ, bkz. _train_surge_residual_model)
+        SADECE tetikleyici bayrak taşıyan satırlarda (is_campaign_eve,
+        is_campaign_day, is_post_campaign, is_post_holiday,
+        is_extreme_event_candidate, backlog_release_index>0 — bkz.
+        features.py) eğitilir. Hedef, mutlak hacim DEĞİL Model 1'in
+        train seti üzerindeki kalıntısıdır (y - base_q50). Kayıp
+        fonksiyonu AsymmetricLogCoshObjective (bu dosyanın başında tanımlı) —
+        C2-sürekli, pürüzsüz, eksik tahmini parabolik olarak
+        cezalandıran asimetrik kayıp.
+
+    Çıkarımda (predict): sadece aynı tetikleyici satırlarda
+        Final(q50) = Base(q50) + max(Residual, 0)
+    uygulanır (bkz. _predict_single_batch). Eski çarpan-tabanlı
+    campaign_multipliers_ heuristiği, surge modeli o satır için
+    eğitilip devredeyse ATLANIR (çifte düzeltme önlenir); surge modeli
+    yetersiz veriyle (surge_min_rows altı) eğitilemediğinde B Planı
+    olarak devrede kalır.
 
 Quantile Anlamları (ALNS motoruna):
   q10 → Düşük senaryo  : "En kötümser, ama gerçekçi alt sınır"
@@ -38,6 +72,105 @@ from .features import build_feature_matrix, get_categorical_columns, compute_tar
 from .missing import DataPreprocessor
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Asimetrik Log-Cosh Kayıp Fonksiyonu (CatBoost `fobj`) — PDF Bölüm 1
+# ---------------------------------------------------------------------------
+# Kaynak: "Teknofest Lojistik Rota Optimizasyonunda Talep Patlamalarının ve
+# Hata Yayılımının İleri Düzey Modellenmesi" raporu, Bölüm "1. Asimetrik
+# İkinci Dereceden (Quadratic) Kayıp Fonksiyonlarının Entegrasyonu".
+#
+# Neden gerekli: Mevcut mimaride kullanılan MultiQuantile (Pinball) kaybı
+# parçalı-doğrusaldır (piecewise-linear) — model, gerçek değerin tahminden
+# 100 desi mi yoksa 500.000 desi mi yukarıda olduğuna bakmaksızın SABİT bir
+# gradyan üretir. Asimetrik Log-Cosh ise pürüzsüz (C2-sürekli) ve
+# dışbükeydir; "eksik tahmin" (underprediction, e = y - ŷ > 0) durumunda
+# cezayı parabolik/üstel büyütürken "aşırı tahmin" (e ≤ 0) tarafında daha
+# yumuşak kalır — ağaç yaprak değerleri patlama günlerinde çok daha büyük
+# düzeltici sıçramalar üretebilir. Aşağıdaki sınıf SADECE _train_surge_
+# residual_model() içinde, Model 2 (Surge/Residual) için kullanılır —
+# Model 1 (ana ensemble) hâlâ MultiQuantile ile eğitilir.
+#
+# Matematiksel türetim (raporla birebir aynı):
+#   e = y - ŷ ;  e* = τ·e (e>0) / (1-τ)·e (e≤0) ;  L(e) = log(cosh(e*))
+#   g = dL/dŷ  = -τ·tanh(τ·e)            (e>0)   veya  -(1-τ)·tanh((1-τ)·e)  (e≤0)
+#   h = d²L/dŷ² = τ²·sech²(τ·e)          (e>0)   veya  (1-τ)²·sech²((1-τ)·e) (e≤0)
+# CatBoost'un `calc_ders_range` sözleşmesi (bkz. resmi LoglossObjective
+# örneği: der1 = y-p = -dL/dŷ) gereği işaret çevrilerek der1=-g, der2=-h
+# döndürülür — pratikte der1=τ·tanh(τ·e) (e>0), der2=-τ²·sech²(τ·e) (e>0).
+
+def _sech2(x: np.ndarray) -> np.ndarray:
+    """sech²(x) = 1 - tanh²(x) — tanh üzerinden, sayısal taşmasız."""
+    t = np.tanh(x)
+    return 1.0 - t * t
+
+
+class AsymmetricLogCoshObjective:
+    """
+    CatBoost için özel (custom) amaç fonksiyonu — Asimetrik Log-Cosh.
+
+    Parameters
+    ----------
+    tau : float
+        Asimetri katsayısı (0 < tau < 1). tau > 0.5 → eksik tahmin
+        (underprediction), aşırı tahminden (overprediction) daha ağır
+        cezalandırılır. Spot araç kiralama maliyetinin atıl kapasiteye
+        oranını yansıtmalıdır (örn. 0.80–0.90 arası).
+    eps : float
+        Hessian'ın sıfıra çok yaklaştığı durumlarda CatBoost'un Newton
+        adımını bozmaması için alt taban (güvenlik ağı).
+
+    Kullanım
+    --------
+    >>> model = CatBoostRegressor(
+    ...     loss_function=AsymmetricLogCoshObjective(tau=0.85),
+    ...     eval_metric="RMSE",   # custom objective ile birlikte zorunlu
+    ... )
+    """
+
+    def __init__(self, tau: float = 0.85, eps: float = 1e-12):
+        if not (0.0 < tau < 1.0):
+            raise ValueError(f"❌ tau (0,1) aralığında olmalı, verilen: {tau}")
+        self.tau = float(tau)
+        self.eps = float(eps)
+
+    # CatBoost'un beklediği isim ve imza — değiştirilmemeli.
+    def calc_ders_range(self, approxes, targets, weights):
+        tau = self.tau
+        approx_arr = np.asarray(approxes, dtype=np.float64)
+        target_arr = np.asarray(targets, dtype=np.float64)
+
+        e = target_arr - approx_arr  # residual: pozitif = eksik tahmin (underprediction)
+
+        der1 = np.empty_like(e)
+        der2 = np.empty_like(e)
+
+        under = e > 0.0
+        over = ~under
+
+        # --- Eksik tahmin (underprediction, e > 0) — agresif ceza (τ ağırlıklı) ---
+        z_u = tau * e[under]
+        der1[under] = tau * np.tanh(z_u)
+        der2[under] = -(tau ** 2) * _sech2(z_u)
+
+        # --- Aşırı tahmin (overprediction, e <= 0) — yumuşak ceza ((1-τ) ağırlıklı) ---
+        z_o = (1.0 - tau) * e[over]
+        der1[over] = (1.0 - tau) * np.tanh(z_o)
+        der2[over] = -((1.0 - tau) ** 2) * _sech2(z_o)
+
+        # Hessian tam sıfıra çok yaklaşırsa CatBoost'un Newton adımı bozulmasın diye tabanla
+        der2 = np.where(np.abs(der2) < self.eps, -self.eps, der2)
+
+        if weights is not None:
+            w = np.asarray(weights, dtype=np.float64)
+            der1 = der1 * w
+            der2 = der2 * w
+
+        return list(zip(der1.tolist(), der2.tolist()))
+
+    def __repr__(self) -> str:
+        return f"AsymmetricLogCoshObjective(tau={self.tau})"
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +290,26 @@ Q90_ALPHA: float = 0.9
 
 
 # ---------------------------------------------------------------------------
+# Surge/Residual Modeli — Tetikleyici Sütunlar (PDF Bölüm 3)
+# ---------------------------------------------------------------------------
+# features.py tarafından üretilen, "bu gün bir talep patlaması penceresinde
+# mi" sorusunu cevaplayan binary/oransal sütunlar. Herhangi biri pozitifse
+# satır "surge penceresi" sayılır — bkz. DemandForecaster._build_surge_trigger_mask.
+SURGE_BINARY_TRIGGER_COLUMNS: List[str] = [
+    "is_campaign_eve",
+    "is_campaign_day",
+    "is_post_campaign",
+    "is_post_holiday",
+    "is_extreme_event_candidate",
+]
+# Sürekli (binary olmayan) sinyal — pozitif değer, kapanış sonrası ilk
+# saatlerdeki üstel-azalan birikim baskısını temsil eder (bkz. features.py:
+# backlog_release_index = α · exp(-d/alpha)).
+SURGE_CONTINUOUS_TRIGGER_COLUMN: str = "backlog_release_index"
+SURGE_CONTINUOUS_TRIGGER_THRESHOLD: float = 0.05
+
+
+# ---------------------------------------------------------------------------
 # DemandForecaster
 # ---------------------------------------------------------------------------
 
@@ -211,6 +364,24 @@ class DemandForecaster(BaseForecaster):
         median + outlier_clip_multiplier × IQR üzerindeki değerler kırpılır.
         0.0 → kırpma yok. Varsayılan: 3.0
         IQR tabanlı olduğu için gruba göre hesaplanır — rota bazında adil.
+    surge_residual_enabled : bool
+        True ise, fit() sonunda tetikleyici (kampanya/tatil/backlog) satırlar
+        üzerinde İKİNCİ bir CatBoost modeli (Model 2 — Surge/Residual)
+        eğitilir. Bu model, Asimetrik Log-Cosh kaybıyla Model 1'in
+        train seti kalıntısını (y - base_q50) öğrenir ve predict()
+        sırasında SADECE aynı tetikleyici satırlarda q50/q90'a eklenir
+        (bkz. modül docstring'i — PDF Bölüm 1+3). Varsayılan: True.
+    surge_log_cosh_tau : float
+        Asimetrik Log-Cosh kaybının τ katsayısı (0 < τ < 1). Spot
+        kiralama maliyetinin atıl kapasiteye oranını yansıtır; τ=0.85
+        → eksik tahmin, aşırı tahminden ~5.7x daha ağır cezalandırılır.
+        Varsayılan: 0.85.
+    surge_min_rows : int
+        Surge modelinin eğitilebilmesi için train setinde gereken
+        minimum tetikleyici satır sayısı. Altında kalırsa surge modeli
+        atlanır ve eski campaign_multipliers_ çarpan heuristiği B Planı
+        olarak devrede kalır (küçük örneklemde overfit riskine karşı
+        koruma). Varsayılan: 40.
     log_transform_enabled : bool
         True ise fit() sırasında hedef değişkene np.log1p() uygulanır;
         predict() çıktısı otomatik olarak np.expm1() ile geri çevrilir.
@@ -245,6 +416,39 @@ class DemandForecaster(BaseForecaster):
     _TARGET_COL_0900 = "toplam_desi_0900"
     _CROSS_LAG_0900_COL = "cross_lag_0900_same_day"
 
+    # ⚠️  DENEYSEL / TEST AMAÇLI (ADIM 2 — weekday bias calibration).
+    # SADECE 2026-06-14→2026-06-20 penceresinden (--force, leakage'lı ama
+    # bias çıkarımı için ayrı tutuldu) çıkarılmış KABA/EMPİRİK bir düzeltme.
+    # 2026-06-21→2026-06-27'de HİÇ kullanılmadı — o pencere bu bias için
+    # temiz bir doğrulama seti olarak bilerek boş bırakıldı.
+    # Rota-başı (289 rota) mutlak desi offseti: günün toplam (gerçek-tahmin)
+    # farkı ÷ 289. Sadece 17:00 modeli için — 09:00'da aynı pencerede işaret
+    # tutarsızdı (bazı günler fazla, bazı günler eksik tahmin), bu yüzden
+    # 09:00'a KASITLI olarak uygulanmıyor (bkz. load_model()).
+    # Pazar (6) yok — zaten fazla tahmin ediliyordu, pozitif düzeltmeye gerek yok.
+    # Kalıcı/doğru versiyon: fit() içinde _evaluate_on_test()'ten sonra
+    # gerçek test setinden öğrenilip joblib'e gömülmeli — bu sözlük o zaman
+    # devre dışı bırakılmalı (aşağıdaki load_model() içindeki enjeksiyonu kaldırın).
+    _EMPIRICAL_WEEKDAY_BIAS_1700 = {
+        0: 1487.0,   # Pazartesi
+        1: 1376.7,   # Salı
+        2: 1546.1,   # Çarşamba
+        3: 609.6,    # Perşembe
+        4: 575.5,    # Cuma
+        5: 226.9,    # Cumartesi
+    }
+
+    # ⚠️ DENEYSEL AYAR KOLU: yukarıdaki ham kalibrasyonu BOZMADAN test etmek
+    # için ölçek çarpanı. 06-21→06-27 doğrulamasında ham (1.0x) değer
+    # underprediction'ı fazlasıyla aştı (+13%..+35% overprediction) —
+    # predict_sequential()'ın recursive doğası yüzünden (bir günün bias'lı
+    # tahmini bir sonraki günün lag feature'larına "sözde-gerçek" olarak
+    # girip düzeltmeyi hafta boyunca katlıyor). Farklı değerler deneyin:
+    # 1.0, 0.7, 0.5, 0.3 — regret VE fark%'ın sıfıra en yakın olduğu (üstüne
+    # taşmayan) noktayı arayın, sadece en düşük regret'i değil (bkz. surge
+    # kalibrasyonundaki asimetrik-metrik uyarısı — burada da aynı risk var).
+    _WEEKDAY_BIAS_SCALE: float = 0.0
+
     def __init__(
         self,
         target_column: str = "desi_hacmi",
@@ -262,6 +466,11 @@ class DemandForecaster(BaseForecaster):
         underestimation_penalty: float = UNDERESTIMATION_PENALTY,
         outlier_clip_multiplier: float = 3.0,
         log_transform_enabled: bool = False,
+        surge_residual_enabled: bool = True,
+        surge_log_cosh_tau: float = 0.85,
+        surge_min_rows: int = 40,
+        surge_calibration_factor: float = 1.0,
+        surge_relative_cap_alpha: Optional[float] = None,
         logging_enabled: bool = True,
         random_state: Optional[int] = 42,
     ):
@@ -287,12 +496,27 @@ class DemandForecaster(BaseForecaster):
         self.log_transform_enabled   = log_transform_enabled
         self.sibling_target_column   = sibling_target_column
         self.slot_label              = slot_label or self._infer_slot_label(target_column)
+        self.surge_residual_enabled  = surge_residual_enabled
+        self.surge_log_cosh_tau      = surge_log_cosh_tau
+        self.surge_min_rows          = surge_min_rows
+        self.surge_calibration_factor_ = surge_calibration_factor
+        # ADIM 5 / Faz 2 — Relative Cap: correction'ı baseline (düzeltme öncesi)
+        # hacmin bir oranıyla sınırlar. None = kapalı (varsayılan, geriye
+        # dönük uyumlu) — retrain gerekmeden backtest'te elle de atanabilir.
+        self.surge_relative_cap_alpha_ = surge_relative_cap_alpha
+
+        # ADIM 2 (weekday bias calibration) — retrain sırasında fit() içinde
+        # otomatik öğrenilip doldurulacak; elle de (backtest amaçlı) atanabilir.
+        # dict[int weekday(0=Pzt..6=Paz), float mutlak desi offset]
+        self.weekday_bias_ = None
 
         # Runtime'da dolacak
         self.model_: CatBoostRegressor = None
         self.models_: List[CatBoostRegressor] = []   # Ensemble fold modelleri
         self.cat_features_: List[str] = []
         self.feature_names_: List[str] = []
+        self.surge_model_: Optional[CatBoostRegressor] = None   # Model 2 — Surge/Residual (bkz. _train_surge_residual_model)
+        self.surge_trigger_columns_used_: List[str] = []
 
         # predict() sırasında lag/rolling değerlerini gerçek tarihsel
         # veriden hesaplayabilmek için fit() sonunda saklanan buffer.
@@ -444,6 +668,145 @@ class DemandForecaster(BaseForecaster):
             logger.info(
                 f"   📊 Rota Bazlı Kampanya Çarpanları Öğrenildi (Smoothed): "
                 f"{len(self.campaign_multipliers_)} rota (Ortalama Çarpan: {mean_mult:.2f}x)"
+            )
+
+    # -----------------------------------------------------------------------
+    # Surge/Residual Modeli (Model 2) — PDF Bölüm 1 + Bölüm 3
+    # -----------------------------------------------------------------------
+
+    def _build_surge_trigger_mask(self, X: pd.DataFrame) -> np.ndarray:
+        """
+        Bir feature matrisindeki hangi satırların "talep patlaması
+        penceresi" (surge) sayıldığını belirler — bkz. modül docstring'i.
+
+        Hem fit() (X_train üzerinde) hem de predict() (X_pred üzerinde)
+        AYNI mantığı kullanır — tek yerden kontrol, tutarlılık garantisi.
+
+        Herhangi bir tetikleyici sütun mevcut veri setinde yoksa
+        (ör. eski bir features.py sürümü) sessizce atlanır; hiçbiri
+        yoksa tüm satırlar False döner (surge modeli hiç tetiklenmez).
+        """
+        mask = np.zeros(len(X), dtype=bool)
+        used: List[str] = []
+
+        for col in SURGE_BINARY_TRIGGER_COLUMNS:
+            if col in X.columns:
+                mask |= (pd.to_numeric(X[col], errors="coerce").fillna(0.0) > 0).values
+                used.append(col)
+
+        if SURGE_CONTINUOUS_TRIGGER_COLUMN in X.columns:
+            mask |= (
+                pd.to_numeric(X[SURGE_CONTINUOUS_TRIGGER_COLUMN], errors="coerce").fillna(0.0)
+                > SURGE_CONTINUOUS_TRIGGER_THRESHOLD
+            ).values
+            used.append(SURGE_CONTINUOUS_TRIGGER_COLUMN)
+
+        self.surge_trigger_columns_used_ = used
+        return mask
+
+    def _train_surge_residual_model(
+        self,
+        X_train: pd.DataFrame,
+        y_train: Optional[pd.Series],
+        precomputed_residual: Optional[np.ndarray] = None,
+    ) -> None:
+        """
+        Model 2 (Surge/Residual) — İki Aşamalı Kalıntı Modellemesi.
+
+        Yalnızca fit() içinde, Model 1 (ensemble) eğitimi TAMAMLANDIKTAN
+        SONRA çağrılır (bkz. fit() — self.models_ dolu olmalı).
+
+        Adımlar
+        -------
+        1. _build_surge_trigger_mask() ile train setindeki tetikleyici
+           satırları bul. surge_min_rows altındaysa atla (B Planı:
+           campaign_multipliers_ heuristiği devrede kalır).
+        2. Model 1'in (4-fold ensemble, median) train seti üzerindeki
+           q50 tahminini hesapla — gerekirse sqrt dönüşümünü geri çevir.
+        3. Kalıntı = y_true - base_q50 (SADECE surge satırlarında).
+        4. AsymmetricLogCoshObjective (tau=surge_log_cosh_tau) kayıp
+           fonksiyonuyla küçük, hızlı bir CatBoostRegressor eğit —
+           bu, Model 1'in "kapatamadığı boşluğu" öğrenir.
+
+        Not (ADIM 3 güncellemesi): Kalıntı hedefi artık VARSAYILAN olarak
+        `precomputed_residual` üzerinden, K-Fold döngüsünün OOF (out-of-sample)
+        val tahminlerinden hesaplanıyor — bkz. fit() içindeki fold döngüsü ve
+        self._oof_X_ / self._oof_residual_. Bu, her fold modelinin kendi val
+        haftasını hiç görmemesinden yararlanır (use_best_model=False), yani
+        gerçek out-of-sample bir kalıntı elde edilir; eski in-sample
+        (train seti üzerinde) hesaplama sadece `precomputed_residual=None`
+        geçildiğinde (fallback / OOF verisi boşsa) kullanılır.
+        """
+        self.surge_model_ = None
+
+        if not self.surge_residual_enabled:
+            return
+
+        surge_mask = self._build_surge_trigger_mask(X_train)
+        n_surge = int(surge_mask.sum())
+
+        if n_surge < self.surge_min_rows:
+            if self.logging_enabled:
+                logger.info(
+                    f"   ⚠️  Surge/Residual modeli (Model 2) ATLANDI: train setinde "
+                    f"sadece {n_surge} tetikleyici satır bulundu "
+                    f"(min={self.surge_min_rows}, tetikleyiciler={self.surge_trigger_columns_used_}). "
+                    f"Eski çarpan heuristiği (campaign_multipliers_) B Planı olarak devrede."
+                )
+            return
+
+        if precomputed_residual is not None:
+            # OOF — zaten y_true - out-of-sample q50 (bkz. fit() içindeki fold döngüsü).
+            # In-sample q50 tekrar hesaplanmıyor; residual_train doğrudan kullanılıyor.
+            residual_train = np.asarray(precomputed_residual, dtype=float)
+        else:
+            # --- Model 1'in (ensemble) train seti üzerindeki q50 tahmini (in-sample) ---
+            train_pool = Pool(data=X_train, cat_features=self.cat_features_)
+            base_q50_train = np.median(
+                [m.predict(train_pool)[:, 1] for m in self.models_], axis=0
+            )
+            y_true_train = y_train.to_numpy(dtype=float)
+
+            if self.log_transform_enabled:
+                base_q50_train = np.square(base_q50_train)
+                y_true_train = np.square(y_true_train)
+            base_q50_train = np.maximum(base_q50_train, 0.0)
+
+            residual_train = y_true_train - base_q50_train
+
+        # surge_mask, X_train üzerinden hesaplanıyor (yukarıda) — precomputed_residual
+        # durumunda X_train = self._oof_X_ ve residual_train = self._oof_residual_,
+        # concat sırası korunduğu için satır bazında hizalıdır. Tip uyuşmazlığını
+        # (pandas bool Series vs numpy array indexleme) önlemek için mask'i numpy'a çevir.
+        surge_mask = np.asarray(surge_mask)
+        X_surge = X_train.loc[surge_mask]
+        residual_surge = residual_train[surge_mask]
+
+        surge_pool = Pool(data=X_surge, label=residual_surge, cat_features=self.cat_features_)
+
+        self.surge_model_ = CatBoostRegressor(
+            iterations=min(800, self.iterations),          # ADIM 4 SEÇİLEN KOMBO (4): 400 → 800
+            depth=max(4, self.depth - 1),                     # depth bir azaltıldı — en dengeli regret/MAPE
+            learning_rate=self.learning_rate * 0.7,           # biraz daha yavaş öğren
+            l2_leaf_reg=max(3.0, self.l2_leaf_reg * 0.1),      # base'in 0.1x'i (taban 3.0'a çok yakın/yapışık)
+            loss_function=AsymmetricLogCoshObjective(tau=self.surge_log_cosh_tau),
+            eval_metric="RMSE",   # custom objective ile CatBoost'un zorunlu tuttuğu izleme metriği
+            random_seed=self.random_state,
+            verbose=False,
+            allow_writing_files=False,
+            thread_count=-1,
+        )
+        self.surge_model_.fit(surge_pool)
+
+        if self.logging_enabled:
+            mean_res = float(np.mean(residual_surge))
+            mean_abs_res = float(np.mean(np.abs(residual_surge)))
+            kaynak = "OOF (out-of-sample), y-base_q50" if precomputed_residual is not None else "train (in-sample), y-base_q50"
+            logger.info(
+                f"   🚀 Surge/Residual modeli (Model 2, Asimetrik Log-Cosh τ={self.surge_log_cosh_tau}) "
+                f"eğitildi: {n_surge} tetikleyici satır | tetikleyiciler={self.surge_trigger_columns_used_}\n"
+                f"      ort. kalıntı ({kaynak}) = {mean_res:+,.1f} desi | "
+                f"ort. |kalıntı| = {mean_abs_res:,.1f} desi"
             )
 
     def _fit_clip(self, train_df: pd.DataFrame) -> pd.DataFrame:
@@ -790,6 +1153,8 @@ class DemandForecaster(BaseForecaster):
 
         t_q = time.time()
 
+        oof_X_list, oof_residual_list = [], []
+
         for fold_name, val_start, val_end in fold_dates:
             # O fold için Train ve Validation setlerini ayır
             fold_train_df = df_features[df_features[self.date_column] < val_start].copy()
@@ -862,12 +1227,28 @@ class DemandForecaster(BaseForecaster):
                     f"Sabit iterasyon: {self.iterations} (use_best_model=False — gerçekten sabit)"
                 )
 
+            # Bu fold'un modeli, kendi val haftasını hiç görmedi (use_best_model=False,
+            # eval_set sadece izleme amaçlı) — yani bu gerçek bir out-of-sample tahmin.
+            fold_val_pred = fold_model.predict(fold_val_pool)[:, 1]  # q50 (index=1)
+            fold_val_pred = np.maximum(fold_val_pred, 0.0)
+            y_fold_val_actual = y_fold_val.to_numpy(dtype=float)
+            if self.log_transform_enabled:
+                fold_val_pred = np.square(fold_val_pred)
+                y_fold_val_actual = np.square(y_fold_val_actual)
+            oof_X_list.append(X_fold_val)
+            oof_residual_list.append(y_fold_val_actual - fold_val_pred)
+
             self.models_.append(fold_model)
 
         # Geriye uyumluluk için self.model_ → ensemble'ın ilk modeline işaret eder
         # (_evaluate_on_test ve get_feature_importances gibi yardımcılar bunu kullanır)
         if self.models_:
             self.model_ = self.models_[0]
+
+        self._oof_X_ = pd.concat(oof_X_list, axis=0) if oof_X_list else pd.DataFrame()
+        self._oof_residual_ = (
+            np.concatenate(oof_residual_list) if oof_residual_list else np.array([])
+        )
 
         elapsed = time.time() - t_q
         if self.logging_enabled:
@@ -877,6 +1258,14 @@ class DemandForecaster(BaseForecaster):
             )
 
         self.is_fitted_ = True
+
+        # --- 4.5 Surge/Residual Modeli (Model 2) — PDF Bölüm 1 + Bölüm 3 ---
+        # Model 1 (ensemble) tamamlandıktan HEMEN sonra, aynı X_train/y_train
+        # üzerinde eğitilir (bkz. yukarıdaki _split_X_y çağrısı).
+        if len(getattr(self, "_oof_X_", [])) > 0:
+            self._train_surge_residual_model(self._oof_X_, None, precomputed_residual=self._oof_residual_)
+        else:
+            self._train_surge_residual_model(X_train, y_train)
 
         # --- 5. Context Buffer — predict() için lag kaynağı ---
         # Eğitim verisinin sonundan max(lags) + max(rolling_windows) satır saklanır.
@@ -906,12 +1295,21 @@ class DemandForecaster(BaseForecaster):
     # predict → In-memory JSON (ALNS motoru için)
     # -----------------------------------------------------------------------
 
-    def predict(
+    def _predict_single_batch(
         self,
         df: pd.DataFrame,
         include_features: bool = False,
     ) -> List[Dict[str, Any]]:
         """
+        TEK SEFERDE (non-recursive) tahmin — asıl model/feature/heuristic
+        mantığının tamamı burada yaşıyor.
+
+        Bu metod self.context_buffer_'ı OLDUĞU GİBİ kullanır (değiştirmez).
+        `predict()` (geriye dönük uyumluluk) ve `predict_sequential()`
+        (gün-gün autoregressive akış) her ikisi de bu metodu çağırır;
+        predict_sequential() her gün için self.context_buffer_'ı geçici
+        olarak "rolling_context" ile değiştirip burayı tetikler.
+
         Talep tahminlerini in-memory JSON formatında döndürür.
 
         ⚠️  DISK I/O YOK — CSV/XLSX kaydedilmez.
@@ -976,12 +1374,27 @@ class DemandForecaster(BaseForecaster):
         lag_cols  = [c for c in df_features.columns if c.startswith("lag_")]
         roll_cols = [c for c in df_features.columns if c.startswith("rolling_")]
         if lag_cols or roll_cols:
-            # ffill: son bilinen değeri taşı; ardından bfill: serinin başındaki boşlukları kapat
-            df_features[lag_cols + roll_cols] = (
-                df_features[lag_cols + roll_cols]
-                .ffill()
-                .bfill()
-            )
+            # [FIX] ffill/bfill artık rota (group_column) BAZINDA yapılıyor.
+            # ÖNCEKİ HALİ df_features[...].ffill().bfill() idi — bu, rota
+            # sınırını görmeden TÜM DataFrame boyunca aşağı doğru dolduruyordu.
+            # df_features rota+tarih sıralı olduğundan (_prepend_context_buffer
+            # bkz.), bir rotanın gerçek NaN'ı (örn. yetersiz buffer/kapanış
+            # sonrası ilk günler), SIRADAKİ SATIRDAKİ BAŞKA BİR ROTANIN
+            # değeriyle dolduruluyordu — sessiz, veri-sırasına-bağımlı bir
+            # doğruluk hatası. Şimdi her rota kendi zaman serisi içinde
+            # dolduruluyor; rotalar arası hiçbir sızıntı olmuyor.
+            if self.group_column and self.group_column in df_features.columns:
+                df_features[lag_cols + roll_cols] = (
+                    df_features.groupby(self.group_column)[lag_cols + roll_cols]
+                    .transform(lambda s: s.ffill().bfill())
+                )
+            else:
+                # ffill: son bilinen değeri taşı; ardından bfill: serinin başındaki boşlukları kapat
+                df_features[lag_cols + roll_cols] = (
+                    df_features[lag_cols + roll_cols]
+                    .ffill()
+                    .bfill()
+                )
 
         # X'i hazırla (target, date ve slot-farkındalıklı leakage sütunlarını çıkar)
         # _split_X_y (fit) ile AYNI kuralı kullanır — bkz. _get_drop_columns().
@@ -1026,10 +1439,100 @@ class DemandForecaster(BaseForecaster):
             q50_vals = np.maximum(q50_vals, 0)
             q90_vals = np.maximum(q90_vals, 0)
 
+        # --- Faz 1 Teşhis: düzeltme öncesi ham q50 (Model-1 only) ---
+        # Surge/Residual ve Weekday Bias düzeltmelerinden ÖNCEKİ q50_vals'ın
+        # bir kopyası — mevcut q50 davranışını BOZMADAN, ne kadarının Model-1
+        # ne kadarının düzeltme katmanlarından geldiğini görmek için.
+        q50_base_vals = q50_vals.copy()
+
+        # --- Surge/Residual Model Düzeltmesi (Model 2 — PDF Bölüm 1 + 3) ---
+        # Model 1'in (ensemble) ardışık kapalı gün / kampanya sonrası
+        # patlamalarda sistematik olarak eksik tahmin ettiği ("kapatılamayan
+        # boşluk") satırlar, öğrenilmiş bir kalıntı modeliyle telafi edilir.
+        surge_mask_pred = np.zeros(len(X_pred), dtype=bool)
+        if getattr(self, "surge_model_", None) is not None:
+            surge_mask_pred = self._build_surge_trigger_mask(X_pred)
+            n_surge_pred = int(surge_mask_pred.sum())
+            if n_surge_pred > 0:
+                surge_pool_pred = Pool(
+                    data=X_pred.loc[surge_mask_pred], cat_features=self.cat_features_
+                )
+                residual_pred = self.surge_model_.predict(surge_pool_pred)
+                # Kalıntı SADECE eksik-tahmin yönünde (residual > 0) uygulanır:
+                # Model 2'nin tek görevi "kapatılamayan boşluğu" kapatmaktır;
+                # negatif kalıntı üretirse q50'yi gereksiz aşağı çekmesin diye
+                # sıfırla kırpılır — ALNS'in asimetrik maliyet yapısıyla tutarlı.
+                residual_pred = np.maximum(residual_pred, 0.0) * getattr(self, "surge_calibration_factor_", 1.0)
+
+                # ADIM 5 / Faz 2 — Relative Cap: correction'ı baseline (düzeltme öncesi)
+                # hacmin belirli bir oranıyla sınırla. None = kapalı (varsayılan,
+                # geriye dönük uyumlu).
+                alpha = getattr(self, "surge_relative_cap_alpha_", None)
+                if alpha is not None:
+                    cap = alpha * q50_vals[surge_mask_pred]   # q50_vals burada henüz ham/base değer
+                    n_capped = int(np.sum(residual_pred > cap))
+                    residual_pred = np.minimum(residual_pred, cap)
+                    if self.logging_enabled and n_capped > 0:
+                        logger.info(
+                            f"   🧢 Relative Cap uygulandı (α={alpha}): {n_capped} satırda "
+                            f"correction baseline'ın %{alpha*100:.0f}'i ile sınırlandı."
+                        )
+
+                q50_vals[surge_mask_pred] = q50_vals[surge_mask_pred] + residual_pred
+                # q90 (spot araç alarm bandı) da aynı düzeltmeyi + %15 ek tampon
+                # ile yansıtır ki patlamanın büyüklüğü uncertainty_range'e sızsın.
+                q90_vals[surge_mask_pred] = np.maximum(
+                    q90_vals[surge_mask_pred],
+                    q50_vals[surge_mask_pred] + residual_pred * 0.15,
+                )
+                q10_vals = np.maximum(q10_vals, 0)
+                q50_vals = np.maximum(q50_vals, 0)
+                q90_vals = np.maximum(q90_vals, 0)
+
+                if self.logging_enabled:
+                    logger.info(
+                        f"   🚀 Surge/Residual düzeltmesi (Model 2) uygulandı: "
+                        f"{n_surge_pred} güne ort. +{float(np.mean(residual_pred)):,.1f} desi "
+                        f"(çarpan={getattr(self, 'surge_calibration_factor_', 1.0)}x, tetikleyiciler={self.surge_trigger_columns_used_})."
+                    )
+
+        # --- Weekday Bias Calibration (post-hoc, empirik — ADIM 2) ---
+        # Surge/Residual düzeltmesinden SONRA, ayrı ve bağımsız bir adım.
+        # self.weekday_bias_ dolu değilse (henüz kalibre edilmemiş model)
+        # tamamen no-op'tur — mevcut davranışı bozmaz.
+        # Sadece POZİTİF yönde uygulanır (underprediction telafisi) — q90'a
+        # dokunulmaz, çünkü bu düzeltme gözlemlenmiş sistematik bir yanlılığı
+        # telafi ediyor, belirsizliği artırmıyor.
+        if getattr(self, "weekday_bias_", None):
+            if "weekday" in X_pred.columns:
+                wd_vals = X_pred["weekday"].to_numpy()
+                bias_vals = np.array(
+                    [self.weekday_bias_.get(int(w), 0.0) for w in wd_vals]
+                )
+                q50_vals = q50_vals + np.maximum(bias_vals, 0.0)
+                q50_vals = np.maximum(q50_vals, 0.0)
+
+                if self.logging_enabled and np.any(bias_vals > 0):
+                    logger.info(
+                        f"   📅 Weekday Bias Calibration uygulandı: "
+                        f"{int(np.sum(bias_vals > 0))} satıra ort. "
+                        f"+{float(np.mean(bias_vals[bias_vals > 0])):,.1f} desi offset "
+                        f"(weekday_bias_={self.weekday_bias_})."
+                    )
+            elif self.logging_enabled:
+                logger.warning(
+                    "   ⚠️ weekday_bias_ tanımlı ama X_pred'de 'weekday' kolonu yok — "
+                    "kalibrasyon atlandı."
+                )
+
         # --- Hibrit Domain Heuristic (Tahmin çıktısı) ---
         # Kampanya arifesinde ML'in göremediği hacim artışı kural tabanlı eklenir.
+        # NOT: surge_model_ o satırı ZATEN düzelttiyse burada tekrar dokunulmaz
+        # (çifte düzeltme önlenir) — heuristik yalnızca surge modelinin
+        # kapsamadığı (surge_mask_pred=False) kampanya-arifesi satırlarında,
+        # ya da surge modeli hiç eğitilmediğinde (B Planı) devreye girer.
         if "is_campaign_eve" in X_pred.columns and hasattr(self, "campaign_multipliers_"):
-            camp_mask_pred = (X_pred["is_campaign_eve"] == 1).values
+            camp_mask_pred = (X_pred["is_campaign_eve"] == 1).values & ~surge_mask_pred
             if camp_mask_pred.sum() > 0:
                 route_vals = X_pred[self.group_column].values if self.group_column in X_pred.columns else []
                 # q10 ve q50 için normal çarpan, q90 için spot riskine karşı +0.10 tampon
@@ -1076,6 +1579,10 @@ class DemandForecaster(BaseForecaster):
                 "q10":                  round(float(q10_vals[i]), 4),
                 "q50":                  round(float(q50_vals[i]), 4),
                 "q90":                  round(float(q90_vals[i]), 4),
+                # Faz 1 Teşhis: surge/weekday düzeltmesinden ÖNCEKİ ham q50
+                # (Model-1 only) — q50 ile q50_base arasındaki fark, düzeltme
+                # katmanlarının (Model 2 + weekday bias) o satıra kattığı miktar.
+                "q50_base":             round(float(q50_base_vals[i]), 4),
                 # Belirsizlik genişliği: ALNS için kapasite tamponu hesabında kullanılır
                 "uncertainty_range":    round(float(q90_vals[i] - q10_vals[i]), 4),
             }
@@ -1089,11 +1596,179 @@ class DemandForecaster(BaseForecaster):
 
         if self.logging_enabled:
             logger.info(
-                f"✅ predict() tamamlandı: {len(results)} tahmin üretildi "
+                f"✅ _predict_single_batch() tamamlandı: {len(results)} tahmin üretildi "
                 f"(format: in-memory JSON, disk I/O yok)"
             )
 
         return results
+
+    # -----------------------------------------------------------------------
+    # predict → geriye dönük uyumluluk (tek seferde / tek günlük tahmin)
+    # -----------------------------------------------------------------------
+
+    def predict(
+        self,
+        df: pd.DataFrame,
+        include_features: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """
+        Eski davranış: TÜM tahmin ufkunu (ör. 7 gün) TEK bir batch olarak,
+        fit() sırasında kaydedilen context_buffer_'a göre tahmin eder.
+
+        Autoregressive/recursive DEĞİLDİR — 2. günün lag_1'i, 1. günün
+        GERÇEK tahminini değil, context_buffer_'daki (fit-zamanı) son
+        gerçek veriyi görür. Çok günlük ufuklarda hatayı azaltmak için
+        `predict_sequential()` kullanın; bu metod geriye dönük uyumluluk
+        ve tek günlük tahminler için hâlâ geçerlidir.
+        """
+        return self._predict_single_batch(df, include_features=include_features)
+
+    # -----------------------------------------------------------------------
+    # predict_sequential → Gün-gün Autoregressive/Recursive Tahmin
+    # -----------------------------------------------------------------------
+
+    def predict_sequential(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
+        """
+        Tahmin ufkunu (ör. 7 gün) TEK SEFERDE değil, GÜN GÜN tahmin eder;
+        her günün q50 tahmini "gerçekmiş gibi" bir sonraki günün
+        lag/rolling feature'larına beslenir (recursive/autoregressive).
+
+        Neden gerekli:
+          predict() (tek batch) modunda, tahmin ufkundaki TÜM günler aynı
+          anda, sadece fit-zamanındaki context_buffer_'a (gerçek geçmiş)
+          bakarak hesaplanır. 2. günün lag_1'i aslında 1. günün TAHMİNİ
+          değil, context_buffer_'daki son gerçek veridir. Ufuk uzadıkça
+          (7 gün) bu, lag feature'ların giderek daha stale/yanlış olmasına
+          yol açar. predict_sequential() her günü kendi (o ana kadarki
+          gerçek + tahmin edilmiş önceki günler) context'iyle tahmin
+          ederek bunu düzeltir.
+
+        Uygulama notu:
+          self.context_buffer_'ı KALICI OLARAK değiştirmez — bir kopyasını
+          (`rolling_context`) alır, her gün sonunda o günün q50 tahminini
+          bu kopyaya "sözde-gerçek" (pseudo-actual) olarak ekler ve
+          context_buffer_'ı SADECE _predict_single_batch() çağrısı
+          süresince GEÇİCİ olarak bu genişleyen kopyayla değiştirir, hemen
+          ardından orijinaline geri döndürür (try/finally ile — bir
+          _predict_single_batch çağrısı istisna fırlatsa bile
+          self.context_buffer_ bozulmadan kalır).
+
+        ⚠️ sibling_target_column (ör. 17:00 modeli için toplam_desi_0900):
+          Bu sütun bu sınıfta LAG'LANMIŞ bir feature olarak DEĞİL, AYNI
+          GÜNÜN feature'ı olarak kullanılıyor (bkz. _get_drop_columns
+          docstring'i — 17:00 tahmini yapıldığında o günün 09:00 talebi
+          zaten gerçekleşmiş sayılır, dolayısıyla leakage değildir). Yani
+          rolling_context'e eklenen pseudo_actual satırında sibling_target
+          sütunu, gün ilerledikçe "tahmin edilmesi gereken" bir şey
+          DEĞİLDİR — day_df içinde zaten ne geldiyse (run_forecast.py'nin
+          predict_grid'inden, bugün için 0.0 veya bilinen gerçek değer) o
+          kalır, dokunulmaz. Burada AYRICA doldurulmasına GEREK YOK: bu
+          modelin recursive/autoregressive döngüsünün konusu sadece
+          target_column'un KENDİ geçmişidir (lag_1, lag_7, ...,
+          rolling_7, rolling_14) — sibling ayrı bir konu.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Tahmin ufkunun TAMAMI (ör. 7 gün × N rota), aynı şema
+            (predict() ile aynı — target_column NaN/0 olabilir).
+
+        Returns
+        -------
+        List[Dict[str, Any]]
+            Tüm günlerin tahminlerini birleştiren liste (predict() ile
+            aynı kayıt formatı).
+        """
+        if not self.is_fitted_:
+            raise ValueError(
+                "❌ Model eğitilmedi. Önce fit() çağırın!\n"
+                "   Kullanım: forecaster.fit(train_df)"
+            )
+
+        df = df.copy()
+        df[self.date_column] = pd.to_datetime(df[self.date_column])
+        unique_dates = sorted(df[self.date_column].unique())
+
+        if len(unique_dates) > self.forecast_horizon:
+            logger.warning(
+                f"⚠️ predict_sequential(): {len(unique_dates)} gün geldi ama "
+                f"forecast_horizon={self.forecast_horizon}. Muhtemelen predict_grid'e "
+                f"buffer günleri de karışmış — sadece gelecek ufku geçirin."
+            )
+
+        # fit() sırasında kaydedilen context_buffer_'ı BOZMADAN bir kopyasını
+        # al — bu kopya, gün ilerledikçe "tahmin edilmiş" satırlarla büyüyecek.
+        rolling_context = (
+            self.context_buffer_.copy()
+            if self.context_buffer_ is not None
+            else pd.DataFrame(columns=df.columns)
+        )
+
+        buffer_size = max(self.lags) + max(self.rolling_windows)
+
+        all_results: List[Dict[str, Any]] = []
+
+        if self.logging_enabled:
+            logger.info(
+                f"🔁 predict_sequential() başladı: {len(unique_dates)} gün, "
+                f"tek seferde değil GÜN GÜN (autoregressive) tahmin edilecek."
+            )
+
+        for d in unique_dates:
+            day_df = df[df[self.date_column] == d].copy()
+
+            # O günü, o ana kadarki context (gerçek geçmiş + önceki günlerin
+            # TAHMİNLERİ) ile birlikte tek günlük bir batch olarak tahmin et.
+            # self.context_buffer_'ı GEÇİCİ olarak rolling_context ile
+            # değiştirip _predict_single_batch'i çağırıyoruz.
+            original_buffer = self.context_buffer_
+            self.context_buffer_ = rolling_context
+            try:
+                day_results = self._predict_single_batch(day_df)
+            finally:
+                self.context_buffer_ = original_buffer  # her koşulda geri al
+
+            all_results.extend(day_results)
+
+            # Bu günün tahminini (q50) "gerçekmiş gibi" rolling_context'e
+            # ekle ki BİR SONRAKİ günün lag_1'i bunu görsün.
+            d_str = pd.Timestamp(d).strftime("%Y-%m-%d")
+            pred_map = {
+                (r[self.group_column], r[self.date_column]): r["q50"]
+                for r in day_results
+            }
+            pseudo_actual = day_df.copy()
+            pseudo_actual[self.target_column] = pseudo_actual.apply(
+                lambda row: pred_map.get((row[self.group_column], d_str), 0.0),
+                axis=1,
+            )
+
+            rolling_context = pd.concat(
+                [rolling_context, pseudo_actual], ignore_index=True
+            )
+
+            # Buffer'ı sınırsız büyütmeyin — sadece gereken kadarını tutun
+            if self.group_column and self.group_column in rolling_context.columns:
+                rolling_context = (
+                    rolling_context.sort_values([self.group_column, self.date_column])
+                    .groupby(self.group_column, group_keys=False)
+                    .tail(buffer_size)
+                    .reset_index(drop=True)
+                )
+            else:
+                rolling_context = (
+                    rolling_context.sort_values(self.date_column)
+                    .tail(buffer_size)
+                    .reset_index(drop=True)
+                )
+
+        if self.logging_enabled:
+            logger.info(
+                f"✅ predict_sequential() tamamlandı: {len(all_results)} tahmin "
+                f"üretildi ({len(unique_dates)} gün, autoregressive)."
+            )
+
+        return all_results
 
     # -----------------------------------------------------------------------
     # Context Buffer — predict() lag güvencesi
@@ -1245,13 +1920,20 @@ class DemandForecaster(BaseForecaster):
         q50_preds_test = np.median(
             [model.predict(test_pool)[:, 1] for model in self.models_], axis=0
         )
+        # Ensemble: tüm modellerin q90 ([:, 2]) medyanı — Spot_Cost_Sim için gerekli
+        # (q50-vs-q90 strateji kıyaslaması eğitim log'unda görünür olsun diye)
+        q90_preds_test = np.median(
+            [model.predict(test_pool)[:, 2] for model in self.models_], axis=0
+        )
 
         y_true_test = y_test.values
         # ⚠️ EĞER DÖNÜŞÜM YAPILDIYSA, METRİK HESABINDAN ÖNCE GERİ ÇEVİR!
         if self.log_transform_enabled:
             q50_preds_test = np.square(q50_preds_test)
+            q90_preds_test = np.square(q90_preds_test)
             y_true_test = np.square(y_true_test)
         q50_preds_test = np.maximum(q50_preds_test, 0)
+        q90_preds_test = np.maximum(q90_preds_test, 0)
 
         # --- Hibrit Domain Heuristic (WAPE değerlendirmesi) ---
         if "is_campaign_eve" in X_test.columns and hasattr(self, "campaign_multipliers_"):
@@ -1318,12 +2000,45 @@ class DemandForecaster(BaseForecaster):
         )
         decision_regret_test = float(np.mean(regret_test))
 
+        # --- [Opsiyonel] Spot_Cost_Sim: q50-vs-q90 strateji kıyaslaması ---
+        # HPO'yu bekletmeden, fit sonrası eğitim log'unda alpha'nın (q90 asimetrik
+        # kaybı) gerçek maliyeti doğru yönde hareket ettirip ettirmediğini görmek
+        # için metrics.py::spot_cost_simulation() çağrılır. Opsiyonel olduğundan
+        # metrics.py bulunamazsa / imza uyuşmazsa sessizce atlanır — training
+        # akışını KIRMAZ.
+        # NOT: cost_per_unit_spot / cost_per_unit_idle, metrics.py'deki gerçek TL
+        # maliyet varsayılanlarıdır (1.0 / 0.2) — Decision Regret'teki 9x asimetrik
+        # ceza (underestimation_penalty) ile KARIŞTIRILMAZ; bilinçli olarak override
+        # edilmiyor, metrics.py'nin kendi varsayılanları kullanılıyor.
+        spot_cost_sim_result: Optional[Dict[str, float]] = None
+        try:
+            from .metrics import spot_cost_simulation
+            spot_cost_sim_result = spot_cost_simulation(
+                y_true=y_true_test,
+                y_pred_q50=q50_preds_test,
+                y_pred_q90=q90_preds_test,
+            )
+        except ImportError:
+            if self.logging_enabled:
+                logger.debug(
+                    "   ℹ️  Spot_Cost_Sim atlandı: metrics.py::spot_cost_simulation() "
+                    "bulunamadı (opsiyonel özellik)."
+                )
+        except Exception as exc:
+            if self.logging_enabled:
+                logger.warning(
+                    f"   ⚠️  Spot_Cost_Sim hesaplanamadı (opsiyonel, training "
+                    f"etkilenmedi): {exc}"
+                )
+
         # Geriye uyumluluk için eski anahtarları koruyoruz (optimize.py kırılmasın diye)
         self.eval_results_: Dict[str, float] = {
             "WAPE":            round(wape_test, 6),
             "Decision_Regret": round(decision_regret_test, 4),
             "test_samples":    len(y_true_test),
         }
+        if spot_cost_sim_result is not None:
+            self.eval_results_["Spot_Cost_Sim"] = spot_cost_sim_result
 
         # --- TRAIN SETİ DEĞERLENDİRMESİ (OVERFIT KONTROLÜ) ---
         wape_train = 0.0
@@ -1381,6 +2096,22 @@ class DemandForecaster(BaseForecaster):
                 f"   │ Örnek Sayısı      │ {len(y_train) if y_train is not None else 0:<12,} │ {len(y_true_test):<12,} │ {'-'*12} │\n"
                 f"   └───────────────────┴──────────────┴──────────────┴──────────────┘"
             )
+            if spot_cost_sim_result is not None:
+                q50_cost = spot_cost_sim_result.get("q50_total_cost")
+                q90_cost = spot_cost_sim_result.get("q90_total_cost")
+                savings  = spot_cost_sim_result.get("savings_with_q90")
+                if q50_cost is not None and q90_cost is not None:
+                    # savings_with_q90 = q50_cost - q90_cost (metrics.py tanımı)
+                    # Pozitif → q90 daha ucuz (az spot araç) | Negatif → q90 fazla ihtiyatlı (idle kapasite)
+                    yon = "q90 daha ucuz ✅" if savings > 0 else ("q50 daha ucuz ⚠️" if savings < 0 else "eşit")
+                    log_table += (
+                        f"\n💰 SPOT COST SIM (q50 vs q90 strateji, test seti — alpha yönü kontrolü):\n"
+                        f"   q50 strateji maliyeti : {q50_cost:,.2f}\n"
+                        f"   q90 strateji maliyeti : {q90_cost:,.2f}\n"
+                        f"   q90 Tasarrufu          : {savings:,.2f} → {yon}"
+                    )
+                else:
+                    log_table += f"\n💰 SPOT COST SIM (ham sonuç): {spot_cost_sim_result}"
             logger.info(log_table)
 
         return self.eval_results_
@@ -1428,6 +2159,10 @@ class DemandForecaster(BaseForecaster):
             "log_transform_enabled":   self.log_transform_enabled,
             "sibling_target_column":   self.sibling_target_column,
             "slot_label":              self.slot_label,
+            "surge_residual_enabled":  self.surge_residual_enabled,
+            "surge_log_cosh_tau":      self.surge_log_cosh_tau,
+            "surge_min_rows":          self.surge_min_rows,
+            "surge_calibration_factor": getattr(self, "surge_calibration_factor_", 1.0),
         })
         return base_params
 
@@ -1452,6 +2187,9 @@ class DemandForecaster(BaseForecaster):
             f"  Outlier Clip    : IQR × {self.outlier_clip_multiplier} ({'kapalı' if self.outlier_clip_multiplier == 0 else 'açık'})",
             f"  Log Dönüşümü    : {'⚠️  log1p (MultiQuantile ile önerilmez!)' if self.log_transform_enabled else '✅ kapalı (MultiQuantile için doğru)'}",
             f"  Kantiller       : q10 / q50 / q90",
+            f"  Surge/Residual  : {'✅ eğitildi (Model 2, τ=' + str(self.surge_log_cosh_tau) + ')' if getattr(self, 'surge_model_', None) is not None else ('⏳ atlandı/kapalı' if self.surge_residual_enabled else '⛔ kapalı (surge_residual_enabled=False)')}",
+            f"  Surge Kalibrasyon: {getattr(self, 'surge_calibration_factor_', 1.0)}x" + (" (varsayılan, değiştirilmedi)" if getattr(self, 'surge_calibration_factor_', 1.0) == 1.0 else " ⚠️ manuel ayarlandı"),
+            f"  Weekday Bias    : {self.weekday_bias_ if getattr(self, 'weekday_bias_', None) else '⏳ kalibre edilmedi'}",
             f"  Çıktı Formatı   : In-memory JSON (disk I/O yok)",
         ]
         if self.is_fitted_ and hasattr(self, "eval_results_"):
@@ -1476,4 +2214,31 @@ class DemandForecaster(BaseForecaster):
     def load_model(cls, file_path: str) -> "DemandForecaster":
         """Hazır eğitilmiş modeli diskten yükler"""
         model = joblib.load(file_path)
+
+        # ⚠️ DENEYSEL / TEST AMAÇLI (ADIM 2 — weekday bias calibration).
+        # .joblib DOSYASININ İÇERİĞİNİ DEĞİŞTİRMEZ — sadece bu runtime
+        # nesnesine (bellekte) uygulanır, diske kalıcı yazılmaz. Model daha
+        # önce hiç weekday_bias_ almadan kaydedildiyse (eski model ya da
+        # henüz kalibre edilmemiş), slot_label'a göre otomatik enjekte eder.
+        # Kaynak ve sınırlar için bkz. _EMPIRICAL_WEEKDAY_BIAS_1700 docstring'i.
+        # Kalıcı/doğru (retrain'li) versiyon fit()'te öğrenilip joblib'e
+        # gömülünce bu bloğu KALDIRIN — aksi halde deneysel değer, gerçekten
+        # öğrenilmiş olanın üzerine sessizce binmez (if None kontrolü zaten
+        # bunu engelliyor) ama kafa karışıklığına yol açabilir.
+        if getattr(model, "weekday_bias_", None) is None:
+            if getattr(model, "slot_label", None) == "17:00":
+                model.weekday_bias_ = {
+                    k: v * cls._WEEKDAY_BIAS_SCALE
+                    for k, v in cls._EMPIRICAL_WEEKDAY_BIAS_1700.items()
+                }
+                if getattr(model, "logging_enabled", True):
+                    logger.info(
+                        "   📅 [DENEYSEL] weekday_bias_ otomatik enjekte edildi "
+                        f"(slot=17:00, ölçek={cls._WEEKDAY_BIAS_SCALE}x, "
+                        f"kaynak=2026-06-14→06-20 penceresi, "
+                        f"joblib dosyasına YAZILMADI): {model.weekday_bias_}"
+                    )
+            # 09:00 için aynı pencerede işaret tutarsızdı (bkz. sınıf sabiti
+            # docstring'i) — bilerek hiçbir bias enjekte edilmiyor.
+
         return model

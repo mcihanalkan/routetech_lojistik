@@ -34,7 +34,12 @@ from typing import List, Dict, Any
 # Proje modülleri — src/ altında
 sys.path.insert(0, str(Path(__file__).parent))
 from src.forecasters import DemandForecaster
-from src.uncertainty import UncertaintyBand
+from src.uncertainty import (
+    UncertaintyBand,
+    derive_risk_params_from_data,
+    combine_slot_bands,
+    DYNAMIC_TAU_BASE,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
@@ -425,8 +430,115 @@ def run(save_json: bool = True) -> "pd.DataFrame":
     # --- 3. Ortak predict grid (her iki hedefi birden taşıyor) ---
     predict_grid = build_predict_grid(full_df)
 
-    preds_0900: List[Dict[str, Any]] = forecaster_0900.predict(predict_grid)
-    preds_1700: List[Dict[str, Any]] = forecaster_1700.predict(predict_grid)
+    # --- TEŞHİS 2: 06-29 vs 06-30 feature seviyesi karşılaştırma ---
+    _diag_routes = ["Yalova → İstanbul", "Kocaeli → İstanbul", "İstanbul → Yalova"]
+    _diag_routes = [r for r in _diag_routes if r in predict_grid[GROUP_COL].unique()]
+    if not _diag_routes:
+        _diag_routes = [predict_grid[GROUP_COL].unique()[0]]
+    for _label, _fc in [("09:00", forecaster_0900), ("17:00", forecaster_1700)]:
+        _horizon_mask = (
+            (predict_grid[DATE_COL] >= pd.Timestamp(PREDICT_START)) &
+            (predict_grid[DATE_COL] <= pd.Timestamp(PREDICT_END))
+        )
+        _pg = predict_grid.loc[_horizon_mask].copy()
+        _pg["_is_predict_row_"] = True
+        _combined = _fc._prepend_context_buffer(_pg)
+        _combined["_is_predict_row_"] = _combined["_is_predict_row_"].fillna(False)
+        _feat = _fc._engineer_features(_combined, drop_na=False)
+        _feat = _feat[_feat["_is_predict_row_"] == True]
+        _cols = [c for c in [
+            "rota", "tarih", "is_closed", "days_since_resumption",
+            "accumulated_closed_days", "backlog_release_index",
+            f"lag_1_{'0900' if _label=='09:00' else '1700'}",
+            f"rolling_mean_7_{'0900' if _label=='09:00' else '1700'}",
+            f"rolling_mean_14_{'0900' if _label=='09:00' else '1700'}",
+            f"rolling_std_7_{'0900' if _label=='09:00' else '1700'}",
+            f"rolling_std_14_{'0900' if _label=='09:00' else '1700'}",
+            "hub_out_vol_7d", "hub_in_vol_7d",
+        ] if c in _feat.columns]
+        print(f"\n🔬 [{_label}] Feature teşhisi — {_diag_routes}:")
+        _sub = _feat[_feat["rota"].isin(_diag_routes)][_cols].sort_values(["rota", "tarih"])
+        print(_sub.to_string(index=False))
+
+    # ÖNEMLİ: 7 günlük ufuk artık TEK SEFERDE değil, GÜN GÜN (recursive/
+    # autoregressive) tahmin ediliyor — her günün q50'si bir sonraki günün
+    # lag/rolling feature'larına "gerçekmiş gibi" besleniyor. Bkz.
+    # DemandForecaster.predict_sequential() docstring'i.
+    horizon_mask_0900 = (
+        (predict_grid[DATE_COL] >= pd.Timestamp(PREDICT_START)) &
+        (predict_grid[DATE_COL] <= pd.Timestamp(PREDICT_END))
+    )
+    predict_grid_0900_horizon = predict_grid.loc[horizon_mask_0900].copy()
+    preds_0900: List[Dict[str, Any]] = forecaster_0900.predict_sequential(predict_grid_0900_horizon)
+
+    # --- TEŞHİS: recursive vs non-recursive karşılaştırma (geçici) ---
+    preds_0900_nonrec = forecaster_0900.predict(predict_grid_0900_horizon)
+    _df_diag = pd.DataFrame(preds_0900_nonrec)
+    _df_diag["tarih"] = _df_diag["tarih"].astype(str).str[:10]
+    logger.info("\n🔬 [09:00] TEŞHİS — recursive(sequential) vs non-recursive günlük toplam:")
+    _seq_daily = pd.DataFrame(preds_0900).assign(tarih=lambda d: d["tarih"].astype(str).str[:10]).groupby("tarih")["q50"].sum()
+    _nonrec_daily = _df_diag.groupby("tarih")["q50"].sum()
+    for d in sorted(set(_seq_daily.index) | set(_nonrec_daily.index)):
+        logger.info(f"   {d} | sequential={_seq_daily.get(d,0):>12,.0f} | non-recursive={_nonrec_daily.get(d,0):>12,.0f}")
+
+    # --- [DÜZELTME] 09:00 tahminlerini 17:00 modelinin grid'ine geri yaz ---
+    # build_predict_grid() TARGET_COL_0900'ü tahmin ufkunun TAMAMI için
+    # 0.0 ile dolduruyor (gelecek, henüz gerçekleşmemiş). Ama
+    # _get_drop_columns() (forecasters.py) sibling_target_column'u (17:00
+    # modeli için toplam_desi_0900) BİLEREK feature olarak tutuyor — çünkü
+    # 17:00 tahmini yapıldığında sabahki 09:00 talebi zaten gerçekleşmiş
+    # sayılır, dolayısıyla leakage değildir ve model buna gerçekten önem
+    # veriyor (feature importance'ta top-10). predict_grid'i olduğu gibi
+    # 17:00'a verirsek model bu meşru feature için her gün "sabah hiç
+    # kargo çıkmadı" (0.0) yalanını görür. Bu yüzden 09:00 modelinin
+    # ürettiği q50 tahminlerini, 17:00'a geçmeden önce predict_grid'in
+    # TARGET_COL_0900 sütununa (sadece tahmin ufku aralığında) yazıyoruz.
+    #
+    # ⚠️ Tarih formatı uyuşmazlığı sessizce yutulur: preds_0900'daki
+    # DATE_COL değeri predict_sequential()'dan "YYYY-MM-DD" string olarak
+    # gelir (bkz. _predict_single_batch → date_vals.dt.strftime), predict_grid
+    # içindeki DATE_COL ise datetime'dır. Eşleştirmeden önce ikisini de
+    # aynı string formatına çekiyoruz; aksi halde .get() hep fallback'e
+    # (eski 0.0) düşer ve hata vermeden sessizce yanlış sonuç üretir.
+    pred_0900_lookup: Dict[Any, float] = {
+        (r[GROUP_COL], str(r[DATE_COL])[:10]): r["q50"] for r in preds_0900
+    }
+    predict_grid_1700 = predict_grid.copy()
+    mask_horizon = (
+        (predict_grid_1700[DATE_COL] >= pd.Timestamp(PREDICT_START)) &
+        (predict_grid_1700[DATE_COL] <= pd.Timestamp(PREDICT_END))
+    )
+
+    def _inject_0900(row):
+        key = (row[GROUP_COL], row[DATE_COL].strftime("%Y-%m-%d"))
+        return pred_0900_lookup.get(key, row[TARGET_COL_0900])
+
+    predict_grid_1700.loc[mask_horizon, TARGET_COL_0900] = (
+        predict_grid_1700.loc[mask_horizon].apply(_inject_0900, axis=1)
+    )
+
+    n_injected = int(
+        (predict_grid_1700.loc[mask_horizon, TARGET_COL_0900].values
+         != predict_grid.loc[mask_horizon, TARGET_COL_0900].values).sum()
+    )
+    logger.info(
+        f"   🔗 [17:00] {n_injected}/{mask_horizon.sum()} satırda "
+        f"toplam_desi_0900, 09:00 modelinin TAHMİNİYLE dolduruldu "
+        f"(eskiden hep 0.0 sabitti)."
+    )
+
+    predict_grid_1700_horizon = predict_grid_1700.loc[mask_horizon].copy()
+    preds_1700: List[Dict[str, Any]] = forecaster_1700.predict_sequential(predict_grid_1700_horizon)
+
+    # --- TEŞHİS: recursive vs non-recursive karşılaştırma (geçici) ---
+    preds_1700_nonrec = forecaster_1700.predict(predict_grid_1700_horizon)
+    _df_diag_1700 = pd.DataFrame(preds_1700_nonrec)
+    _df_diag_1700["tarih"] = _df_diag_1700["tarih"].astype(str).str[:10]
+    logger.info("\n🔬 [17:00] TEŞHİS — recursive(sequential) vs non-recursive günlük toplam:")
+    _seq_daily_1700 = pd.DataFrame(preds_1700).assign(tarih=lambda d: d["tarih"].astype(str).str[:10]).groupby("tarih")["q50"].sum()
+    _nonrec_daily_1700 = _df_diag_1700.groupby("tarih")["q50"].sum()
+    for d in sorted(set(_seq_daily_1700.index) | set(_nonrec_daily_1700.index)):
+        logger.info(f"   {d} | sequential={_seq_daily_1700.get(d,0):>12,.0f} | non-recursive={_nonrec_daily_1700.get(d,0):>12,.0f}")
 
     # Buffer satırlarını çıkar — sadece PREDICT_START/END aralığı kalsın.
     # İki slotun tahminlerini burada birleştiriyoruz; her kayıtta predict()'ten
@@ -435,7 +547,12 @@ def run(save_json: bool = True) -> "pd.DataFrame":
     target_dates = set(
         pd.date_range(PREDICT_START, PREDICT_END, freq="D").strftime("%Y-%m-%d")
     )
-    raw_preds = [r for r in preds_0900 + preds_1700 if str(r[DATE_COL])[:10] in target_dates]
+    # [Slot-bazlı türetim] raw_preds_0900/1700 ayrı ayrı tutulur — her slot
+    # kendi materiality_floor/tau_base'ini kendi q50 dağılımından türetecek
+    # (bkz. derive_risk_params_from_data() ve aşağıdaki 4. adım).
+    raw_preds_0900 = [r for r in preds_0900 if str(r[DATE_COL])[:10] in target_dates]
+    raw_preds_1700 = [r for r in preds_1700 if str(r[DATE_COL])[:10] in target_dates]
+    raw_preds = raw_preds_0900 + raw_preds_1700
 
     if not raw_preds:
         raise RuntimeError(
@@ -469,30 +586,103 @@ def run(save_json: bool = True) -> "pd.DataFrame":
     for r in raw_preds[:5]:
         print(r)
 
-    # --- 4. OR-Tools Payload (DataFrame Dönüşümü) ---
-    # materiality_floor: [Tur 4 — uncertainty.py] q50 bu değerin altındaysa
-    # nihai risk_score, ham sigmoid skoruna oranla (q50/materiality_floor)
-    # bastırılır. Önceki çalıştırmada (bkz. proje notları) neredeyse durgun
-    # rotalarda (q50≈0) yapay HIGH sınıflandırmaları görülmüştü; bu parametre
-    # o sorunu düzeltir. Varsayılan zaten uncertainty.py'de MATERIALITY_FLOOR
-    # (750.0) — burada yine de açıkça geçiyoruz ki kim okursa niyeti görsün.
-    band = UncertaintyBand(
-        buffer_ratio=0.5,
-        logging_enabled=True,
-        materiality_floor=750.0,
+    # --- 4. Slot-Bazlı / Veri-Türetimli Risk Parametreleri + OR-Tools Payload ---
+    #
+    # ESKİ DAVRANIŞ (sabit materiality_floor=750.0, TEK UncertaintyBand):
+    #   09:00 ve 17:00'nin hacim (q50) dağılımları yapısal olarak çok farklı
+    #   (bkz. to_ortools_dataframe altındaki slot-bazlı log notu — 09:00
+    #   ort. ~517, 17:00 ort. ~3225, ~6 kat fark). Tek bir sabit floor
+    #   kullanmak ya 09:00'ı gereğinden fazla bastırır ya da 17:00'de
+    #   gerçekten durgun rotaları yeterince bastırmaz.
+    #
+    # YENİ DAVRANIŞ: her slotun materiality_floor'u KENDİ q50 dağılımından
+    # (p25) türetilir (derive_risk_params_from_data — derive_gamma_from_costs
+    # ile aynı felsefe: sabit sayı yerine veriden türetilmiş parametre).
+    # 09:00 ve 17:00, kendi parametreleriyle AYRI UncertaintyBand
+    # örnekleri üzerinden işlenir, sonra combine_slot_bands() ile TEK bir
+    # OR-Tools DataFrame'i / ALNS payload'ında birleştirilir (talep_id'ler
+    # birleşim sonrası yeniden ve sıralı atanır — bkz. combine_slot_bands
+    # docstring'i).
+    #
+    # [derive_tau=True] tau_base de artık her slotun KENDİ gözlemlenen
+    # ortalama U_rel'inden türetiliyor. Global DYNAMIC_TAU_BASE (0.50)
+    # tüm filonun ortalama ölçeğine göre kalibre edilmişti — ama 09:00
+    # slotu, 17:00'ye göre çok daha düşük hacimli (~6 kat fark, bkz.
+    # yukarıdaki not) olduğundan gerçek U_rel tabanı da çok farklı
+    # (09:00'da gözlemlenen U_rel ortalaması, sabit 0.50'nin ~10 katına
+    # kadar çıkabiliyor). Sabit tau_base bu durumda 09:00 için anlamsız
+    # kalıyor: neredeyse her satır dinamik eşiğin üzerine çıkıp yapay
+    # şekilde MEDIUM/HIGH'a itiliyor. q10/q90 verilerek derive_tau=True
+    # geçildiğinde her slot kendi gerçek U_rel tabanına göre kalibre olur
+    # (sıfır-hariç istatistikle — bkz. derive_risk_params_from_data
+    # docstring'i, "durgun" satırlar bu ortalamayı şişirmesin diye dışlanır).
+    #
+    # [Tur 7 DÜZELTMESİ] İlk üretim çalıştırmasında (bu dosyanın önceki
+    # sürümü) 09:00 slotu için tau_base=0.872 çıkmıştı — relative_uncertainty
+    # artık [0,1) ile sınırlı olduğundan (bkz. uncertainty.py "Tur 6" notu),
+    # bu tavan'a (1.0) neredeyse yapışık bir eşikti ve HIGH sınıfını fiilen
+    # imkânsız kılıyordu (2023 kayıtta HIGH=0). Kök neden: 09:00 gibi seyrek/
+    # durgun bir slotta TİPİK (medyan) ham oran bile zaten çok yüksek
+    # (~%491) olduğundan, düz arctan(x) onu direkt tavana taşıyordu. Çözüm:
+    # derive_risk_params_from_data artık ayrıca "maape_scale" (o slotun
+    # tipik ham oranı) döndürüyor ve bu, UncertaintyBand(maape_scale=...)
+    # parametresine aktarılıyor — böylece tau_base tüm slotlarda taşınabilir/
+    # sabit kalıyor, gerçek outlier'lar (medyanın kat kat üstü) hâlâ HIGH
+    # tetikleyebiliyor.
+    params_0900 = derive_risk_params_from_data(
+        q50_values=[r.get("q50", 0.0) for r in raw_preds_0900],
+        q10_values=[r.get("q10", 0.0) for r in raw_preds_0900],
+        q90_values=[r.get("q90", 0.0) for r in raw_preds_0900],
+        floor_percentile=25.0,
+        derive_tau=True,
+    )
+    params_1700 = derive_risk_params_from_data(
+        q50_values=[r.get("q50", 0.0) for r in raw_preds_1700],
+        q10_values=[r.get("q10", 0.0) for r in raw_preds_1700],
+        q90_values=[r.get("q90", 0.0) for r in raw_preds_1700],
+        floor_percentile=25.0,
+        derive_tau=True,
+    )
+    logger.info(
+        f"\n📐 Slot-bazlı türetilmiş risk parametreleri → "
+        f"09:00: floor={params_0900['materiality_floor']:.1f}, "
+        f"scale={params_0900.get('maape_scale', 1.0):.3f}, "
+        f"tau_base={params_0900.get('tau_base', DYNAMIC_TAU_BASE):.3f} | "
+        f"17:00: floor={params_1700['materiality_floor']:.1f}, "
+        f"scale={params_1700.get('maape_scale', 1.0):.3f}, "
+        f"tau_base={params_1700.get('tau_base', DYNAMIC_TAU_BASE):.3f} "
+        f"(p25 of q50 + ort. gözlemlenen U_rel, her slotun kendi dağılımından, sıfır-hariç)"
     )
 
-    df_ortools = band.to_ortools_dataframe(
-        predictions=raw_preds,
-        date_key=DATE_COL,
-        group_key=GROUP_COL,
-        slot_key="slot",
+    band_0900 = UncertaintyBand(
+        buffer_ratio=0.5,
+        logging_enabled=True,
+        materiality_floor=params_0900["materiality_floor"],
+        tau_base=params_0900.get("tau_base", DYNAMIC_TAU_BASE),
+        maape_scale=params_0900.get("maape_scale", 1.0),
     )
+    band_1700 = UncertaintyBand(
+        buffer_ratio=0.5,
+        logging_enabled=True,
+        materiality_floor=params_1700["materiality_floor"],
+        tau_base=params_1700.get("tau_base", DYNAMIC_TAU_BASE),
+        maape_scale=params_1700.get("maape_scale", 1.0),
+    )
+
+    # Not: to_ortools_dataframe() yerine doğrudan from_json() çağrılıyor —
+    # combine_slot_bands() zaten kendi DataFrame/payload üretimini yapıyor;
+    # to_ortools_dataframe()'i burada çağırmak sadece talep_id'leri gereksiz
+    # yere (D00001'den) iki kez üretip hemen ardından ezmiş olurdu.
+    band_0900.from_json(raw_preds_0900, date_key=DATE_COL, group_key=GROUP_COL, slot_key="slot")
+    band_1700.from_json(raw_preds_1700, date_key=DATE_COL, group_key=GROUP_COL, slot_key="slot")
+
+    combined = combine_slot_bands([band_0900, band_1700])
+    df_ortools = combined["dataframe"]
 
     # --- 5. Çıktıları Kaydet (Algoritma ve Jüri İçin) ---
 
     if save_json:
-        payload = band.to_alns_payload()
+        payload = combined["payload"]
         with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         logger.info(f"ALNS payload kaydedildi: {OUTPUT_JSON}")
@@ -540,7 +730,7 @@ def run(save_json: bool = True) -> "pd.DataFrame":
     }).copy()
 
     talep_tahmini_df["Tarih"] = pd.to_datetime(talep_tahmini_df["date"]).dt.strftime("%d.%m.%Y")
-    talep_tahmini_df["Talep Tamamlama Saati"] = talep_tahmini_df["slot"].apply(_slot_to_time)
+    talep_tahmini_df["Talep Tamamlama Saati"] = talep_tahmini_df["demand_start_time"].apply(_slot_to_time)
     talep_tahmini_df["Tahmin Edilen Desi"] = talep_tahmini_df["q50"].astype(float)
 
     # Şablonla BİREBİR aynı sütun sırası
@@ -548,6 +738,9 @@ def run(save_json: bool = True) -> "pd.DataFrame":
         "Talep ID", "Tarih", "Talep Tamamlama Saati",
         "Çıkış Transfer Merkezi", "Varış Transfer Merkezi", "Tahmin Edilen Desi",
     ]]
+
+    # --- Toplam Talep Tahmini (desi) — tüm rota/tarih/saat dilimi toplamı ---
+    total_desi_tahmini = float(talep_tahmini_df["Tahmin Edilen Desi"].sum())
 
     OUTPUT_TALEP_XLSX = str(excel_dir / "Talep-tahmini.xlsx")
     talep_tahmini_df.to_excel(OUTPUT_TALEP_XLSX, index=False)
@@ -561,6 +754,13 @@ def run(save_json: bool = True) -> "pd.DataFrame":
     for _row in _ws_out.iter_rows(min_row=2, max_row=_ws_out.max_row):
         _row[2].number_format = "h:mm"   # C: Talep Tamamlama Saati
         _row[5].number_format = "0.000"  # F: Tahmin Edilen Desi
+
+    # --- Toplam satırı: veri satırlarından bir boşluk sonra, E/F sütunlarına ---
+    _total_row_idx = _ws_out.max_row + 2
+    _ws_out.cell(row=_total_row_idx, column=5, value="TOPLAM TALEP TAHMİNİ (desi)")
+    _total_cell = _ws_out.cell(row=_total_row_idx, column=6, value=total_desi_tahmini)
+    _total_cell.number_format = "0.000"
+
     _wb_out.save(OUTPUT_TALEP_XLSX)
 
     logger.info(f"📋 Jüri teslim formatı (şablona birebir uygun) kaydedildi: {OUTPUT_TALEP_XLSX}")
@@ -571,6 +771,7 @@ def run(save_json: bool = True) -> "pd.DataFrame":
         f"fark etmez — bu 3 dosya HER çalıştırmada yeniden üretilir)\n"
         f"   Tahmin sayısı  : {len(df_ortools)}\n"
         f"   Tarih aralığı  : {PREDICT_START} → {PREDICT_END}\n"
+        f"   Toplam Talep Tahmini (desi) : {total_desi_tahmini:,.3f}\n"
         f"   1) {OUTPUT_CSV}\n"
         f"   2) {OUTPUT_EXCEL}\n"
         f"   3) {OUTPUT_TALEP_XLSX}\n"
@@ -578,6 +779,7 @@ def run(save_json: bool = True) -> "pd.DataFrame":
     )
     print("\n📋 OR-Tools Payload Örnek (İlk 5 Satır):")
     print(df_ortools.head().to_string(index=False))
+    print(f"\n🔢 Toplam Talep Tahmini (tüm rota/tarih/saat dilimi): {total_desi_tahmini:,.3f} desi")
 
     return df_ortools
 
@@ -587,4 +789,8 @@ def run(save_json: bool = True) -> "pd.DataFrame":
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    run(save_json=False)
+    # save_json=True: main.py -> forecast_payload.run_predict_model() bu betiği
+    # subprocess olarak çalıştırıp alns_payload.json'u okuyor. save_json=False
+    # kalırsa JSON hiç yenilenmez ve (slot bilgisi olmayan, eski tarihli) bayat
+    # bir dosya okunmaya devam eder — Faz 2 slot bazlı optimizasyonun önkoşulu.
+    run(save_json=True)
