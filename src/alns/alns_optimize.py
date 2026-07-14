@@ -12,6 +12,7 @@ küçük-pencere bir repair operatörü olarak devreye girer.
 """
 
 from __future__ import annotations
+from collections import defaultdict
 
 import json
 import os
@@ -118,15 +119,17 @@ gunler = sorted(df_forecast["gun_key"].unique())
 merkezler = sorted(set(handling_capacity) | set(tir_capacity))
 
 # (hat,gun,slot) -> desi şeklinde bir dict. slot'tan kasıt 09:00, 17:00
+# burası ebubekirin tahmin modelinden gelen her talep için bir kimlik.
 talep_verisi: dict = {}
+talep_id_map: dict = {}
 for row in df_forecast.itertuples():
     hat = (row.source, row.destination)
     key = (hat, row.gun_key, row.slot)
     talep_verisi[key] = talep_verisi.get(key, 0.0) + max(0.0, float(row.recommended_demand))
+    talep_id_map[key] = row.talep_id
 
-# Desi'si 0 olan talepleri göz ardı etmek için yeni liste.
 demands = [
-    (hat, gun, slot, round(desi))
+    (hat, gun, slot, round(desi), talep_id_map[(hat, gun, slot)])
     for (hat, gun, slot), desi in talep_verisi.items()
     if round(desi) > 0
 ]
@@ -205,6 +208,27 @@ best: State = result.best_state
 print(f"ALNS tamamlandi. En iyi maliyet: {best.objective():,.0f} TL "
       f"(baslangica gore {'%.1f' % (100 * (1 - best.objective() / max(1, initial_obj)))}% iyilesme)")
 
+def _talep_id_goruntule():
+    """Nihai cozumdeki her Assignment'in hangi ID ile gorunecegini hesaplar.
+    Bir talep birden fazla parcaya bolunmusse -1,-2... eki eklenir; tek
+    parcaysa direkt ID kalir. Bos ID'ler (cok nadir, bilinen bir sinirlama
+    icin) hic dokunulmadan birakilir."""
+    gruplu = defaultdict(list)
+    for a in best.assignments:
+        if a.talep_id:  # bos ID'leri disarida birak
+            gruplu[a.talep_id].append(a)
+
+    goruntu_id = {}
+    for kok_id, parcalar in gruplu.items():
+        if len(parcalar) == 1:
+            goruntu_id[id(parcalar[0])] = kok_id
+        else:
+            for i, a in enumerate(parcalar, start=1):
+                goruntu_id[id(a)] = f"{kok_id}-{i}"
+    return goruntu_id
+
+talep_id_goruntu = _talep_id_goruntule()
+
 # ---- Kapasite ihlali dogrulamasi (bu oturumun kontrolu icin, kalici test degil) ----
 ihlal_sayisi = 0
 for tm, cap in data.handling_capacity.items():
@@ -263,6 +287,7 @@ for a in best.assignments:
         arac_tipi = ("Kiralik " if leg.is_kiralik else "Spot ") + leg.arac_turu
         csv_records.append({
             "Tarih": leg.gun, "Slot": leg.slot, "Arac_Tipi": arac_tipi,
+            "Talep_ID": talep_id_goruntu.get(id(a), a.talep_id),
             "Cikis_TM": leg.src, "Varis_TM": leg.dst,
             "Nihai_Kaynak": nihai_kaynak, "Nihai_Varis": nihai_varis,
             "Bacaktaki_Arac_Sayisi": _bacak_arac_sayisi(leg),
@@ -281,6 +306,7 @@ for a in best.assignments:
             arac_tipi = ("Kiralik " if leg.is_kiralik else "Spot ") + leg.arac_turu
             csv_records.append({
                 "Tarih": leg.gun, "Slot": leg.slot, "Arac_Tipi": arac_tipi,
+                "Talep_ID": talep_id_goruntu.get(id(a), a.talep_id),
                 "Cikis_TM": leg.src, "Varis_TM": leg.dst,
                 "Nihai_Kaynak": nihai_kaynak, "Nihai_Varis": nihai_varis,
                 "Bacaktaki_Arac_Sayisi": _bacak_arac_sayisi(leg),

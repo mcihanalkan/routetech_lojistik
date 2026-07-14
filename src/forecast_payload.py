@@ -70,6 +70,7 @@ def load_alns_payload_forecast(payload_path: Path) -> pd.DataFrame:
                 # (tarih, source, destination) için iki slot ayırt edilemez hale gelir.
                 "slot": str(record.get("slot", "UNKNOWN")),
                 "source": source,
+                "talep_id": str(record.get("talep_id", "")),
                 "destination": destination,
                 "q10": float(record.get("demand_low", record.get("q10", 0.0))),
                 "q50": float(record.get("demand_base", record.get("q50", 0.0))),

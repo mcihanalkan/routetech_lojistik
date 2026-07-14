@@ -67,7 +67,7 @@ class ProblemData:
     tir_arac_turu: Optional[str]
     gunler: list
     merkezler: list
-    demands: list  # (hat, gun, slot, desi)
+    demands: list  # (hat, gun, slot, desi, talep_id)
     zaman_sirali: list = field(default_factory=list) # Python'ın nesneler arası hafıza çakışmasını engeller, her nesneye özel ve bağımsız bir boş liste üretir.
     relay_candidates: dict = field(default_factory=dict)
     fixed_kiralik_tir_usage: dict = field(default_factory=dict)  # (tm, gun) -> adet
@@ -76,7 +76,7 @@ class ProblemData:
         if not self.zaman_sirali:
             self.zaman_sirali = [(g, s) for g in self.gunler for s in DISPATCH_SLOTS]
         if not self.relay_candidates:
-            hatlar = sorted({h for (h, g, s, _) in self.demands})
+            hatlar = sorted({h for (h, g, s, _, _) in self.demands})
             self.relay_candidates = _build_relay_candidates(self.route_lookup, hatlar, self.merkezler)
         if not self.fixed_kiralik_tir_usage and self.tir_arac_turu is not None:
             self.fixed_kiralik_tir_usage = _build_fixed_kiralik_tir_usage(self)
@@ -177,6 +177,7 @@ class Assignment:
     legs: tuple  # tuple[Leg, ...] — 1 (direkt) ya da 2 (relay)
     sla_cost: float
     vehicle_cost: float  # sadece bu parcaya ait MARJINAL spot maliyeti (kiralik = 0)
+    talep_id: str = ""
 
 
 # ============================================================================
@@ -438,6 +439,7 @@ def try_insert_path(
     gun: str,
     slot: str,
     desi: float,
+    talep_id: str = "",
     path: tuple = (),
     demand_gun: Optional[str] = None,
     demand_slot: Optional[str] = None,
@@ -542,7 +544,7 @@ def try_insert_path(
 
     assignment = Assignment(
         demand_hat=hat, demand_gun=demand_gun, demand_slot=demand_slot, desi=tasinabilir,
-        legs=tuple(legs), sla_cost=sla_cost, vehicle_cost=vehicle_cost,
+        legs=tuple(legs), sla_cost=sla_cost, vehicle_cost=vehicle_cost, talep_id=talep_id,
     )
     state.assignments.append(assignment)
     return assignment
@@ -556,7 +558,7 @@ def insertion_options(data: ProblemData, hat: tuple, gun: str, slot: str):
     yield from data.relay_candidates.get(hat, [])  # (r,) ya da (r1, r2) tuple'lari
 
 
-def _insert_chunk(state: State, hat, gun, slot, desi, rng) -> float:
+def _insert_chunk(state: State, hat, gun, slot, desi, rng, talep_id) -> float:
     """Bir talep parçasını (gerekirse bölerek, gerekirse erteleyerek) tamamen
     yerleştirir. Geriye yerleştirilemeyen (garanti: normalde 0) miktarı döner.
 
@@ -572,7 +574,7 @@ def _insert_chunk(state: State, hat, gun, slot, desi, rng) -> float:
         adaylar = []  # (-yerlesen_desi, birim_maliyet, deneme_state, assignment)
         for secenek in secenekler:
             deneme = state.copy()
-            a = try_insert_path(deneme, hat, gun, slot, kalan, secenek)
+            a = try_insert_path(deneme, hat, gun, slot, kalan, talep_id=talep_id, path=secenek)
             if a is not None and a.desi > 1e-9:
                 birim_maliyet = (a.vehicle_cost + a.sla_cost) / a.desi
                 adaylar.append((-a.desi, birim_maliyet, deneme, a))
@@ -600,13 +602,13 @@ def _insert_chunk(state: State, hat, gun, slot, desi, rng) -> float:
                 break
             # demand_gun/demand_slot = GERCEK orijinal talep zamani (gun,slot) -
             # kalkis (g2,s2) ertelenmis olsa da SLA deadline'i buna gore hesaplanir.
-            a = try_insert_path(state, hat, g2, s2, kalan, (), demand_gun=gun, demand_slot=slot)
+            a = try_insert_path(state, hat, g2, s2, kalan, talep_id=talep_id, demand_gun=gun, demand_slot=slot)
             if a is not None:
                 kalan -= a.desi
     return kalan
 
 
-def force_insert(state: State, hat, gun, slot, desi) -> None:
+def force_insert(state: State, hat, gun, slot, desi, talep_id) -> None:
     """Son çare: kapasite kısıtlarını yok sayarak direkt yola zorla ekler — TÜM
     desilerin teslim edilmesini garanti eder (bkz. plan/PDF: erteleme yasağı).
     Normal koşullarda spot kapasitesi (MAX_SPOT çok yüksek) bu fonksiyona hiç
@@ -639,7 +641,7 @@ def force_insert(state: State, hat, gun, slot, desi) -> None:
     deadline = sla_deadline(slot_datetime(gun, slot), data.route_lookup[hat]["target_delivery_days"])
     sla_cost = sla_cezasi_tl(desi, gecikme_saat(tamamlanma, deadline))
     state.assignments.append(
-        Assignment(hat, gun, slot, desi, (leg,), sla_cost, vehicle_cost)
+        Assignment(hat, gun, slot, desi, (leg,), sla_cost, vehicle_cost, talep_id)
     )
 
 
@@ -668,7 +670,7 @@ def _remove_assignment(state: State, a: Assignment) -> None:
         varis_g = arrival_day(state.data.route_lookup, state.data.gunler, (leg.src, leg.dst), leg.gun, leg.slot, leg.arac_turu)
         if varis_g:
             state.handling_usage[(leg.dst, varis_g)] = state.handling_usage.get((leg.dst, varis_g), 0.0) - a.desi
-    state.unassigned.append((a.demand_hat, a.demand_gun, a.demand_slot, a.desi))
+    state.unassigned.append((a.demand_hat, a.demand_gun, a.demand_slot, a.desi, a.talep_id))
 
 
 def random_removal(state: State, rng: rnd.Generator, **kwargs) -> State:
@@ -723,10 +725,10 @@ def greedy_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
     state.unassigned = []
     order = rng.permutation(len(items)) if items else []
     for i in order:
-        hat, gun, slot, desi = items[i]
-        kalan = _insert_chunk(state, hat, gun, slot, desi, rng)
+        hat, gun, slot, desi, talep_id = items[i]
+        kalan = _insert_chunk(state, hat, gun, slot, desi, rng, talep_id)
         if kalan > 1e-6:
-            force_insert(state, hat, gun, slot, kalan)
+            force_insert(state, hat, gun, slot, kalan, talep_id)
     return state
 
 
@@ -754,8 +756,13 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
     data = state.data
     src, dst = target_hat
     talep = {}
-    for (_, gun, slot, desi) in hat_items:
+    talep_id_by_gs = {}   # (gun, slot) -> bu talebe katki veren ID (varsa)
+    for (_, gun, slot, desi, tid) in hat_items:
         talep[(gun, slot)] = talep.get((gun, slot), 0.0) + desi
+        if (gun, slot) not in talep_id_by_gs:
+            talep_id_by_gs[(gun, slot)] = tid
+        elif talep_id_by_gs[(gun, slot)] != tid:
+            talep_id_by_gs[(gun, slot)] = ""  # farkli ID'ler karisirsa guvenli tarafta kal
 
     model = cp_model.CpModel()
     zaman_sirali = data.zaman_sirali
@@ -879,7 +886,7 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
                     tamamlanma = ellecleme_tamamlanma_zamani(varis, miktar, consolidation=False)
                     deadline = sla_deadline(slot_datetime(g, s), data.route_lookup[target_hat]["target_delivery_days"])
                     sla_cost = sla_cezasi_tl(miktar, gecikme_saat(tamamlanma, deadline))
-                    state.assignments.append(Assignment(target_hat, g, s, miktar, (Leg(src, dst, g, s, a, True),), sla_cost, 0.0))
+                    state.assignments.append(Assignment(target_hat, g, s, miktar, (Leg(src, dst, g, s, a, True),), sla_cost, 0.0, talep_id_by_gs.get((g, s), "")))
                     toplam_yuk -= miktar
 
             if s_adet > 0 and toplam_yuk > 0:
@@ -892,7 +899,7 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
                     tamamlanma = ellecleme_tamamlanma_zamani(varis, miktar, consolidation=False)
                     deadline = sla_deadline(slot_datetime(g, s), data.route_lookup[target_hat]["target_delivery_days"])
                     sla_cost = sla_cezasi_tl(miktar, gecikme_saat(tamamlanma, deadline))
-                    state.assignments.append(Assignment(target_hat, g, s, miktar, (Leg(src, dst, g, s, a, False),), sla_cost, vehicle_cost))
+                    state.assignments.append(Assignment(target_hat, g, s, miktar, (Leg(src, dst, g, s, a, False),), sla_cost, vehicle_cost, talep_id_by_gs.get((g, s), "")))
                     toplam_yuk -= miktar
 
             if toplam_yuk > 1e-6:
@@ -902,9 +909,9 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
                 # sonra son care force_insert) - "return state" ile birlikte
                 # unassigned'da yari-islenmis birakmiyoruz (bkz. objective() guvenlik
                 # agi + bu operatorun HER ZAMAN tam teslim garanti etmesi gerekliligi).
-                kalan = _insert_chunk(state, target_hat, g, s, toplam_yuk, rng)
+                kalan = _insert_chunk(state, target_hat, g, s, toplam_yuk, rng, "")
                 if kalan > 1e-6:
-                    force_insert(state, target_hat, g, s, kalan)
+                    force_insert(state, target_hat, g, s, kalan, "")
 
     # Bu operator SADECE target_hat'i CP-SAT ile cozdu; destroy birden fazla
     # hattan parca kaldirmis olabilir - digerleri (other_items) hala
@@ -912,9 +919,9 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
     # HER ZAMAN tam teslim garanti etmeli - kalanlari greedy sekilde yerlestiriyoruz.
     kalan_items = list(state.unassigned)
     state.unassigned = []
-    for (hat2, gun2, slot2, desi2) in kalan_items:
-        kalan2 = _insert_chunk(state, hat2, gun2, slot2, desi2, rng)
+    for (hat2, gun2, slot2, desi2, talep_id2) in kalan_items:
+        kalan2 = _insert_chunk(state, hat2, gun2, slot2, desi2, rng, talep_id2)
         if kalan2 > 1e-6:
-            force_insert(state, hat2, gun2, slot2, kalan2)
+            force_insert(state, hat2, gun2, slot2, kalan2, talep_id2)
 
     return state
