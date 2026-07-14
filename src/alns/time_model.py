@@ -9,7 +9,7 @@ sabit kalmasını sağlayan kilit karardır — bkz. plan dosyası.
 from __future__ import annotations
 
 import math
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 
@@ -112,7 +112,7 @@ def arrival_day(
         return None
     toplam_saat = slot_to_hour(slot) + entry[arac_turu]
     gun_offset = int(toplam_saat // 24)
-    varis_gun = (pd.Timestamp(gun) + pd.Timedelta(days=gun_offset)).strftime("%Y-%m-%d")
+    varis_gun = (date.fromisoformat(gun) + timedelta(days=gun_offset)).isoformat()
     return varis_gun if varis_gun in valid_days else None
 
 
@@ -132,8 +132,8 @@ def next_dispatch_slot(
     gun_offset, saat_of_day = divmod(toplam_saat, 24)
     for aday_slot in DISPATCH_SLOTS:
         if slot_to_hour(aday_slot) > saat_of_day:
-            aday_gun = (pd.Timestamp(gun) + pd.Timedelta(days=int(gun_offset))).strftime("%Y-%m-%d")
+            aday_gun = (date.fromisoformat(gun) + timedelta(days=int(gun_offset))).isoformat()
             return (aday_gun, aday_slot) if aday_gun in valid_days else None
     # Günün tüm slotları geride kaldı -> ertesi günün ilk slotu
-    aday_gun = (pd.Timestamp(gun) + pd.Timedelta(days=int(gun_offset) + 1)).strftime("%Y-%m-%d")
+    aday_gun = (date.fromisoformat(gun) + timedelta(days=int(gun_offset) + 1)).isoformat()
     return (aday_gun, DISPATCH_SLOTS[0]) if aday_gun in valid_days else None
