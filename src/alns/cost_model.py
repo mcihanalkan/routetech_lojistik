@@ -11,7 +11,9 @@ from __future__ import annotations
 import math
 
 from src.alns.time_model import RouteLookup
-
+from src.config import (
+    ELLECLEME_DAKIKA_PER_DESI
+)
 def vehicle_leg_cost(
     route_lookup: RouteLookup,
     hat: tuple[str, str],
@@ -36,6 +38,14 @@ def vehicle_leg_cost(
     # toplam_sure = seyir_saat + ellecleme_suresi_saat
     return int(round(hourly_rate * seyir_saat + dist * km_rate))
 
+
+def ellecleme_maliyet_hesapla(desi: float, kiralık_saat_maliyet: float) -> float:
+    """Elleçleme süresi = desi * 0.01 dk. Konsolidasyonda (indir + tekrar yükle) 2x sayılır."""
+    sure = desi * ELLECLEME_DAKIKA_PER_DESI # 1000 desi elleçlenirse 10dk
+    sure_saat = sure / 60 # 1/6 saat
+    sure_saat = math.ceil(sure_saat) # 1 saat
+    maliyet = sure_saat * kiralık_saat_maliyet 
+    return int(round(maliyet))
 
 def spot_vehicle_count(desi: float, capacity: float, max_spot: int) -> int:
     """Bir bacakta taşınacak desi miktarını, kapasiteye göre gereken spot araç sayısına çevirir."""

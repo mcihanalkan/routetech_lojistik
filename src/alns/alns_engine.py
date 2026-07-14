@@ -17,7 +17,7 @@ Kapsam sınırlamaları (v1 — bkz. plan dosyası):
     uzayını sınırlı tutmak için — bkz. MAX_2HOP_CANDIDATES).
   - Hat başına en fazla MAX_RELAY_CANDIDATES (1-aktarma) + MAX_2HOP_CANDIDATES
     (2-aktarma) aday yol (tüm TM kombinasyonları değil).
-  - Kiralık filo her zaman günün İLK slotunda (DISPATCH_SLOTS[0]) kalkar kabul
+  - Kiralık filo her zaman günün İLK slotunda (DEMAND_ARRIVAL_TIMES[0]) kalkar kabul
     edilir — kiralık zorunlu/sabit kalkış olduğu için tır kapasitesine katkısı
     sabit bir sayıdır (hangi kargoyu taşıdığı hâlâ serbestçe optimize edilir,
     sadece kalkış SLOTU sabitlenmiştir; maliyeti zaten slot'tan bağımsızdır).
@@ -29,14 +29,15 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy.random as rnd
+import math
 from ortools.sat.python import cp_model
 
-from src.alns.cost_model import spot_vehicle_count, vehicle_leg_cost
+from src.alns.cost_model import spot_vehicle_count, vehicle_leg_cost, ellecleme_maliyet_hesapla
 from src.alns.time_model import (
     DISPATCH_SLOTS,
+    DEMAND_ARRIVAL_TIMES,
     RouteLookup,
     arrival_day,
-    ellecleme_maliyet_hesapla,
     ellecleme_tamamlanma_zamani,
     gecikme_saat,
     next_dispatch_slot,
@@ -50,7 +51,7 @@ from src.alns.time_model import (
 MAX_SPOT = 500
 MAX_RELAY_CANDIDATES = 4       # hat basina en fazla 1-aktarmali (2 bacak) aday sayisi
 MAX_2HOP_CANDIDATES = 3        # hat basina en fazla 2-aktarmali (3 bacak) aday sayisi
-KIRALIK_DISPATCH_SLOT = DISPATCH_SLOTS[0]
+KIRALIK_DISPATCH_SLOT = DEMAND_ARRIVAL_TIMES[0]
 
 
 # ============================================================================
@@ -74,7 +75,7 @@ class ProblemData:
 
     def __post_init__(self):
         if not self.zaman_sirali:
-            self.zaman_sirali = [(g, s) for g in self.gunler for s in DISPATCH_SLOTS]
+            self.zaman_sirali = [(g, s) for g in self.gunler for s in DEMAND_ARRIVAL_TIMES]
         if not self.relay_candidates:
             hatlar = sorted({h for (h, g, s, _, _) in self.demands})
             self.relay_candidates = _build_relay_candidates(self.route_lookup, hatlar, self.merkezler)
@@ -96,9 +97,15 @@ def _build_relay_candidates(route_lookup: RouteLookup, hatlar, merkezler) -> dic
                 continue
             leg1 = route_lookup.get((src, relay))
             leg2 = route_lookup.get((relay, dst))
-            if leg1 is None or leg2 is None:
+            if leg1 is None or leg2 is None: # İki bacağın da olması gerekir.
                 continue
             tek_aktarma.append((leg1["distance_km"] + leg2["distance_km"], relay))
+
+        #   def isimsiz_fonksiyon(t):
+        #       return t[0]
+        #   lambda t: t[0]
+        # ikisi aynı işi yapar.
+
         tek_aktarma.sort(key=lambda t: t[0])
         en_iyi_tek = [r for _, r in tek_aktarma[:MAX_RELAY_CANDIDATES]]
 
@@ -127,7 +134,7 @@ def _build_relay_candidates(route_lookup: RouteLookup, hatlar, merkezler) -> dic
 
 
 def _build_fixed_kiralik_tir_usage(data: "ProblemData") -> dict:
-    """Kiralık filo her gün DISPATCH_SLOTS[0]'da kalkar (bkz. modül docstring) —
+    """Kiralık filo her gün DEMAND_ARRIVAL_TIMES[0]'da kalkar (bkz. modül docstring) —
     tır kapasitesine sabit katkısı, karar değişkenlerinden bağımsız olarak
     baştan hesaplanabilir.
 
@@ -338,14 +345,11 @@ class State:
 
         # 2. O bacağın o anki TOPLAM faturasını hesaplayan yerel formül
         def bacak_toplam_maliyeti(mevcut_desi, mevcut_arac_sayisi):
-            seyir_saat = self.data.route_lookup[(src, dst)][arac_turu]
-            mesafe = self.data.route_lookup[(src, dst)]["distance_km"]
-            
-            # Seyir maliyeti sadece araç sayısına bağlıdır
-            seyir_faturasi = mevcut_arac_sayisi * (seyir_saat * hourly_rate + mesafe * km_rate)
-            # Elleçleme maliyeti sadece toplam desiye bağlıdır (Araçlara nasıl dağıldığı önemsizdir)
-            ellecleme_faturasi = (mevcut_desi * 0.01 / 60) * hourly_rate 
-            
+
+            birim = vehicle_leg_cost(self.data.route_lookup, (src,dst) , arac_turu, hourly_rate, km_rate)
+            seyir_faturasi = mevcut_arac_sayisi * birim
+            ellecleme_faturasi = ellecleme_maliyet_hesapla(mevcut_desi,hourly_rate)
+
             return seyir_faturasi + ellecleme_faturasi
 
         if is_kiralik:
@@ -353,8 +357,8 @@ class State:
             
             # Kiralık aracın seyir maliyeti baştan ödendi! 
             # Bize sadece bu desiyi yüklemek/indirmek için harcanan zamanın maliyeti yansır.
-            ellecleme_saati = (desi * 0.01) / 60
-            marjinal_maliyet = ellecleme_saati * p["rental_hourly"]
+            
+            marjinal_maliyet = ellecleme_maliyet_hesapla(desi, p["rental_hourly"])
             
         else:
             eski_desi = self.leg_spot_desi.get(key, 0.0)
@@ -377,6 +381,8 @@ class State:
                 varis_g = arrival_day(self.data.route_lookup, self.data.gunler, (src, dst), gun, slot, arac_turu)
                 if varis_g:
                     self.tir_usage[(dst, varis_g)] = self.tir_usage.get((dst, varis_g), 0) + delta_adet
+
+        ellecleme_suresi_saat = (desi * 0.01) / 60
 
         self.handling_usage[(src, gun)] = self.handling_usage.get((src, gun), 0.0) + desi
         varis_g = arrival_day(self.data.route_lookup, self.data.gunler, (src, dst), gun, slot, arac_turu)
@@ -459,12 +465,14 @@ def try_insert_path(
     bir sevkiyatın SLA deadline'ı yanlışlıkla ertelenmiş kalkış anından
     hesaplanır — bu da gecikmeyi her zaman "0 saat" gibi gösterir (gerçek bug,
     bkz. sohbet geçmişi: "SLA cezası çok az" bulgusu)."""
+
     demand_gun = gun if demand_gun is None else demand_gun
     demand_slot = slot if demand_slot is None else demand_slot
+    
     src, dst = hat
     data = state.data
 
-    stops = [src, *path, dst]
+    stops = [src, *path, dst] # yıldızlı kullanım, path tuple'ı içindeki elemanları tek tek açar.
     leg_departures = [(gun, slot)]
     for i in range(len(stops) - 1):
         if i == len(stops) - 2:
@@ -683,6 +691,156 @@ def random_removal(state: State, rng: rnd.Generator, **kwargs) -> State:
         _remove_assignment(state, state.assignments.pop(i))
     return state
 
+def low_occupancy_removal(state, rng, **kwargs):
+    """
+    Spot araçlardaki düşük doluluklu (%40'ın altı) bacakları hedef alıp,
+    bu bacakları kullanan kargoları (atamaları) sistemden söken yıkıcı operatör.
+    """
+    state = state.copy()
+    if not state.assignments:
+        return state
+
+    # 1. Her bir fiziksel bacaktaki (Leg) toplam desiyi hesapla
+    # (Tıpkı çıktı dosyasındaki bucket_toplam_desi mantığı gibi)
+    leg_desi_toplam = {}
+    for a in state.assignments:
+        for leg in a.legs:
+            key = (leg.src, leg.dst, leg.gun, leg.slot, leg.arac_turu, leg.is_kiralik)
+            leg_desi_toplam[key] = leg_desi_toplam.get(key, 0.0) + a.desi
+
+    # 2. Düşük doluluklu (Örn: %40 altı) spot araç bacaklarını tespit et
+    low_occ_legs = set()
+    for key, toplam_desi in leg_desi_toplam.items():
+        src, dst, gun, slot, arac_turu, is_kiralik = key
+        
+        # Sadece Spot araçları hedef alıyoruz (Kiralıklar zaten yola çıkmak zorunda)
+        if not is_kiralik:
+            kap = state.data.arac_parametreleri[arac_turu]["kapasite_desi"]
+            
+            # Bu bacak için kaç spot araç açıldığını bul
+            arac_sayisi = math.ceil(toplam_desi / kap) if toplam_desi > 0 else 1
+            
+            # Toplam kapasitenin yüzde kaçı kullanılıyor?
+            doluluk_yuzdesi = toplam_desi / (arac_sayisi * kap)
+            
+            # Eşik değer: %40'ın altındaysa "İsraf" olarak işaretle
+            if doluluk_yuzdesi < 0.40:
+                low_occ_legs.add(key)
+
+    # 3. Kötü bacakları kullanan atamaları (assignments) bul
+    candidates_to_remove = []
+    for a in state.assignments:
+        kullanilan_bacaklar = [(leg.src, leg.dst, leg.gun, leg.slot, leg.arac_turu, leg.is_kiralik) for leg in a.legs]
+        # Eğer bu atama, israf yapan bacaklardan HERHANGİ BİRİNDEN geçiyorsa sökülecek listesine girer
+        if any(bacak in low_occ_legs for bacak in kullanilan_bacaklar):
+            candidates_to_remove.append(a)
+
+    # Eğer hiç israf yapan araç yoksa (Harika durum!), state'i hiç bozmadan geri dön
+    if not candidates_to_remove:
+        return state
+
+    # 4. ALNS Kuralı: Her şeyi aynı anda sökme! "Blast Radius" (Etki Alanı) belirle.
+    # Tüm atamaların maksimum %15-20'sini sökmeliyiz ki motor tamamen sıfırlanıp başa sarmasın.
+    max_removal_count = int(len(state.assignments) * 0.20) + 1
+    num_to_remove = min(len(candidates_to_remove), max_removal_count)
+
+    # Adaylar arasından rastgele bir kısmını seç (Böylece model her seferinde farklı kombinasyonlar dener)
+    to_remove = rng.choice(candidates_to_remove, num_to_remove, replace=False)
+
+    # 5. Seçilen atamaları State'ten çıkar ve 'unassigned' havuzuna geri at
+    for a in to_remove:
+        # DİKKAT: Burada senin state sınıfının içindeki sökme fonksiyonunu kullanmalısın.
+        # worst_removal veya random_removal içinde hangi metot kullanılıyorsa onu çağır.
+        # Genelde şu şekildedir:
+        state.assignments.remove(a)
+        _remove_assignment(state, a)
+        
+        # Talebi, Onarıcı (Repair) operatörlerin yeniden alabilmesi için unassigned listesine ekle
+        state.unassigned.append((a.demand_hat, a.demand_gun, a.demand_slot, a.desi))
+
+    return state
+
+def shaw_related_removal(state, rng, **kwargs):
+    """
+    Shaw (Related) Removal Yıkıcı Operatörü:
+    Birbirine benzeyen (Aynı hat, aynı gün, aynı zaman dilimi) kargoları 
+    hedef alarak aynı anda söker. Bu sayede repair (onarım) operatörünün 
+    bunları tek bir araçta konsolide etmesini zorlar.
+    """
+    state = state.copy()
+    if not state.assignments:
+        return state
+
+    # ALNS'nin her iterasyonda çok fazla veya çok az bozmasını engellemek için
+    # toplam atamaların %10'u ile %20'si arasında bir kısmını sökeceğiz.
+    min_remove = max(1, int(len(state.assignments) * 0.10))
+    max_remove = max(2, int(len(state.assignments) * 0.20))
+    num_to_remove = rng.integers(min_remove, max_remove + 1)
+    
+    # Güvenlik kontrolü
+    num_to_remove = min(num_to_remove, len(state.assignments))
+
+    # 1. TOHUM (Seed) SEÇİMİ: Rastgele bir atama seçiyoruz
+    seed = rng.choice(state.assignments)
+    
+    # 2. BENZERLİK SKORLAMASI: Diğer tüm kargoların tohuma ne kadar benzediğini hesapla
+    similarities = []
+    for a in state.assignments:
+        if a == seed:
+            continue
+            
+        score = 0
+        # Rota Benzerliği
+        if a.demand_hat == seed.demand_hat:
+            score += 10  # Birebir aynı rota ise devasa skor
+        else:
+            if a.demand_hat[0] == seed.demand_hat[0]: 
+                score += 3 # Sadece çıkış noktası aynı
+            if a.demand_hat[1] == seed.demand_hat[1]: 
+                score += 3 # Sadece varış noktası aynı
+                
+        # Zaman Benzerliği
+        if a.demand_gun == seed.demand_gun:
+            score += 5 # Aynı gün
+            if a.demand_slot == seed.demand_slot:
+                score += 2 # Aynı gün ve aynı slot (Mükemmel konsolidasyon adayı)
+                
+        similarities.append((score, a))
+        
+    # 3. SIRALAMA: En çok benzeyenler (skoru en yüksek olanlar) en başa gelsin
+    similarities.sort(key=lambda x: x[0], reverse=True)
+    
+    # Sadece kargo objelerini bir listeye alalım
+    candidates = [x[1] for x in similarities]
+    to_remove = [seed]
+    
+    # 4. DETERMINIZM KIRICI (Randomization):
+    # Eğer her seferinde en yüksek skorluyu kesin olarak alırsak algoritma kısır döngüye girer.
+    # Klasik ALNS literatüründeki (y^p) kuralını uygulayarak, yüksek skorluları daha YÜKSEK İHTİMALLE,
+    # düşük skorluları daha DÜŞÜK İHTİMALLE seçecek bir yapı kuruyoruz. (p=3 veya p=4 idealdir)
+    p = 3 
+    
+    while len(to_remove) < num_to_remove and candidates:
+        # rng.random() 0 ile 1 arası üretir. p. kuvvetini alınca 0'a çok yakınsar.
+        # Bu da listenin başındaki (en benzer) elemanların seçilme ihtimalini aşırı artırır.
+        idx = int(len(candidates) * (rng.random() ** p))
+        
+        # Güvenlik amaçlı indeks taşmasını engelle
+        if idx >= len(candidates): 
+            idx = len(candidates) - 1
+            
+        # Seçilen adayı listeden kopar ve silinecekler listesine ekle
+        to_remove.append(candidates.pop(idx))
+
+    # 5. SÖKME (Removal) İŞLEMİ: Senin verdiğin yapıya tam uygun olarak
+    for a in to_remove:
+        state.assignments.remove(a)
+        _remove_assignment(state, a)
+        
+        # Sökülen kargoyu yeniden atanmak (repair) üzere unassigned havuzuna gönder
+        state.unassigned.append((a.demand_hat, a.demand_gun, a.demand_slot, a.desi))
+
+    return state
 
 def worst_removal(state: State, rng: rnd.Generator, **kwargs) -> State:
     state = state.copy()

@@ -21,7 +21,12 @@ from src.config import (
 
 # Talep günde yalnızca bu iki sabit saatte oluşur (PDF: "Talep Tamamlanma Saati").
 # Kalkış kararları da bu epoklarda alınır.
-DISPATCH_SLOTS = ["09:00", "17:00"]
+DISPATCH_SLOTS = [
+    "00:00", "04:00", "08:00", "12:00","16:00", "20:00"
+]
+DEMAND_ARRIVAL_TIMES = [
+    "09:00", "17:00"
+]
 
 RouteLookup = dict[tuple[str, str], dict]
 
@@ -57,12 +62,6 @@ def ellecleme_suresi_dakika(desi: float, consolidation: bool = False) -> float:
     return sure * 2 if consolidation else sure
 
 
-def ellecleme_maliyet_hesapla(desi: float, kiralık_saat_maliyet: float) -> float:
-    """Elleçleme süresi = desi * 0.01 dk. Konsolidasyonda (indir + tekrar yükle) 2x sayılır."""
-    sure = desi * ELLECLEME_DAKIKA_PER_DESI
-    sure_saat = sure / 60
-    maliyet = sure_saat * kiralık_saat_maliyet
-    return maliyet
 
 
 def varis_zamani(kalkis: datetime, seyir_saat: float) -> datetime:
@@ -129,11 +128,11 @@ def next_dispatch_slot(
     slotta asla kalkış yapılmaz (elleçlemeye zaman tanımak için).
     `valid_days` ufkunun dışına düşerse None."""
     toplam_saat = slot_to_hour(slot) + seyir_saat
-    gun_offset, saat_of_day = divmod(toplam_saat, 24)
-    for aday_slot in DISPATCH_SLOTS:
+    gun_offset, saat_of_day = divmod(toplam_saat, 24) 
+    for aday_slot in DEMAND_ARRIVAL_TIMES:
         if slot_to_hour(aday_slot) > saat_of_day:
             aday_gun = (date.fromisoformat(gun) + timedelta(days=int(gun_offset))).isoformat()
             return (aday_gun, aday_slot) if aday_gun in valid_days else None
     # Günün tüm slotları geride kaldı -> ertesi günün ilk slotu
     aday_gun = (date.fromisoformat(gun) + timedelta(days=int(gun_offset) + 1)).isoformat()
-    return (aday_gun, DISPATCH_SLOTS[0]) if aday_gun in valid_days else None
+    return (aday_gun, DEMAND_ARRIVAL_TIMES[0]) if aday_gun in valid_days else None
