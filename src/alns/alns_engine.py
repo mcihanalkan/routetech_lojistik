@@ -353,12 +353,16 @@ class State:
             return seyir_faturasi + ellecleme_faturasi
 
         if is_kiralik:
-            self.leg_kiralik_desi[key] = self.leg_kiralik_desi.get(key, 0.0) + desi
+            eski_desi = self.leg_kiralik_desi.get(key, 0.0)
+            yeni_desi = eski_desi + desi
+            self.leg_kiralik_desi[key] = yeni_desi
             
             # Kiralık aracın seyir maliyeti baştan ödendi! 
             # Bize sadece bu desiyi yüklemek/indirmek için harcanan zamanın maliyeti yansır.
             
-            marjinal_maliyet = ellecleme_maliyet_hesapla(desi, p["rental_hourly"])
+            eski_ellecleme = ellecleme_maliyet_hesapla(eski_desi, p["rental_hourly"])
+            yeni_ellecleme = ellecleme_maliyet_hesapla(yeni_desi, p["rental_hourly"])
+            marjinal_maliyet = yeni_ellecleme - eski_ellecleme
             
         else:
             eski_desi = self.leg_spot_desi.get(key, 0.0)
