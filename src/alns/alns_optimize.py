@@ -47,6 +47,7 @@ from src.alns.alns_engine import (  # noqa: E402
     State,
     cpsat_hat_repair,
     greedy_repair,
+    leg_zaman_cizelgesi,
     random_removal,
     low_occupancy_removal,
     shaw_related_removal,
@@ -261,38 +262,24 @@ output_xlsx = results_dir / "optimization_results.xlsx"
 def _bucket_key(leg):
     return (leg.src, leg.dst, leg.gun, leg.slot, leg.arac_turu, leg.is_kiralik)
 
-# ============================================================================
-# YENİ EKLENEN BLOK: GERÇEK KALKIŞ DAKİKALARINI HESAPLAMA (POST-PROCESSING)
-# ============================================================================
-from src.alns.time_model import slot_datetime, varis_zamani, ellecleme_tamamlanma_zamani
-
-gercek_kalkis_dakikalari = {}
+# Her kargonun (assignment) kendi bağımsız zaman çizelgesini hesaplıyoruz - başka
+# bir kargonun aynı bacağı ne zaman kullandığına bakmadan, sadece bu kargonun kendi
+# elleçleme+yol süresine göre gerçek kalkış/varış anlarını buluyoruz.
+# bucket_gercek_kalkis ise sadece "bu bacak en son ne zaman kalkmış" bilgisini özet
+# tabloda göstermek için - hiçbir kargonun kendi zaman hesabına karışmıyor.
+assignment_cizelgeleri = {}   # id(a) -> [(kalkis0, varis0), (kalkis1, varis1), ...]
+bucket_gercek_kalkis = {}     # bucket_key -> en gec kalkis (sadece ozet icin)
 
 for a in best.assignments:
-    # Kargonun ilk çıkış noktasında hazır olduğu an
-    mevcut_kargo_hazir_olma = slot_datetime(a.demand_gun, a.demand_slot)
-    
-    for i, leg in enumerate(a.legs):
+    cizelge = leg_zaman_cizelgesi(data, a.legs, a.desi)
+    assignment_cizelgeleri[id(a)] = cizelge
+    for leg, (kalkis, _varis) in zip(a.legs, cizelge):
         key = _bucket_key(leg)
-        
-        # 1. Bu kargo o araca en erken ne zaman binebilir?
-        # Aracın kalkış dakikasını, içindeki en son binen kargoya göre sürekli ileri itiyoruz (max fonksiyonu ile)
-        if key not in gercek_kalkis_dakikalari:
-            gercek_kalkis_dakikalari[key] = mevcut_kargo_hazir_olma
+        if key not in bucket_gercek_kalkis:
+            bucket_gercek_kalkis[key] = kalkis
         else:
-            gercek_kalkis_dakikalari[key] = max(gercek_kalkis_dakikalari[key], mevcut_kargo_hazir_olma)
-        
-        # 2. Eğer bu rotada başka bacaklar (aktarma) varsa, kargonun YENİ merkeze varışını simüle et
-        if i < len(a.legs) - 1:
-            entry = data.route_lookup.get((leg.src, leg.dst))
-            seyir_suresi = entry[leg.arac_turu] if entry else 0.0
+            bucket_gercek_kalkis[key] = max(bucket_gercek_kalkis[key], kalkis)
             
-            # Seyir süresi eklenir (Kargo yolda)
-            kargo_varis_dt = varis_zamani(mevcut_kargo_hazir_olma, seyir_suresi)
-            # Aktarma merkezinde banttan geçme süresi (consolidation=True)
-            mevcut_kargo_hazir_olma = ellecleme_tamamlanma_zamani(kargo_varis_dt, a.desi, consolidation=True)
-# ============================================================================
-
 # Bacak (leg-dispatch) basina GERCEK toplam desi - birden fazla talep parcasi
 # ayni fiziksel sevkiyati (ayni TM-cift/gun/slot/arac_turu) paylasabilir; tek
 # tek assignment'in kendi desi'sinden arac sayisi hesaplamak (eski yontem)
@@ -321,11 +308,11 @@ for a in best.assignments:
     if len(a.legs) == 1:
         leg = a.legs[0]
         # YENİ DEĞİŞİKLİK: Yapay slotu ezip gerçek dakikayı çekiyoruz
-        gercek_dt = gercek_kalkis_dakikalari[_bucket_key(leg)]
+        gercek_dt = assignment_cizelgeleri[id(a)][0][0]
         gercek_gun = gercek_dt.strftime("%Y-%m-%d")
         gercek_slot = gercek_dt.strftime("%H:%M")
         
-        rota_tipi = "Direkt" if gercek_gun == a.demand_gun and gercek_slot == a.demand_slot else "Direkt (Ertelenmis)"
+        rota_tipi = "Direkt" if leg.gun == a.demand_gun and leg.slot == a.demand_slot else "Direkt (Ertelenmis)"
         arac_tipi = ("Kiralik " if leg.is_kiralik else "Spot ") + leg.arac_turu
         csv_records.append({
             "Tarih": gercek_gun, "Slot": gercek_slot, "Arac_Tipi": arac_tipi, # BURASI GÜNCELLENDİ
@@ -339,15 +326,11 @@ for a in best.assignments:
             "Rota_Tipi": rota_tipi, "Talep_Tarihi": a.demand_gun, "Talep_Slotu": a.demand_slot,
         })
     else:
-        # Konsolidasyon: bacağın kendi uçları (Cikis_TM/Varis_TM) ile talebin GERÇEK
-        # nihai varışı (Nihai_Varis) farklı olabilir — örn. Kocaeli->Eskişehir bacağı,
-        # aslında Eskişehir üzerinden Isparta'ya giden bir yükü taşıyor olabilir.
-        # Bu ayrım olmadan konsolidasyon anlamsız/gereksiz göründüğü için eklendi.
-        ara_duraklar = " -> ".join(leg.dst for leg in a.legs[:-1])  
+        ara_duraklar = " -> ".join(leg.dst for leg in a.legs[:-1])
+        cizelge = assignment_cizelgeleri[id(a)]
         for i, leg in enumerate(a.legs):
-            
-            # YENİ DEĞİŞİKLİK: Yapay slotu ezip gerçek dakikayı çekiyoruz
-            gercek_dt = gercek_kalkis_dakikalari[_bucket_key(leg)]
+
+            gercek_dt = cizelge[i][0]
             gercek_gun = gercek_dt.strftime("%Y-%m-%d")
             gercek_slot = gercek_dt.strftime("%H:%M")
             
@@ -391,8 +374,7 @@ if data.tir_arac_turu is not None:
 dispatch_records = []
 for key, toplam_desi in sorted(bucket_toplam_desi.items()):
     src, dst, gun, slot, arac_turu, is_kiralik = key
-    # YENİ DEĞİŞİKLİK: Sevkiyat özetinde de gerçek zamanı yazdırıyoruz
-    gercek_dt = gercek_kalkis_dakikalari[key]
+    gercek_dt = bucket_gercek_kalkis[key]
     gercek_gun = gercek_dt.strftime("%Y-%m-%d")
     gercek_slot = gercek_dt.strftime("%H:%M")
     

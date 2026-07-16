@@ -423,35 +423,36 @@ def _rank_spot_types_by_cost(data: ProblemData, hat: tuple, desi: float) -> list
     return sorted(data.arac_turleri, key=tahmini_maliyet)
 
 
-def _completion_datetime(data: ProblemData, legs: list, desi: float):
+def leg_zaman_cizelgesi(data: ProblemData, legs: list, desi: float) -> list:
+    """Her bacağın GERÇEK (elleçleme dahil) kalkış ve varış anını sırayla döndürür:
+    [(kalkis_0, varis_0), (kalkis_1, varis_1), ...]. Hem SLA/tamamlanma hesabı
+    (_completion_datetime) hem rapor (alns_optimize.py) bu ORTAK hesabı kullanır -
+    iki yerde aynı mantığın ayrı ayrı yazılıp birbirinden sapmasını (bkz. Sorun 2) önlemek için."""
+    cizelge = []
     zaman = None
     for i, leg in enumerate(legs):
         slot_zamani = slot_datetime(leg.gun, leg.slot)
 
-        # İlk bacak: kargo bu bacağa binmeden önce yüklenmesi (çıkış elleçlemesi) gerekiyor.
-        # Kalkış, slotun kendisi değil, slot + çıkış elleçleme süresi.
         if i == 0:
             kalkis = ellecleme_tamamlanma_zamani(slot_zamani, desi, consolidation=False)
         else:
-            # Aktarma sonrası bacak: kalkış ya bir önceki bacaktan gelen (konsolidasyon
-            # elleçlemesi bitip hazır olduğu an), ya da bu bacağın zaten kapasiteye göre
-            # onaylanmış resmi slotu - hangisi daha GEÇSE o. Kapasite kararını geri almıyoruz,
-            # sadece elleçleme yüzünden daha geç hazır olma durumunu yakalıyoruz.
             kalkis = max(zaman, slot_zamani)
 
         seyir = data.route_lookup[(leg.src, leg.dst)][leg.arac_turu]
         varis = varis_zamani(kalkis, seyir)
+        cizelge.append((kalkis, varis))
 
         if i < len(legs) - 1:
-            # Son bacak değil -> aktarma var. Ara merkezde indirme + yeniden yükleme
-            # yapılıyor (konsolidasyon, 2 kat) - bu, bir sonraki bacağın hazır olma anı.
             zaman = ellecleme_tamamlanma_zamani(varis, desi, consolidation=True)
         else:
-            # Son bacak - nihai varış elleçlemesi döngüden sonra, tek seferde eklenecek.
             zaman = varis
 
-    # Nihai varış elleçlemesi (indirme, tek yönlü) - SLA burada tamamlanmış sayılır.
-    return ellecleme_tamamlanma_zamani(zaman, desi, consolidation=False)
+    return cizelge
+
+
+def _completion_datetime(data: ProblemData, legs: list, desi: float):
+    son_varis = leg_zaman_cizelgesi(data, legs, desi)[-1][1]
+    return ellecleme_tamamlanma_zamani(son_varis, desi, consolidation=False)
 
 
 def try_insert_path(
