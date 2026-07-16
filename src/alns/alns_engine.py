@@ -424,22 +424,33 @@ def _rank_spot_types_by_cost(data: ProblemData, hat: tuple, desi: float) -> list
 
 
 def _completion_datetime(data: ProblemData, legs: list, desi: float):
-    """SLA için esas alınan an: PDF'e göre araç VARIŞI değil, o TM'deki
-    elleçlemenin TAMAMLANMA anı. Son bacağın kalkışı+seyir süresiyle varışa
-    ulaşılır, sonra final destinasyondaki elleçleme süresi (desi × 0.01 dk)
-    eklenir — bu adım daha önce hiç yapılmıyordu ve büyük yüklerde (binlerce
-    desi → onlarca dakika/birkaç saat) SLA'yı yapay şekilde "zamanında"
-    gösteriyordu (bkz. sohbet geçmişi).
-
-    Ara (relay) bacaklarının kendi elleçlemesi burada AYRICA eklenmiyor -
-    `next_dispatch_slot` zaten bir sonraki bacağın kalkışını, elleçleme+bekleme
-    payı bırakarak hesaplıyor (bkz. o fonksiyonun docstring'i); yalnızca NİHAİ
-    varış noktasındaki elleçleme SLA tamamlanma anını geciktirir."""
     zaman = None
-    for leg in legs:
-        kalkis = slot_datetime(leg.gun, leg.slot)
+    for i, leg in enumerate(legs):
+        slot_zamani = slot_datetime(leg.gun, leg.slot)
+
+        # İlk bacak: kargo bu bacağa binmeden önce yüklenmesi (çıkış elleçlemesi) gerekiyor.
+        # Kalkış, slotun kendisi değil, slot + çıkış elleçleme süresi.
+        if i == 0:
+            kalkis = ellecleme_tamamlanma_zamani(slot_zamani, desi, consolidation=False)
+        else:
+            # Aktarma sonrası bacak: kalkış ya bir önceki bacaktan gelen (konsolidasyon
+            # elleçlemesi bitip hazır olduğu an), ya da bu bacağın zaten kapasiteye göre
+            # onaylanmış resmi slotu - hangisi daha GEÇSE o. Kapasite kararını geri almıyoruz,
+            # sadece elleçleme yüzünden daha geç hazır olma durumunu yakalıyoruz.
+            kalkis = max(zaman, slot_zamani)
+
         seyir = data.route_lookup[(leg.src, leg.dst)][leg.arac_turu]
-        zaman = varis_zamani(kalkis, seyir)
+        varis = varis_zamani(kalkis, seyir)
+
+        if i < len(legs) - 1:
+            # Son bacak değil -> aktarma var. Ara merkezde indirme + yeniden yükleme
+            # yapılıyor (konsolidasyon, 2 kat) - bu, bir sonraki bacağın hazır olma anı.
+            zaman = ellecleme_tamamlanma_zamani(varis, desi, consolidation=True)
+        else:
+            # Son bacak - nihai varış elleçlemesi döngüden sonra, tek seferde eklenecek.
+            zaman = varis
+
+    # Nihai varış elleçlemesi (indirme, tek yönlü) - SLA burada tamamlanmış sayılır.
     return ellecleme_tamamlanma_zamani(zaman, desi, consolidation=False)
 
 
