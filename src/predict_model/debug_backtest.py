@@ -48,6 +48,7 @@ tahmin edilmedi):
     sınırı her çalıştırmada açıkça hatırlatır.
 """
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -63,7 +64,7 @@ from run_forecast import (
     MODEL_FILE_PATH_0900, MODEL_FILE_PATH_1700,
 )
 from src.forecasters import DemandForecaster
-from src.metrics import decision_regret
+from src.metrics import decision_regret, wape
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("debug_backtest")
@@ -111,7 +112,17 @@ def parse_args():
         help="Faz 2 Relative Cap: surge correction'ı baseline (düzeltme öncesi) "
              "hacmin bu oranıyla sınırla (ör. 0.20, 0.25, 0.30, 0.40). "
              "Belirtilmezse retrain'de kaydedilmiş değer (varsayılan None=kapalı) kullanılır. "
-             "Retrain gerekmez — fc.surge_relative_cap_alpha_ çalışma zamanında elle atanır.",
+             "Retrain gerekmez — fc.surge_relative_cap_alpha_ çalışma zamanında elle atanır. "
+             "Her iki hedefe (09:00 + 17:00) birden uygulanır.",
+    )
+    p.add_argument(
+        "--surge-segment-scale", type=str, default=None,
+        help="Faz 2b Segment Scale (SADECE 09:00 hedefine uygulanır — 09:00'daki "
+             "overprediction deseni monoton değil, orta hacimde tetikleniyor; "
+             "17:00 için --surge-cap-alpha yeterli). JSON string olarak "
+             "[[low, high, scale], ...] listesi verin, ör: "
+             "'[[0,60,1.0],[60,1200,0.4],[1200,999999,1.0]]'. "
+             "Retrain gerekmez — fc.surge_segment_scale_ çalışma zamanında elle atanır.",
     )
     return p.parse_args()
 
@@ -175,12 +186,16 @@ def build_prediction_frame(full_df, target_dates):
     return pred_df
 
 
-def run_one_target(label, target_col, model_path, full_df, cutoff, start, end, surge_cap_alpha=None):
+def run_one_target(label, target_col, model_path, full_df, cutoff, start, end,
+                    surge_cap_alpha=None, surge_segment_scale=None):
     fc = DemandForecaster.load_model(model_path)
     fc.surge_calibration_factor_ = 1.5
     if surge_cap_alpha is not None:
         fc.surge_relative_cap_alpha_ = surge_cap_alpha
         log.info(f"ℹ️  [{label}] Faz 2 Relative Cap aktif: alpha={surge_cap_alpha}")
+    if surge_segment_scale is not None:
+        fc.surge_segment_scale_ = surge_segment_scale
+        log.info(f"ℹ️  [{label}] Faz 2b Segment Scale aktif: segmentler={surge_segment_scale}")
 
     # Context buffer'ı CUTOFF'a göre GEÇİCİ olarak yeniden hesapla
     # (fit-zamanı buffer'ı değiştirmiyoruz, sadece bu backtest için)
@@ -217,11 +232,27 @@ def run_one_target(label, target_col, model_path, full_df, cutoff, start, end, s
     )
     merged = preds_df.merge(actual_route_day, on=[GROUP_COL, "tarih"], how="inner")
 
+    # --- Teşhis: Gerçek vs Tahmin — İzlenen (şüpheli) Rotalar ---
+    # run_forecast.py'deki lag_1 çöküş şüphesiyle aynı üç rota; burada
+    # backtest penceresindeki gerçek y_true/q50/q90 karşılaştırması ile
+    # aynı desenin (sert uçurum vs kademeli düşüş) burada da olup
+    # olmadığına bakıyoruz.
+    _izlenen_rotalar = ["Yalova → İstanbul", "Kocaeli → İstanbul", "İstanbul → Yalova"]
+    print(f"\n🔬 [{label}] Gerçek vs Tahmin — İzlenen Rotalar:")
+    print(
+        merged[merged[GROUP_COL].isin(_izlenen_rotalar)]
+        .assign(hata_pct=lambda d: (d["q50"] - d["y_true"]) / d["y_true"].replace(0, np.nan) * 100)
+        [[GROUP_COL, "tarih", "y_true", "q50", "q90", "hata_pct"]]
+        .sort_values([GROUP_COL, "tarih"])
+        .to_string(index=False)
+    )
+
     # --- Faz 1 Teşhis: Volume vs Overprediction (Adım 5 öncesi) ---
     diag = merged[merged["y_true"] >= 20].copy()   # çok küçük gerçek değerleri filtrele (% patlamasını önler)
     diag["overpred_pct"] = (diag["q50"] - diag["y_true"]) / diag["y_true"] * 100
     diag["abs_overpred"] = np.maximum(diag["q50"] - diag["y_true"], 0.0)
     diag["volume_decile"] = pd.qcut(diag["q50"], 10, labels=False, duplicates="drop")
+    diag["weekday"] = pd.to_datetime(diag["tarih"]).dt.day_name()
 
     # --- Faz 1b: Baseline (düzeltme öncesi, q50_base) vs Düzeltilmiş (q50) ---
     # q50_base = surge/weekday düzeltmesinden ÖNCEKİ ham Model-1 çıktısı
@@ -244,6 +275,115 @@ def run_one_target(label, target_col, model_path, full_df, cutoff, start, end, s
         agg_spec["ort_correction_contrib"] = ("correction_contrib", "mean")
     decile_stats = diag.groupby("volume_decile").agg(**agg_spec).round(1)
     print(decile_stats.to_string())
+
+    # --- Faz 1e: Rota Bazlı WAPE + Ufuk (Horizon) Bazlı Hata Büyümesi ---
+    merged["horizon"] = (pd.to_datetime(merged["tarih"]) - pd.Timestamp(cutoff)).dt.days
+
+    # (A) Ufuk ilerledikçe WAPE gerçekten büyüyor mu? (PDF'in "hata birikimi" iddiasının testi)
+    horizon_stats = merged.groupby("horizon").apply(
+        lambda g: pd.Series({
+            "n": len(g),
+            "toplam_hacim": g["y_true"].sum(),
+            "WAPE": wape(g["y_true"].values, g["q50"].values),
+            "decision_regret": decision_regret(g["y_true"].values, g["q50"].values, spot_multiplier=9.0),
+        })
+    ).round(4)
+    print(f"\n📈 [{label}] Ufuk (Horizon) Bazlı WAPE / Regret Büyümesi:")
+    print(horizon_stats.to_string())
+
+    # (B) Rota bazlı WAPE — düşük hacimli gürültü ile gerçek sorunlu hatları ayırt et
+    route_stats = merged.groupby(GROUP_COL).apply(
+        lambda g: pd.Series({
+            "n": len(g),
+            "ort_hacim": g["y_true"].mean(),
+            "toplam_hacim": g["y_true"].sum(),
+            "WAPE": wape(g["y_true"].values, g["q50"].values),
+            "decision_regret": decision_regret(g["y_true"].values, g["q50"].values, spot_multiplier=9.0),
+        })
+    ).round(3)
+
+    # Sadece anlamlı hacimli rotalara odaklan (örn. ort_hacim >= 50) — aksi halde
+    # WAPE zaten payda küçük olduğu için yapısal olarak şişer, teşhisi bozar.
+    route_stats_relevant = route_stats[route_stats["ort_hacim"] >= 50].sort_values("decision_regret", ascending=False)
+    print(f"\n🚩 [{label}] En Kötü 20 Rota (ort_hacim>=50, decision_regret'e göre sıralı):")
+    print(route_stats_relevant.head(20).to_string())
+
+    print(f"\n📊 [{label}] Rota Segmentasyonu Özeti:")
+    print(f"   Toplam rota sayısı           : {len(route_stats)}")
+    print(f"   ort_hacim>=50 rota sayısı    : {len(route_stats_relevant)}")
+    print(f"   Bunların medyan WAPE'i       : {route_stats_relevant['WAPE'].median():.3f}")
+    print(f"   Bunların WAPE>0.5 olan sayısı: {(route_stats_relevant['WAPE'] > 0.5).sum()}")
+
+    # --- Faz 1c: Orta Hacim Bandı (60-1200) — Hafta Günü Kırılımı ---
+    # Decile'lar hacim ekseninde, bu ise hacmi 60-1200 bandına sabitleyip
+    # hatanın hafta içinde HANGİ güne yoğunlaştığını gösterir (ör. Salı
+    # düşüşü gibi day-2 etkilerini decile ortalamasının maskeleyebileceği
+    # durumlar için).
+    orta_hacim = diag[(diag["q50"] >= 60) & (diag["q50"] < 1200)].copy()
+    # abs_overpred'in aynası, ters yönde: eksik tahmin edilen miktar (gerçek desi cinsinden).
+    orta_hacim["abs_eksik"] = np.maximum(orta_hacim["y_true"] - orta_hacim["q50"], 0.0)
+
+    weekday_stats = orta_hacim.groupby("weekday").agg(
+        n=("q50", "size"),
+        medyan_overpred_pct=("overpred_pct", "median"),
+        n_eksik=("overpred_pct", lambda s: (s < 0).sum()),
+        n_fazla=("overpred_pct", lambda s: (s >= 0).sum()),
+        toplam_abs_overpred=("abs_overpred", "sum"),
+        toplam_abs_eksik=("abs_eksik", "sum"),
+    ).round(1)
+
+    # decision_regret, y_true VE q50'yi BİRLİKTE gerektirdiği için tek sütun
+    # bazlı .agg() içine sığmıyor — her weekday grubu için ayrı groupby.apply()
+    # ile hesaplanıp weekday_stats'a sütun olarak eklenir. Bu, o gün/banttaki
+    # GERÇEK spot-araç maliyetini (9x asimetrik ceza dahil) yansıtır —
+    # toplam_abs_overpred/eksik gibi ham hacim farkları değil.
+    weekday_stats["decision_regret"] = orta_hacim.groupby("weekday").apply(
+        lambda g: decision_regret(g["y_true"].values, g["q50"].values, spot_multiplier=9.0)
+    ).round(2)
+
+    weekday_stats = weekday_stats.reindex(
+        ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    )
+    print(f"\n🗓️  [{label}] Orta Hacim Bandı (60-1200) — Hafta Günü Kırılımı:")
+    print(weekday_stats.to_string())
+
+    # --- Faz 1d: Orta Hacim Bandı — Model 2 Correction Büyüklüğüne Göre Kırılım ---
+    # weekday'deki 7 kategoriden farklı olarak correction_contrib sürekli bir
+    # değişken, bu yüzden decile yerine 5 bine ayırıyoruz (örnek sayısı az).
+    if "correction_contrib" in orta_hacim.columns:
+        orta_hacim["correction_bin"] = pd.qcut(
+            orta_hacim["correction_contrib"], 5, labels=False, duplicates="drop"
+        )
+
+        correction_stats = orta_hacim.groupby("correction_bin").agg(
+            n=("q50", "size"),
+            ort_correction=("correction_contrib", "mean"),
+            medyan_overpred_pct=("overpred_pct", "median"),
+            n_eksik=("overpred_pct", lambda s: (s < 0).sum()),
+            n_fazla=("overpred_pct", lambda s: (s >= 0).sum()),
+            toplam_abs_eksik=("abs_eksik", "sum"),
+            toplam_abs_overpred=("abs_overpred", "sum"),
+        ).round(1)
+        correction_stats["decision_regret"] = (
+            (9 * correction_stats["toplam_abs_eksik"] + correction_stats["toplam_abs_overpred"])
+            / correction_stats["n"]
+        ).round(2)
+
+        print(f"\n📐 [{label}] Orta Hacim Bandı — Model 2 Correction Büyüklüğüne Göre Kırılım:")
+        print(correction_stats.to_string())
+
+        bin0 = orta_hacim[orta_hacim["correction_bin"] == 0].copy()
+        bin0_weekday = bin0.groupby("weekday").agg(
+            n=("q50", "size"),
+            n_eksik=("overpred_pct", lambda s: (s < 0).sum()),
+            toplam_abs_eksik=("abs_eksik", "sum"),
+            ort_correction=("correction_contrib", "mean"),
+        ).round(1)
+        bin0_weekday = bin0_weekday.reindex(
+            ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        )
+        print(f"\n🎯 [{label}] Bin 0 (En Küçük Correction) — Hafta Günü Dağılımı:")
+        print(bin0_weekday.to_string())
 
     print(f"\n🔬 [{label}] Backtest {start}→{end} (cutoff={cutoff}) — Tahmin vs Gerçek:")
     abs_pct_errors = []
@@ -279,6 +419,22 @@ def main():
 
     guard_no_leakage(args.start, args.end, data_max_date, args.force)
 
+    # --surge-segment-scale SADECE 09:00 hedefine uygulanır (bkz. --help metni):
+    # 09:00'daki overprediction deseni monoton değil, orta hacim aralığında
+    # tetikleniyor — 17:00'da desen monoton olduğu için --surge-cap-alpha
+    # (her iki hedefe de uygulanan, aşağıdaki döngü) yeterli.
+    surge_segment_scale = None
+    if args.surge_segment_scale is not None:
+        try:
+            parsed = json.loads(args.surge_segment_scale)
+            surge_segment_scale = [tuple(seg) for seg in parsed]
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
+            raise RuntimeError(
+                f"❌ --surge-segment-scale JSON olarak parse edilemedi: {e}\n"
+                f"   Beklenen format: '[[low, high, scale], ...]', ör. "
+                f"'[[0,60,1.0],[60,1200,0.4],[1200,999999,1.0]]'"
+            )
+
     for label, target_col, default_model_path, override in [
         ("09:00", TARGET_COL_0900, MODEL_FILE_PATH_0900, args.model_0900),
         ("17:00", TARGET_COL_1700, MODEL_FILE_PATH_1700, args.model_1700),
@@ -290,6 +446,8 @@ def main():
             label, target_col, model_path, full_df,
             cutoff=args.cutoff, start=args.start, end=args.end,
             surge_cap_alpha=args.surge_cap_alpha,
+            # segment_scale sadece 09:00 için — 17:00 çağrısında None kalır
+            surge_segment_scale=surge_segment_scale if label == "09:00" else None,
         )
 
 

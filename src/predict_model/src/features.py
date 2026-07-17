@@ -173,6 +173,8 @@ def add_campaign_features(
     date_column: str,
     lead_days: int = 5,
     group_column: Optional[str] = None,
+    campaign_release_alpha: float = 5.25,
+    campaign_max_release_days: int = 6,
 ) -> pl.DataFrame:
     """
     E-Ticaret kampanya günlerini, kampanya öncesi sipariş dönemini VE
@@ -206,8 +208,17 @@ def add_campaign_features(
         aktif gün sayısı (Int64, 1-indeksli). Eve döneminde -1.
     campaign_release_index : Kampanya sonrası üstel sönümlü "release" sinyali
         (Float64) — campaign_release_alpha/max_campaign_release_days ile
-        ayarlanır (varsayılan: alpha=2.5, 6 gün — holiday'in 1.4/4'ünden
-        daha YAVAŞ sönüm, çünkü gözlemlenen etki daha uzun sürüyor).
+        ayarlanır (varsayılan: alpha=5.25, 6 gün — holiday'in 1.4/4'ünden
+        daha YAVAŞ sönüm, çünkü gözlemlenen etki daha uzun sürüyor;
+        Çarşamba/Perşembe rezidüsü çok hızlı sönüyordu ve o günlerde
+        ~293 bin desilik ciddi bir underprediction'a yol açıyordu — bkz.
+        debug_backtest.py Babalar Günü ablasyonu. ⚠️ DİKKAT: alpha
+        büyüdükçe kuyruk daha da uzar; bu değer sadece ilgili backtest
+        penceresinde doğrulanmıştır, farklı kampanya/rota profillerinde
+        tekrar kalibre edilmeden production'a alınmamalıdır — aşırı büyük
+        alpha, kampanya etkisi çoktan bitmiş günlerde de gereksiz yere
+        yüksek tahmin üretebilir (overprediction riski diğer günlere
+        kayar).
 
     Parameters
     ----------
@@ -238,21 +249,24 @@ def add_campaign_features(
           .cast(pl.Int8).alias("is_campaign_eve"),
     ])
 
-    # v15: Kampanya SONRASI birikim/sönüm — tatildeki AYNI çekirdek, farklı
-    # bayrak (is_campaign_eve). alpha=2.5/max_release_days=6, holiday'in
-    # 1.4/4'ünden daha yavaş sönüyor çünkü gözlemlenen post-kampanya etkisi
-    # (bkz. fonksiyon docstring'i) daha uzun sürüyor. Bu iki parametre ilk
-    # tahmindir — yeniden HPO/backtest sonrası ayarlanabilir.
+    # v17: Kampanya SONRASI birikim/sönüm — tatildeki AYNI çekirdek, farklı
+    # bayrak (is_campaign_eve). alpha=5.25/max_release_days=6 — Çarşamba/
+    # Perşembe rezidüsü çok hızlı sönüyordu (depolar hâlâ dolu olmasına
+    # rağmen model hacmi erken düşürüyor, ~293 bin desilik underprediction'a
+    # yol açıyordu). alpha=5.25 ile exp(-resumption/alpha) daha yavaş sönüyor.
+    # ⚠️ Bu değer ilgili backtest penceresine göre kalibre edildi — HPO
+    # sonrası ve farklı veri setlerinde yeniden doğrulanmadan production'a
+    # kalıcı olarak gömülmemeli.
     df = _compute_streak_backlog_features(
         df,
         flag_col="is_campaign_eve",
         group_column=group_column,
-        alpha=2.5,
+        alpha=campaign_release_alpha,
         accumulated_col="accumulated_campaign_eve_days",
         resumption_col="days_since_campaign_end",
         release_col="campaign_release_index",
         weight_col=None,
-        max_release_days=6,
+        max_release_days=campaign_max_release_days,
         tmp_prefix="_camp",
     )
 
@@ -262,6 +276,100 @@ def add_campaign_features(
     )
     return df
 
+
+
+# ---------------------------------------------------------------------------
+# 2.6 Gecikmeli Kampanya Etkisi — Lag Matrisi + Kategorik Etkileşim
+#     (PDF: "Gecikmeli Kampanya Etkisi: Online Sipariş ile Fiziksel
+#     Karşılama Arasındaki Faz Kayması" — Teknik 1 ve Teknik 3)
+# ---------------------------------------------------------------------------
+
+def add_campaign_lag_interaction_features(
+    df: pl.DataFrame,
+    date_column: str,
+    group_column: Optional[str] = None,
+    n_lags: int = 2,
+) -> pl.DataFrame:
+    """
+    Dijital sipariş anı (Pazar kampanya) ile fiziksel lojistik gerçekleşme
+    anı (Pazartesi/Salı yığılma) arasındaki faz kaymasını (phase shift)
+    modele hiçbir sert kural (if-else) olmadan öğretir.
+
+    Teknik 1 — Zaman Kaydırma (Temporal Shifting):
+        is_campaign_day bayrağını takip eden günlere taşıyan
+        campaign_lag_1 .. campaign_lag_{n_lags} sütunları üretir.
+        Örn. Pazar kampanya varsa, Pazartesi satırında campaign_lag_1 == 1
+        olur. Karar ağacı "Gün=Pazartesi" ve "campaign_lag_1==1" yapraklarında
+        hedefteki büyük artışı doğrudan yakalar (PDF, "Tarih/Gün/is_campaign/
+        campaign_lag_1/campaign_lag_2" örnek tablosu).
+
+    Teknik 3 — Kategorik Etkileşim Matrisi (Cross-Interaction):
+        campaign_lag_1 ile haftanın gününü birleştiren tek bir kategorik
+        sütun (Campaign_Lag1_Day_Interaction) üretir — örn. "CampaignLag1_5"
+        (Cuma kampanyasının ardından gelen Cumartesi-Pazar nedeniyle
+        Pazartesiye sarkan "Post-Weekend Holiday Effect"i, Çarşamba
+        kampanyasının Perşembe'de hızlı erimesinden ayrıştırır).
+
+    ⚠️  ÖNEMLİ — Özellik Uzayı Ortogonalleştirmesi (Çift Sayım Önleme):
+    Bu fonksiyonun ürettiği TÜM sütunlar (campaign_lag_*,
+    Campaign_Lag1_Day_Interaction) yalnızca Taban (Stage 1 / q50) modeline
+    verilmelidir. is_campaign_day'in doğrudan türevi oldukları için Kalıntı
+    (Surge/Residual, Stage 2) modeline verilmemelidir — aksi halde PDF'in
+    tanımladığı "Çift Sayım" (Double-Counting) paradoksu tekrar oluşur.
+    Bu ayrım forecasters.py::SURGE_STATIC_EXCLUDED_FEATURES listesinde
+    mekanik olarak uygulanır; bu fonksiyon sadece üretimden sorumludur.
+
+    Parameters
+    ----------
+    df            : Polars DataFrame (is_campaign_day zaten hesaplanmış olmalı
+                    — bkz. add_campaign_features, bu fonksiyondan ÖNCE çağrılmalı)
+    date_column   : Kullanılmıyor, imza tutarlılığı için tutuldu
+    group_column  : Rota bazında shift (leakage'sız); None ise tek seri
+    n_lags        : Kaç gün sonrasına kadar kampanya etkisi taşınsın (varsayılan: 2)
+
+    Returns
+    -------
+    pl.DataFrame
+    """
+    if "is_campaign_day" not in df.columns:
+        logger.debug(
+            "⚠️  add_campaign_lag_interaction_features atlandı: "
+            "'is_campaign_day' sütunu yok (add_campaign_features önce çağrılmalı)."
+        )
+        return df
+
+    over_keys = [group_column] if group_column and group_column in df.columns else None
+
+    lag_exprs = []
+    for lag in range(1, n_lags + 1):
+        col_name = f"campaign_lag_{lag}"
+        shifted = pl.col("is_campaign_day").shift(lag)
+        if over_keys:
+            shifted = shifted.over(over_keys)
+        lag_exprs.append(shifted.fill_null(0).cast(pl.Int8).alias(col_name))
+    df = df.with_columns(lag_exprs)
+
+    # Kategorik etkileşim: sadece campaign_lag_1 (en güçlü sinyal, ertesi gün)
+    # ile haftanın günü birleştirilir. weekday yoksa (add_time_features henüz
+    # çağrılmadıysa) etkileşim üretilmez — sessizce atlanır.
+    if "weekday" in df.columns:
+        df = df.with_columns([
+            pl.when(pl.col("campaign_lag_1") == 1)
+              .then(pl.lit("CampaignLag1_day") + pl.col("weekday").cast(pl.Utf8))
+              .otherwise(pl.lit("NoCampaignLag1_day") + pl.col("weekday").cast(pl.Utf8))
+              .alias("Campaign_Lag1_Day_Interaction")
+        ])
+    else:
+        logger.debug(
+            "⚠️  Campaign_Lag1_Day_Interaction üretilmedi: 'weekday' sütunu yok "
+            "(add_time_features, add_campaign_lag_interaction_features'tan ÖNCE çağrılmalı)."
+        )
+
+    logger.debug(
+        f"✅ Gecikmeli Kampanya Etkisi özellikleri eklendi: "
+        f"campaign_lag_1..{n_lags}, Campaign_Lag1_Day_Interaction (Polars)."
+    )
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -1332,6 +1440,8 @@ def build_feature_matrix(
     rolling_windows: List[int] = DEFAULT_ROLLING_WINDOWS,
     holiday_lead_days: int = HOLIDAY_LEAD_DAYS,
     drop_na: bool = True,
+    campaign_release_alpha: float = 5.25,
+    campaign_max_release_days: int = 6,
 ) -> pd.DataFrame:
     """
     Tüm feature engineering adımlarını sırayla uygulayan ana fonksiyon.
@@ -1356,6 +1466,10 @@ def build_feature_matrix(
       2. Zaman özellikleri      (mevcut satırdan, leakage yok)
       3. Tatil özellikleri      (mevcut tarihten, leakage yok)
       3.5 Kampanya özellikleri   (e-ticaret zirveleri + arife, leakage yok)
+      3.6 Gecikmeli Kampanya Lag/Etkileşim (campaign_lag_1/2,
+                                  Campaign_Lag1_Day_Interaction — faz kayması,
+                                  SADECE Stage 1/Taban modeline; bkz.
+                                  forecasters.py::SURGE_STATIC_EXCLUDED_FEATURES)
       3.8 Organik backlog özellikleri (takvimden bağımsız durgunluk sinyali +
                                   is_closed ile birleşen genel "is_low_activity"
                                   tetikleyicisi; her hedef sütun için AYRI AYRI,
@@ -1443,7 +1557,24 @@ def build_feature_matrix(
     # lead_days=3: Anneler Günü gibi kampanyalarda 5 günlük arife
     # Nisan/Mayıs tatil birikim dönemleriyle çakışıyor.
     # 3 gün, gerçek e-ticaret sipariş penceresini daha temiz modelliyor.
-    pl_df = add_campaign_features(pl_df, date_column, lead_days=3, group_column=group_column)
+    pl_df = add_campaign_features(
+        pl_df,
+        date_column,
+        lead_days=3,
+        group_column=group_column,
+        campaign_release_alpha=campaign_release_alpha,
+        campaign_max_release_days=campaign_max_release_days,
+    )
+
+    # --- Adım 3.6: Gecikmeli Kampanya Etkisi (Lag Matrisi + Kategorik Etkileşim) ---
+    # is_campaign_day (Adım 3.5) ve weekday (Adım 2) sütunlarına bağımlı,
+    # ikisinden de SONRA çalıştırılır. Ürettiği campaign_lag_* ve
+    # Campaign_Lag1_Day_Interaction sütunları SADECE Taban modeline (Stage 1)
+    # gitmeli — forecasters.py::SURGE_STATIC_EXCLUDED_FEATURES bu ayrımı
+    # Kalıntı (Surge) modeli tarafında mekanik olarak uygular.
+    pl_df = add_campaign_lag_interaction_features(
+        pl_df, date_column, group_column=group_column, n_lags=2
+    )
 
     # --- Adım 3.7: Kaggle Takvim Özellikleri (Maaş günü + Rota-Gün + Birikim) ---
     # is_holiday ve is_campaign_eve sütunlarına bağımlı olduğu için

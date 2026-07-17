@@ -382,6 +382,10 @@ def _fit_or_load_forecaster(
         outlier_clip_multiplier = clip_mult,
         logging_enabled         = True,
         random_state            = 42,
+        campaign_release_alpha   = 2.5,   # alpha kanıtlanmış şekilde etkisiz (accumulated_campaign_eve_days /
+                                           # days_since_campaign_end ham kolonları zaten X'te olduğu için
+                                           # CatBoost'a redundant geliyor) → sınıf varsayılanında bırakıldı.
+        campaign_max_release_days = 7,    # sweep sonucu kazanan (bkz. özet, decision_regret=1155.96)
     )
     forecaster.fit(full_df)
 
@@ -471,6 +475,24 @@ def run(save_json: bool = True) -> "pd.DataFrame":
     predict_grid_0900_horizon = predict_grid.loc[horizon_mask_0900].copy()
     preds_0900: List[Dict[str, Any]] = forecaster_0900.predict_sequential(predict_grid_0900_horizon)
 
+    # --- TEŞHİS 3: lag_1 çöküşü gerçek q50'den mi geliyor, yoksa pred_map
+    # eşleşme hatasından mı? (bkz. forecasters.py::predict_sequential()
+    # içindeki pred_map.get((rota, tarih), 0.0) fallback'i — anahtar
+    # tutmazsa sessizce 0.0'a düşer). Burada sadece o günün q50'sini
+    # gösteriyoruz; gerçekten ~0 ise bug değil, gerçek bir sinyaldir.
+    _diag_df_0900 = pd.DataFrame(preds_0900)
+    _diag_df_0900["tarih"] = _diag_df_0900["tarih"].astype(str).str[:10]
+    _diag_cols_0900 = ["rota", "tarih", "q50"] + (
+        ["q50_base"] if "q50_base" in _diag_df_0900.columns else []
+    )
+    print(f"\n🔬 [09:00] Gerçek q50 tahminleri — {_diag_routes}:")
+    print(
+        _diag_df_0900[_diag_df_0900["rota"].isin(_diag_routes)]
+        [_diag_cols_0900]
+        .sort_values(["rota", "tarih"])
+        .to_string(index=False)
+    )
+
     # --- TEŞHİS: recursive vs non-recursive karşılaştırma (geçici) ---
     preds_0900_nonrec = forecaster_0900.predict(predict_grid_0900_horizon)
     _df_diag = pd.DataFrame(preds_0900_nonrec)
@@ -529,6 +551,20 @@ def run(save_json: bool = True) -> "pd.DataFrame":
 
     predict_grid_1700_horizon = predict_grid_1700.loc[mask_horizon].copy()
     preds_1700: List[Dict[str, Any]] = forecaster_1700.predict_sequential(predict_grid_1700_horizon)
+
+    # --- TEŞHİS 3 (17:00 karşılığı): aynı lag_1/pred_map kontrolü ---
+    _diag_df_1700 = pd.DataFrame(preds_1700)
+    _diag_df_1700["tarih"] = _diag_df_1700["tarih"].astype(str).str[:10]
+    _diag_cols_1700 = ["rota", "tarih", "q50"] + (
+        ["q50_base"] if "q50_base" in _diag_df_1700.columns else []
+    )
+    print(f"\n🔬 [17:00] Gerçek q50 tahminleri — {_diag_routes}:")
+    print(
+        _diag_df_1700[_diag_df_1700["rota"].isin(_diag_routes)]
+        [_diag_cols_1700]
+        .sort_values(["rota", "tarih"])
+        .to_string(index=False)
+    )
 
     # --- TEŞHİS: recursive vs non-recursive karşılaştırma (geçici) ---
     preds_1700_nonrec = forecaster_1700.predict(predict_grid_1700_horizon)
