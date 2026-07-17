@@ -660,8 +660,7 @@ def force_insert(state: State, hat, gun, slot, desi, talep_id) -> None:
     state.handling_usage[(dst, varis_g)] = state.handling_usage.get((dst, varis_g), 0.0) + desi
 
     leg = Leg(src, dst, gun, slot, arac_turu, False)
-    varis = varis_zamani(slot_datetime(gun, slot), data.route_lookup[hat][arac_turu])
-    tamamlanma = ellecleme_tamamlanma_zamani(varis, desi, consolidation=False)
+    tamamlanma = _completion_datetime(data, [leg], desi)
     deadline = sla_deadline(slot_datetime(gun, slot), data.route_lookup[hat]["target_delivery_days"])
     sla_cost = sla_cezasi_tl(desi, gecikme_saat(tamamlanma, deadline))
     state.assignments.append(
@@ -1054,13 +1053,13 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
                     # de talebin GERCEK olusum anini (yalnizca ne zaman sevk
                     # edildigini) ayrica takip etmiyor; bu, aggregate `bir`/`ert`
                     # degiskenlerinin bilinen bir sinirlamasi (bkz. optimization.py
-                    # SLA bolumundeki not). Elleceleme tamamlanma suresi en azindan
-                    # burada dogru ekleniyor.
-                    varis = varis_zamani(slot_datetime(g, s), data.route_lookup[target_hat][a])
-                    tamamlanma = ellecleme_tamamlanma_zamani(varis, miktar, consolidation=False)
+                    # SLA bolumundeki not). Cikis/varis ellecleme suresi burada
+                    # _completion_datetime uzerinden dogru ekleniyor.
+                    leg = Leg(src, dst, g, s, a, True)
+                    tamamlanma = _completion_datetime(data, [leg], miktar)
                     deadline = sla_deadline(slot_datetime(g, s), data.route_lookup[target_hat]["target_delivery_days"])
                     sla_cost = sla_cezasi_tl(miktar, gecikme_saat(tamamlanma, deadline))
-                    state.assignments.append(Assignment(target_hat, g, s, miktar, (Leg(src, dst, g, s, a, True),), sla_cost, 0.0, talep_id_by_gs.get((g, s), "")))
+                    state.assignments.append(Assignment(target_hat, g, s, miktar, (leg,), sla_cost, 0.0, talep_id_by_gs.get((g, s), "")))
                     toplam_yuk -= miktar
 
             if s_adet > 0 and toplam_yuk > 0:
@@ -1069,11 +1068,11 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
                 if miktar > 0:
                     vehicle_cost = state._commit_leg(src, dst, g, s, a, miktar, False)
                     varis_g = arrival_day(data.route_lookup, data.gunler, target_hat, g, s, a) or g
-                    varis = varis_zamani(slot_datetime(g, s), data.route_lookup[target_hat][a])
-                    tamamlanma = ellecleme_tamamlanma_zamani(varis, miktar, consolidation=False)
+                    leg = Leg(src, dst, g, s, a, False)
+                    tamamlanma = _completion_datetime(data, [leg], miktar)
                     deadline = sla_deadline(slot_datetime(g, s), data.route_lookup[target_hat]["target_delivery_days"])
                     sla_cost = sla_cezasi_tl(miktar, gecikme_saat(tamamlanma, deadline))
-                    state.assignments.append(Assignment(target_hat, g, s, miktar, (Leg(src, dst, g, s, a, False),), sla_cost, vehicle_cost, talep_id_by_gs.get((g, s), "")))
+                    state.assignments.append(Assignment(target_hat, g, s, miktar, (leg,), sla_cost, vehicle_cost, talep_id_by_gs.get((g, s), "")))
                     toplam_yuk -= miktar
 
             if toplam_yuk > 1e-6:
