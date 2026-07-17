@@ -520,11 +520,14 @@ class DemandForecaster(BaseForecaster):
     # 1.0, 0.7, 0.5, 0.3 — regret VE fark%'ın sıfıra en yakın olduğu (üstüne
     # taşmayan) noktayı arayın, sadece en düşük regret'i değil (bkz. surge
     # kalibrasyonundaki asimetrik-metrik uyarısı — burada da aynı risk var).
-    # 0.0 → 1.0: aktive edildi. ⚠️ Bu, yukarıdaki 06-21→06-27 notunda
-    # belgelenen +13%..+35% overprediction riskini GERİ GETİRİR — recursive
-    # predict_sequential() akışında bias'ın hafta boyunca katlanma etkisini
-    # backtest'te ayrıca doğrulamadan production'a almayın.
-    _WEEKDAY_BIAS_SCALE: float = 1.0
+    # 🔻 REVERT (2026-07-17): 1.0 → 0.0. 06-21→06-27 doğrulamasında ham
+    # (1.0x) değer underprediction'ı fazlasıyla aştı (+13%..+35%
+    # overprediction) ve predict_sequential()'ın recursive/autoregressive
+    # akışında bias'ın hafta boyunca katlanmasına (compounding) yol açtı —
+    # production'da 15M desi'lik bir tahminin ~1.2 milyara şişmesine sebep
+    # oldu. Kapatılana kadar (0.0) bu deneysel bias devre dışı kalmalı;
+    # tekrar açmadan önce ayrı, temiz bir doğrulama penceresinde test edin.
+    _WEEKDAY_BIAS_SCALE: float = 0.0
 
     # ⚠️ DENEYSEL / TEST AMAÇLI — Pazar (17:00) için çarpımsal küçültme.
     # _EMPIRICAL_WEEKDAY_BIAS_1700 SADECE toplamsal + sadece pozitif çalışır
