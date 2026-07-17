@@ -57,9 +57,11 @@ def seyir_suresi_saat(route_lookup: RouteLookup, source: str, destination: str, 
 
 
 def ellecleme_suresi_dakika(desi: float, consolidation: bool = False) -> float:
-    """Elleçleme süresi = desi * 0.01 dk. Konsolidasyonda (indir + tekrar yükle) 2x sayılır."""
+    """Elleçleme süresi = desi * 0.01 dk. Konsolidasyonda (indir + tekrar yükle) 2x sayılır.
+    En yakın büyük tam sayıya yuvarlanır. Konsolidasyonda 2x sayılır."""
     sure = desi * ELLECLEME_DAKIKA_PER_DESI
-    return sure * 2 if consolidation else sure
+    sure = sure * 2 if consolidation else sure
+    return math.ceil(sure)
 
 
 
