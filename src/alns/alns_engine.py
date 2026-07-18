@@ -455,6 +455,25 @@ def _completion_datetime(data: ProblemData, legs: list, desi: float):
     return ellecleme_tamamlanma_zamani(son_varis, desi, consolidation=False)
 
 
+# def _completion_datetime(data: ProblemData, legs: list, desi: float):
+#     """SLA için esas alınan an: PDF'e göre araç VARIŞI değil, o TM'deki
+#     elleçlemenin TAMAMLANMA anı. Son bacağın kalkışı+seyir süresiyle varışa
+#     ulaşılır, sonra final destinasyondaki elleçleme süresi (desi × 0.01 dk)
+#     eklenir — bu adım daha önce hiç yapılmıyordu ve büyük yüklerde (binlerce
+#     desi → onlarca dakika/birkaç saat) SLA'yı yapay şekilde "zamanında"
+#     gösteriyordu (bkz. sohbet geçmişi).
+
+#     Ara (relay) bacaklarının kendi elleçlemesi burada AYRICA eklenmiyor -
+#     `next_dispatch_slot` zaten bir sonraki bacağın kalkışını, elleçleme+bekleme
+#     payı bırakarak hesaplıyor (bkz. o fonksiyonun docstring'i); yalnızca NİHAİ
+#     varış noktasındaki elleçleme SLA tamamlanma anını geciktirir."""
+#     zaman = None
+#     for leg in legs:
+#         kalkis = slot_datetime(leg.gun, leg.slot)
+#         seyir = data.route_lookup[(leg.src, leg.dst)][leg.arac_turu]
+#         zaman = varis_zamani(kalkis, seyir)
+#     return ellecleme_tamamlanma_zamani(zaman, desi, consolidation=False)
+
 def try_insert_path(
     state: State,
     hat: tuple,
@@ -509,7 +528,7 @@ def try_insert_path(
     leg_pairs = [
         (stops[i], stops[i + 1], leg_departures[i][0], leg_departures[i][1])
         for i in range(len(stops) - 1)
-    ]
+    ] # Araç bu TM'den bu TM'ye şu günde şu saatte (09:00 veya 17:00) kalkacak.
 
     # Her bacak icin once KIRALIK (marjinal maliyet 0, ucretsiz kapasite) denenir;
     # yoksa SPOT icin en UCUZ (en buyuk kapasiteli degil!) arac turu secilir - bkz.
@@ -660,12 +679,82 @@ def force_insert(state: State, hat, gun, slot, desi, talep_id) -> None:
     state.handling_usage[(dst, varis_g)] = state.handling_usage.get((dst, varis_g), 0.0) + desi
 
     leg = Leg(src, dst, gun, slot, arac_turu, False)
+
+    #eski
+    # varis = varis_zamani(slot_datetime(gun, slot), data.route_lookup[hat][arac_turu])
+    # tamamlanma = ellecleme_tamamlanma_zamani(varis, desi, consolidation=False)
+    
+    #yeni
     tamamlanma = _completion_datetime(data, [leg], desi)
+    
     deadline = sla_deadline(slot_datetime(gun, slot), data.route_lookup[hat]["target_delivery_days"])
     sla_cost = sla_cezasi_tl(desi, gecikme_saat(tamamlanma, deadline))
     state.assignments.append(
         Assignment(hat, gun, slot, desi, (leg,), sla_cost, vehicle_cost, talep_id)
     )
+
+
+def dummy_initial_builder(state, rng, **kwargs):
+    """
+    ALNS döngüsü başlamadan ÖNCE, sistemi sıfır kapasite ihlali ile dolduran 
+    özel 'Başlangıç İnşa' operatörüdür.
+    
+    Konsolidasyonu umursamaz. Eğer bir kargo o gün/slota sığmıyorsa, force_insert 
+    yapmak yerine kargoyu zaman çizelgesinde (timeline) ileriye doğru kaydırarak 
+    yasal boşluk arar.
+    """
+    state = state.copy()
+    items = list(state.unassigned)
+    state.unassigned = []
+    
+    # 1. Kargoları büyükten küçüğe sırala (Greedy/Açgözlü yerleştirme mantığı)
+    # Büyük desileri (Örn: 5000 desi) önce yerleştirmek her zaman daha güvenlidir, 
+    # küçük desiler aralara rahatça sızabilir.
+    items.sort(key=lambda x: x[3], reverse=True)
+    
+    zamanlar = state.data.zaman_sirali  # Bütün (gun, slot) ikililerinin kronolojik listesi
+    
+    for item in items:
+        hat, orj_gun, orj_slot, orj_desi, talep_id = item
+        kalan_desi = orj_desi
+        
+        # Bu kargonun zaman çizelgesinde geldiği (başladığı) indeksi bul
+        baslangic_idx = 0
+        for idx, (g, s) in enumerate(zamanlar):
+            if g == orj_gun and s == orj_slot:
+                baslangic_idx = idx
+                break
+                
+        # 2. Kargoyu yerleştirene kadar zaman çizelgesinde GELECEĞE doğru ilerle
+        for idx in range(baslangic_idx, len(zamanlar)):
+            aktif_gun, aktif_slot = zamanlar[idx]
+            
+            # _insert_chunk fonksiyonu, kargoyu 'aktif' zamana yasal sınırlar içinde yerleştirmeyi dener.
+            # Yerleşen kısımlar araçlara/merkezlere atanır, FİZİKSEL OLARAK SIĞMAYAN miktar geri döner.
+            kalan_desi = _insert_chunk(
+                state, 
+                hat, 
+                aktif_gun, 
+                aktif_slot, 
+                kalan_desi, 
+                rng, 
+                talep_id
+            )
+            
+            # Eğer tüm desi başarılı bir şekilde yerleştiyse (kalan < 0.000001)
+            # Bu kargo için döngüyü kır ve sıradaki kargoya geç.
+            if kalan_desi <= 1e-6:
+                break
+                
+        # 3. KORUMA AĞI: Haftanın Sonuna Geldik ve Hâlâ Sığmadıysa
+        if kalan_desi > 1e-6:
+            # force_insert KULLANMIYORUZ! 
+            # Sistemin toplam donanımı (haftalık kapasitesi) bile bu kargoyu kaldırmaya yetmedi demektir.
+            # Bu durumda kargoyu "Hiç Teslim Edilemedi" olarak unassigned havuzuna geri atıyoruz.
+            # Objective fonksiyonun unassigned kargolara zaten devasa bir SLA cezası kesiyor.
+            state.unassigned.append((hat, orj_gun, orj_slot, kalan_desi, talep_id))
+            
+    return state
 
 
 # ============================================================================
@@ -771,7 +860,7 @@ def low_occupancy_removal(state, rng, **kwargs):
         _remove_assignment(state, a)
         
         # Talebi, Onarıcı (Repair) operatörlerin yeniden alabilmesi için unassigned listesine ekle
-        state.unassigned.append((a.demand_hat, a.demand_gun, a.demand_slot, a.desi))
+        state.unassigned.append((a.demand_hat, a.demand_gun, a.demand_slot, a.desi, a.talep_id))
 
     return state
 
@@ -853,7 +942,7 @@ def shaw_related_removal(state, rng, **kwargs):
         _remove_assignment(state, a)
         
         # Sökülen kargoyu yeniden atanmak (repair) üzere unassigned havuzuna gönder
-        state.unassigned.append((a.demand_hat, a.demand_gun, a.demand_slot, a.desi))
+        state.unassigned.append((a.demand_hat, a.demand_gun, a.demand_slot, a.desi, a.talep_id))
 
     return state
 
@@ -892,17 +981,63 @@ def tm_overload_removal(state: State, rng: rnd.Generator, **kwargs) -> State:
 # ============================================================================
 # Repair operatörleri
 # ============================================================================
+# def greedy_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
+#     state = state.copy()
+#     items = list(state.unassigned)
+#     state.unassigned = []
+#     order = rng.permutation(len(items)) if items else [] # Rastgele karıştırıyor kendi içinde.
+#     for i in order:
+#         hat, gun, slot, desi, talep_id = items[i]
+#         kalan = _insert_chunk(state, hat, gun, slot, desi, rng, talep_id)
+#         if kalan > 1e-6: # Eğer kalan(yerleştirilemeyen) desi miktarı 10^-6'dan büyükse
+#             force_insert(state, hat, gun, slot, kalan, talep_id) # Zorla yerleştir (TM Elleçleme, tır, kapasite kısıtlarını hiçe say.)
+#     return state
+
+
 def greedy_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
+    """
+    Kapasite ihlali KESİNLİKLE yapmayan, sığmayan kargoları zamanda ileri 
+    kaydıran ve hâlâ sığmıyorsa havuzda (unassigned) bırakan yeni onarıcı.
+    """
     state = state.copy()
     items = list(state.unassigned)
     state.unassigned = []
-    order = rng.permutation(len(items)) if items else []
+    
+    # Kargo sırasını rastgele karıştır ki her iterasyonda farklı bir rota ağacı oluşsun
+    order = rng.permutation(len(items)) if items else [] 
+    zamanlar = state.data.zaman_sirali
+    
     for i in order:
-        hat, gun, slot, desi, talep_id = items[i]
-        kalan = _insert_chunk(state, hat, gun, slot, desi, rng, talep_id)
-        if kalan > 1e-6:
-            force_insert(state, hat, gun, slot, kalan, talep_id)
+        hat, orj_gun, orj_slot, orj_desi, talep_id = items[i]
+        kalan_desi = orj_desi
+        
+        # Orijinal kalkış anının indeksini bul
+        baslangic_idx = 0
+        for idx, (g, s) in enumerate(zamanlar):
+            if g == orj_gun and s == orj_slot:
+                baslangic_idx = idx
+                break
+                
+        # Zaman çizelgesinde geleceğe doğru boşluk ara
+        for idx in range(baslangic_idx, len(zamanlar)):
+            aktif_gun, aktif_slot = zamanlar[idx]
+            
+            kalan_desi = _insert_chunk(
+                state, hat, aktif_gun, aktif_slot, kalan_desi, rng, talep_id
+            )
+            
+            # Kargo tamamen yerleştiyse aramayı bırak
+            if kalan_desi <= 1e-6:
+                break
+                
+        # Tüm haftayı taradık ama hâlâ sığmadıysa
+        if kalan_desi > 1e-6:
+            # DİKKAT: force_insert İPTAL EDİLDİ! 
+            # Bunun yerine kargo "atanamadı" olarak havuzda kalır.
+            state.unassigned.append((hat, orj_gun, orj_slot, kalan_desi, talep_id))
+            
     return state
+
 
 
 def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:

@@ -45,6 +45,7 @@ from src.alns.cost_model import spot_vehicle_count  # noqa: E402
 from src.alns.alns_engine import (  # noqa: E402
     ProblemData,
     State,
+    dummy_initial_builder,
     cpsat_hat_repair,
     greedy_repair,
     leg_zaman_cizelgesi,
@@ -159,7 +160,7 @@ data = ProblemData(
 rng = rnd.default_rng(42) # Neden 42 seedini veriyoruz generator'ü oluşturmak için?
 
 initial_state = State(data) 
-initial_state = greedy_repair(initial_state, rng) # Burada neden removal kullanmadan repair yapmış claude?
+initial_state = dummy_initial_builder(initial_state, rng) # Burada neden removal kullanmadan repair yapmış claude?
 initial_obj = initial_state.objective() # mevcut çözümün maliyeti
 print(f"Baslangic (greedy) cozum maliyeti: {initial_obj:,.0f} TL")
 
@@ -182,12 +183,12 @@ alns.add_repair_operator(cpsat_hat_repair, "cpsat_hat_repair")
 # Reddedilen berbat bir sonuç -> 0.5 puan
 # decay -> unutma katsayısı. Eski başarılara takılıp kalmamak için puanlar her iterasyonda %80 korunur.
 
-select = RouletteWheel(scores=[25, 5, 2, 0.5], decay=0.8, num_destroy=3, num_repair=2) 
+select = RouletteWheel(scores=[25, 5, 2, 0.5], decay=0.8, num_destroy=5, num_repair=2) 
 # num_iters tahmini: cpsat_hat_repair en fazla 5 sn, greedy cok daha hizli -
 # ortalama ~2 sn/iterasyon varsayimi (kaba, autofit sicaklik egrisini olceklemek icin yeterli).
 tahmini_iterasyon = max(20, int(ENV_MAX_TIME / 2))
 accept = SimulatedAnnealing.autofit(
-    init_obj=initial_obj, worse=0.08, accept_prob=0.5, num_iters=tahmini_iterasyon
+    init_obj=initial_obj, worse=0.06, accept_prob=0.5, num_iters=tahmini_iterasyon
 )
 stop = MaxRuntime(ENV_MAX_TIME)
 
@@ -195,17 +196,17 @@ stop = MaxRuntime(ENV_MAX_TIME)
 # ayrintili arama logunun ALNS'teki esdegeri (bkz. sohbet gecmisi: "eskiden her
 # saniye/yenisini bulduğunda görünürdü" - ALNS varsayilan motor olduktan sonra
 # bu geri bildirim hic eklenmemisti).
-_ilerleme_baslangic = time.time()
-_ilerleme_sayac = {"n": 0}
+_ilerleme_baslangic = time.time() # Şu anki zaman.
+_ilerleme_sayac = {"n": 0} # Daha iyi bir maliyet buldukca artirilir.
 
 
 def _yeni_en_iyi_bulundu(candidate_state, rng_):
     _ilerleme_sayac["n"] += 1
-    gecen_sn = time.time() - _ilerleme_baslangic
-    print(f"  [{gecen_sn:7.1f} sn] Yeni en iyi #{_ilerleme_sayac['n']}: {candidate_state.objective():,.0f} TL")
+    gecen_sn = time.time() - _ilerleme_baslangic # şu ana kadar ne kadar süre geçti?
+    print(f"[{gecen_sn:7.1f} sn] Yeni en iyi #{_ilerleme_sayac['n']}: {candidate_state.objective():,.0f} TL")
 
 
-alns.on_best(_yeni_en_iyi_bulundu)
+alns.on_best(_yeni_en_iyi_bulundu)# ALNS en iyi maliyeti bulunca bu callback fonksiyonu çağırsın diyoruz.
 
 print(f"ALNS calistiriliyor (bütce: {ENV_MAX_TIME:.0f} sn)...")
 result = alns.iterate(initial_state, select, accept, stop)
