@@ -65,6 +65,27 @@ Gecikmeli Kampanya Etkisi ve Çift Sayım Sorunlarının Çözümü"):
      gradyan/Hessian ve split-arama ağırlığını aynı anda sönümleyen tek
      bir vektör (surge_dampening_alpha_ ile ayarlanır, 0 → kapalı).
 
+Karar-Farkındalıklı Öğrenme (Proxy SPO) — PDF Bölüm 1 ("Karar-Farkındalıklı
+Öğrenme (Proxy SPO) ve Örneklem Ağırlıklandırma Stratejileri"):
+  Taban model (Model 1 — 4-fold ensemble) artık CatBoost'un yerleşik kayıp
+  fonksiyonunu (MultiQuantile) DEĞİŞTİRMEDEN, her fold'un KENDİ train
+  penceresinden (walk-forward, leakage yok) türetilen bir `decision_weight`
+  vektörüyle eğitiliyor — bkz. _compute_decision_regret_weights.
+  Mantık: ALNS'in gerçek maliyeti istatistiksel hata değil, karar
+  pişmanlığıdır (Regret = Cost(x*(ŷ),c) - Cost(x*(c),c)). C++ çekirdeğine
+  dokunmadan bu etkiyi simüle etmek için, o rotanın geçmiş hacim dağılımından
+  (fold içi, sadece o ana kadarki günler) ampirik bir "kapasite" proxy'si
+  (örn. 90. persentil) çıkarılır; kapasiteyi aşan (spot araç riski taşıyan)
+  satırlara aşım miktarı × spot maliyet katsayısıyla orantılı, kapasite
+  altındaki satırlara ise daha düşük (atıl kapasite maliyetine orantılı)
+  bir ağırlık verilir. Ham pişmanlık skorları min-max normalize edilip
+  [1.0, 5.0] aralığına sıkıştırılarak Pool(weight=...) parametresine
+  verilir — CatBoost'un split arama ve gradyan büyüklüğü otomatik olarak
+  bu ağırlıkla ölçeklenir. Ek çalışma süresi maliyeti yoktur (ALNS
+  çözücüsü hiç çağrılmaz — tamamen vektörize Pandas/NumPy ön-işleme).
+  proxy_spo_enabled=False → tamamen kapalı, eski davranışla (weight=None)
+  birebir geriye dönük uyumlu.
+
 Quantile Anlamları (ALNS motoruna):
   q10 → Düşük senaryo  : "En kötümser, ama gerçekçi alt sınır"
   q50 → Medyan         : "En olası talep tahmini"
@@ -465,6 +486,32 @@ class DemandForecaster(BaseForecaster):
         Bu durum uncertainty.py'nin neredeyse her satıra "HIGH" etiketi
         basmasına yol açar. MultiQuantile modellerinde False bırakın.
         Varsayılan: False.
+    surge_relative_cap_alpha : float, optional
+        (bkz. yukarıdaki Faz 2 notu) correction'ı baseline hacmin bir
+        oranıyla sınırlar. None = kapalı. Varsayılan: None.
+    proxy_spo_enabled : bool
+        PDF Bölüm 1 (Karar-Farkındalıklı Öğrenme / Proxy SPO) — True ise,
+        Model 1'in (Taban ensemble) her fold'unda Pool(weight=...)
+        karar-pişmanlığı temelli bir örneklem ağırlığıyla eğitilir (bkz.
+        _compute_decision_regret_weights). False → weight=1.0 (eski
+        davranış, geriye dönük uyumlu). Varsayılan: True.
+    proxy_spo_capacity_quantile : float
+        Rota bazlı ampirik "kapasite" proxy'si için kullanılan persentil
+        (0 < q < 1). Fold'un train penceresindeki geçmiş hacimlerin bu
+        persentili, o rotanın kapasite limiti sayılır — üzerindeki günler
+        spot araç riski taşır. Varsayılan: 0.90.
+    proxy_spo_spot_cost_multiplier : float
+        Kapasiteyi AŞAN satırlarda, aşım miktarına (excess) uygulanan
+        çarpan. Spot araç kiralamanın atıl kapasiteye göre ne kadar
+        pahalı olduğunu yansıtır — yüksek tutulur. Varsayılan: 3.0.
+    proxy_spo_idle_cost_multiplier : float
+        Kapasitenin ALTINDA kalan satırlarda, açığa (deficit) uygulanan
+        çarpan. Atıl kapasitenin nispeten düşük maliyetini yansıtır —
+        spot_cost_multiplier'dan düşük tutulmalıdır. Varsayılan: 1.0.
+    proxy_spo_weight_clip : Tuple[float, float]
+        Ham pişmanlık skorları min-max normalize edildikten sonra
+        sıkıştırılacağı (lo, hi) aralığı — gradyan patlamalarını önler.
+        Varsayılan: (1.0, 5.0).
     logging_enabled : bool
         Detaylı log. Varsayılan: True
     random_state : int, optional
@@ -564,6 +611,11 @@ class DemandForecaster(BaseForecaster):
         surge_calibration_factor: float = 1.0,
         surge_dampening_alpha: float = 2.0,
         surge_relative_cap_alpha: Optional[float] = None,
+        proxy_spo_enabled: bool = True,
+        proxy_spo_capacity_quantile: float = 0.90,
+        proxy_spo_spot_cost_multiplier: float = 3.0,
+        proxy_spo_idle_cost_multiplier: float = 1.0,
+        proxy_spo_weight_clip: Tuple[float, float] = (1.0, 5.0),
         logging_enabled: bool = True,
         random_state: Optional[int] = 42,
         campaign_release_alpha: float = 5.25,
@@ -606,6 +658,17 @@ class DemandForecaster(BaseForecaster):
         # hacmin bir oranıyla sınırlar. None = kapalı (varsayılan, geriye
         # dönük uyumlu) — retrain gerekmeden backtest'te elle de atanabilir.
         self.surge_relative_cap_alpha_ = surge_relative_cap_alpha
+
+        # PDF Bölüm 1 — Karar-Farkındalıklı Öğrenme (Proxy SPO): Model 1'in
+        # (Taban ensemble) her fold'unda Pool(weight=...) olarak verilecek
+        # karar-pişmanlığı temelli örneklem ağırlığını kontrol eder — bkz.
+        # _compute_decision_regret_weights. proxy_spo_enabled_=False →
+        # weight=1.0 (eski davranış, geriye dönük uyumlu).
+        self.proxy_spo_enabled_ = proxy_spo_enabled
+        self.proxy_spo_capacity_quantile_ = proxy_spo_capacity_quantile
+        self.proxy_spo_spot_cost_multiplier_ = proxy_spo_spot_cost_multiplier
+        self.proxy_spo_idle_cost_multiplier_ = proxy_spo_idle_cost_multiplier
+        self.proxy_spo_weight_clip_ = proxy_spo_weight_clip
 
         # Faz 2b — Segment Scale: correction'ı hacim aralığına göre
         # çarpımsal olarak ölçekler (clip DEĞİL). Format: [(low, high, scale), ...]
@@ -832,6 +895,115 @@ class DemandForecaster(BaseForecaster):
 
         self.surge_trigger_columns_used_ = used
         return mask
+
+    def _compute_decision_regret_weights(
+        self,
+        X: pd.DataFrame,
+        y: pd.Series,
+    ) -> np.ndarray:
+        """
+        PDF Bölüm 1 — Karar-Farkındalıklı Öğrenme (Proxy SPO) ve Örneklem
+        Ağırlıklandırma Stratejileri.
+
+        Neden: CatBoost'un C++ çekirdeğine (özel objective) dokunmadan,
+        ALNS'in gerçek maliyetini (Decision Regret) Taban modele (Model 1)
+        dolaylı olarak öğretir. Rapor'daki asimetrik "haberci problemi"
+        (newsvendor) mantığı: eksik tahmin → spot araç kiralama (pahalı),
+        aşırı tahmin → sadece atıl kapasite (ucuz). Özel bir kayıp
+        fonksiyonu YAZMAK yerine (ALNS parçalı-sabit/ayrık olduğu için
+        gradyanı her yerde sıfır — bkz. modül docstring'i), eğitim
+        örneklemleri bu asimetrik pişmanlığa ORANTILI olarak yeniden
+        ağırlıklandırılır (sample weighting) — ALNS çözücüsü hiç
+        çağrılmadığı için çalışma süresine ~0 saniye eklenir.
+
+        ⚠️  Leakage önlemi: bu fonksiyon SADECE fit() içindeki fold
+        döngüsünden, o fold'un KENDİ train penceresiyle (X_fold_train /
+        y_fold_train — val haftasından önceki tüm günler) çağrılmalıdır.
+        Kapasite proxy'si böylece yalnızca "o ana kadar bilinen" geçmişten
+        türetilir; gelecekteki fold'ların hacim dağılımı sızmaz.
+
+        Adımlar
+        -------
+        1. Rota Bazlı Kapasite Proxy'si: Gerçek fiziksel araç kapasitesi
+           veride yer almadığından (bkz. features.py Bölüm 3 —
+           unconstrain_censored_demand ile aynı ampirik yaklaşım), her
+           rotanın (group_column) bu fold'daki geçmiş hacimlerinin
+           `proxy_spo_capacity_quantile_` persentili (varsayılan %90)
+           o rotanın kapasite proxy'si (c) sayılır. Rota için yeterli
+           gözlem yoksa (< 5 satır) global persentile düşülür.
+        2. Asimetrik Karar Pişmanlığı (Proxy Regret): y > c ise
+           regret = (y - c) × spot_cost_multiplier (spot araç riski —
+           yüksek ceza); y ≤ c ise regret = (c - y) × idle_cost_multiplier
+           (atıl kapasite — düşük, temel ceza).
+        3. Normalizasyon: Ham pişmanlık skorları min-max ile
+           `proxy_spo_weight_clip_` (varsayılan [1.0, 5.0]) aralığına
+           sıkıştırılır — CatBoost'un gradyan/split-arama ağırlığı bu
+           dizi ile ölçeklenir (Pool(weight=...)).
+
+        Returns
+        -------
+        np.ndarray
+            Satır başına ağırlık (len(y),). proxy_spo_enabled_=False ise
+            veya n==0 ise tamamı 1.0 (eski davranışla geriye dönük uyumlu).
+        """
+        n = len(y)
+        weights = np.ones(n, dtype=float)
+
+        if not self.proxy_spo_enabled_ or n == 0:
+            return weights
+
+        y_arr = y.to_numpy(dtype=float) if isinstance(y, pd.Series) else np.asarray(y, dtype=float)
+        q = float(self.proxy_spo_capacity_quantile_)
+
+        # --- 1. Rota bazlı ampirik kapasite proxy'si (sadece bu fold'un train'i) ---
+        if self.group_column and self.group_column in X.columns:
+            groups = X[self.group_column].values
+            capacity = np.empty(n, dtype=float)
+            global_cap = float(np.quantile(y_arr, q))
+            for grp in pd.unique(groups):
+                grp_mask = groups == grp
+                grp_vals = y_arr[grp_mask]
+                # Az veri içeren rotalarda gürültülü bir persentile güvenmek
+                # yerine global persentile düş (surge dampening'deki
+                # global_fallback deseniyle tutarlı).
+                capacity[grp_mask] = (
+                    float(np.quantile(grp_vals, q)) if len(grp_vals) >= 5 else global_cap
+                )
+        else:
+            capacity = np.full(n, float(np.quantile(y_arr, q)), dtype=float)
+
+        # --- 2. Asimetrik Proxy Regret (haberci problemi mantığı) ---
+        is_over = y_arr > capacity
+        excess = np.maximum(0.0, y_arr - capacity)     # spot araç riski
+        deficit = np.maximum(0.0, capacity - y_arr)     # atıl kapasite
+
+        regret = np.where(
+            is_over,
+            excess * float(self.proxy_spo_spot_cost_multiplier_),
+            deficit * float(self.proxy_spo_idle_cost_multiplier_),
+        )
+
+        # --- 3. Min-max normalizasyon + clip (gradyan patlaması önlemi) ---
+        lo, hi = self.proxy_spo_weight_clip_
+        r_min, r_max = float(regret.min()), float(regret.max())
+        if (r_max - r_min) < 1e-9:
+            weights = np.full(n, lo, dtype=float)
+        else:
+            norm = (regret - r_min) / (r_max - r_min)
+            weights = lo + norm * (hi - lo)
+
+        if self.logging_enabled:
+            n_over = int(is_over.sum())
+            logger.info(
+                f"   🎯 Proxy SPO (Karar Pişmanlığı Ağırlıklandırması): "
+                f"{n_over}/{n} satır kapasite-proxy üzeri (spot araç riski) — "
+                f"ort. ağırlık={float(np.mean(weights)):.3f}, "
+                f"max ağırlık={float(np.max(weights)):.3f} "
+                f"(capacity_q={q}, spot_mult={self.proxy_spo_spot_cost_multiplier_}, "
+                f"idle_mult={self.proxy_spo_idle_cost_multiplier_})."
+            )
+
+        return weights
 
     def _compute_surge_dampening_weights(
         self,
@@ -1479,7 +1651,12 @@ class DemandForecaster(BaseForecaster):
             X_fold_train = X_fold_train[self.feature_names_]
             X_fold_val   = X_fold_val[self.feature_names_]
 
-            fold_train_pool = Pool(data=X_fold_train, label=y_fold_train, cat_features=self.cat_features_)
+            fold_train_pool = Pool(
+                data=X_fold_train,
+                label=y_fold_train,
+                cat_features=self.cat_features_,
+                weight=self._compute_decision_regret_weights(X_fold_train, y_fold_train),
+            )
             fold_val_pool   = Pool(data=X_fold_val,   label=y_fold_val,   cat_features=self.cat_features_)
 
             # v4: Ortadaki kuantili (index 1) sabit 0.5 yerine Optuna'nın bulduğu
@@ -2556,6 +2733,11 @@ class DemandForecaster(BaseForecaster):
             "surge_min_rows":          self.surge_min_rows,
             "surge_calibration_factor": getattr(self, "surge_calibration_factor_", 1.0),
             "surge_dampening_alpha":    getattr(self, "surge_dampening_alpha_", 0.0),
+            "proxy_spo_enabled":            getattr(self, "proxy_spo_enabled_", True),
+            "proxy_spo_capacity_quantile":  getattr(self, "proxy_spo_capacity_quantile_", 0.90),
+            "proxy_spo_spot_cost_multiplier": getattr(self, "proxy_spo_spot_cost_multiplier_", 3.0),
+            "proxy_spo_idle_cost_multiplier": getattr(self, "proxy_spo_idle_cost_multiplier_", 1.0),
+            "proxy_spo_weight_clip":        getattr(self, "proxy_spo_weight_clip_", (1.0, 5.0)),
         })
         return base_params
 
@@ -2580,6 +2762,10 @@ class DemandForecaster(BaseForecaster):
             f"  Outlier Clip    : IQR × {self.outlier_clip_multiplier} ({'kapalı' if self.outlier_clip_multiplier == 0 else 'açık'})",
             f"  Log Dönüşümü    : {'⚠️  log1p (MultiQuantile ile önerilmez!)' if self.log_transform_enabled else '✅ kapalı (MultiQuantile için doğru)'}",
             f"  Kantiller       : q10 / q50 / q90",
+            f"  Proxy SPO (Taban): {'✅ aktif — Pool(weight=karar_pişmanlığı)' if getattr(self, 'proxy_spo_enabled_', True) else '⛔ kapalı (weight=1.0)'} "
+            f"(cap_q={getattr(self, 'proxy_spo_capacity_quantile_', 0.90)}, "
+            f"spot_mult={getattr(self, 'proxy_spo_spot_cost_multiplier_', 3.0)}, "
+            f"clip={getattr(self, 'proxy_spo_weight_clip_', (1.0, 5.0))})",
             f"  Surge/Residual  : {'✅ eğitildi (Model 2, τ=' + ('0.95' if '1700' in self.target_column else '0.85') + ' [dinamik, hedefe göre]' + ')' if getattr(self, 'surge_model_', None) is not None else ('⏳ atlandı/kapalı' if self.surge_residual_enabled else '⛔ kapalı (surge_residual_enabled=False)')}",
             f"  Surge Kalibrasyon: {getattr(self, 'surge_calibration_factor_', 1.0)}x" + (" (varsayılan, değiştirilmedi)" if getattr(self, 'surge_calibration_factor_', 1.0) == 1.0 else " ⚠️ manuel ayarlandı"),
             f"  Surge Ortogonalleştirme: {len(getattr(self, 'surge_feature_names_', []))} özellik "

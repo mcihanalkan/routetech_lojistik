@@ -11,6 +11,10 @@ Performans Mimarisi:
   - Dönüşüm maliyeti (Polars → Pandas) benchmark'ta < 50ms — ihmal edilebilir.
 
 Strateji:
+  Sansürlenmiş Talep     : Rota bazında (her hedef sütun için AYRI AYRI)
+                            14 günlük rolling_max ile sahte tavan (false
+                            ceiling) tespiti + %5 şişirme — tüm lag/rolling/
+                            backlog adımlarından ÖNCE çalışır (PDF Bölüm 3)
   Zaman özellikleri      : weekday, month, quarter, is_weekend, week_of_year
   Lag özellikleri        : lag_1, lag_7, lag_14, lag_30   (leakage riski sıfır)
   Tatil özellikleri      : `holidays` kütüphanesi — TR resmi + dini bayram
@@ -1025,6 +1029,126 @@ def add_organic_backlog_features(
 
 
 # ---------------------------------------------------------------------------
+# 2.9 Sansürlenmiş Talep (Censored Demand) Kısıtlarının Kaldırılması
+# ---------------------------------------------------------------------------
+
+def unconstrain_censored_demand(
+    df: pl.DataFrame,
+    target_columns: Union[str, List[str]],
+    group_column: Optional[str],
+    window: int = 14,
+    min_volume_threshold: float = 50.0,
+    cap_ratio: float = 0.98,
+    inflation_factor: float = 1.05,
+) -> pl.DataFrame:
+    """
+    Sahte tavanları (kapasiteye takılıp eksik yazılmış kargoları) düzeltir.
+
+    SOTA raporu (Bölüm 3 — Unconstraining) — bu adım build_feature_matrix
+    içinde Adım 1'den HEMEN SONRA, Adım 2'den (zaman özellikleri) ve
+    özellikle Organik Backlog / Lag / Rolling / Momentum adımlarından
+    ÖNCE çalıştırılır. Aksi halde tüm geçmişe-bakan istatistikler
+    (organic_activity_ratio*, lag_*, rolling_mean_*, ema_*, ...)
+    sansürlenmiş/kırpılmış hacimlerden beslenir ve q90 tahmini kalıcı
+    olarak eksik kalır (false ceiling). Hedef sütun(lar) burada
+    kendisi düzeltildiği için, ardından hesaplanacak her özellik
+    otomatik olarak "kısıtsız" (unconstrained) talebi yansıtır.
+
+    Wide format (09:00 / 17:00) desteği
+    -------------------------------------
+    target_columns birden fazla sütun içeriyorsa (örn.
+    ["toplam_desi_0900", "toplam_desi_1700"]), her sütun KENDİ rota bazlı
+    geçmişine göre AYRI AYRI kontrol edilir (09:00 kesimi 17:00 kesiminin
+    tavanından etkilenmez). Üretilen bayrak sütunu da slot soneki alır:
+    is_demand_censored_0900, is_demand_censored_1700. Tek sütun verilirse
+    eski sütun adı (is_demand_censored) korunur.
+
+    Mantık
+    ------
+    1. Yerel Tavan   : Rota/grup bazında (`over(group_column)`) son
+                       `window` günün (bugün dahil) hareketli maksimumu
+                       (`rolling_max`) hesaplanır.
+    2. Sansür Tespiti: Bir günün hacmi hem gürültü eşiğinin üzerindeyse
+                       (`> min_volume_threshold`, mikro dalgalanmaları
+                       dışlamak için) HEM DE o günün yerel tavanının
+                       `cap_ratio` (örn. %98) katına eşit veya
+                       üzerindeyse, bu gün kapasiteye çarpıp
+                       sansürlenmiş kabul edilir.
+    3. Düzeltme      : Sansürlü olarak işaretlenen günlerin hedef
+                       değeri `inflation_factor` (örn. 1.05) ile
+                       çarpılarak sahte tavan kaldırılır (%5 şişirme).
+
+    Parameters
+    ----------
+    df                    : Polars DataFrame (tarihe göre sıralı olmalı)
+    target_columns        : Düzeltilecek hedef sütun(lar) — str veya
+                             List[str] (örn. ["toplam_desi_0900", "toplam_desi_1700"])
+    group_column          : Rota/grup sütunu (örn. "rota", "TM_ID"); None ise tek seri
+    window                : Yerel tavanın hesaplanacağı gün penceresi
+    min_volume_threshold  : Mikro gürültüyü dışlamak için alt hacim eşiği
+    cap_ratio             : Tavana "değme" oranı (0.98 → %98)
+    inflation_factor      : Sansürlü günlere uygulanacak şişirme çarpanı
+
+    Returns
+    -------
+    pl.DataFrame
+        Her `target_columns` üyesi sansürsüzleştirilmiş (unconstrained)
+        değerlerle güncellenmiş olarak döner. Ek olarak her hedef için
+        `is_demand_censored{suffix}` (Int8, 0/1) bayrak sütunu eklenir
+        (denetlenebilirlik için).
+    """
+    target_cols: List[str] = [target_columns] if isinstance(target_columns, str) else list(target_columns)
+
+    for tcol in target_cols:
+        if tcol not in df.columns:
+            logger.warning(
+                f"⚠️  '{tcol}' bulunamadı — unconstrain_censored_demand() bu sütun için atlandı."
+            )
+            continue
+
+        # Tek sütunda eski isim korunur; birden fazla sütunda slot soneki eklenir
+        # (lag_/rolling_ ile aynı '_0900' / '_1700' desenine uyar).
+        if len(target_cols) <= 1:
+            suffix = ""
+        else:
+            parts = tcol.rsplit("_", 1)
+            suffix = f"_{parts[-1]}" if len(parts) > 1 else f"_{tcol}"
+
+        rolling_max_expr = pl.col(tcol).rolling_max(window_size=window, min_samples=1)
+        if group_column and group_column in df.columns:
+            rolling_max_expr = rolling_max_expr.over(group_column)
+
+        local_cap_col = f"_local_cap_{window}{suffix}"
+        df = df.with_columns(rolling_max_expr.alias(local_cap_col))
+
+        is_censored = (
+            (pl.col(tcol) > min_volume_threshold)
+            & (pl.col(tcol) >= cap_ratio * pl.col(local_cap_col))
+        )
+
+        flag_col = f"is_demand_censored{suffix}"
+        df = df.with_columns([
+            is_censored.cast(pl.Int8).alias(flag_col),
+            pl.when(is_censored)
+              .then(pl.col(tcol) * inflation_factor)
+              .otherwise(pl.col(tcol))
+              .alias(tcol),
+        ])
+
+        n_censored = int(df.select(pl.col(flag_col).sum()).item())
+        df = df.drop(local_cap_col)
+
+        logger.info(
+            f"✅ Sansürlenmiş talep düzeltmesi (unconstraining) uygulandı: "
+            f"{n_censored} gün sahte tavana takılmış olarak işaretlendi ve "
+            f"×{inflation_factor} ile şişirildi (target='{tcol}', "
+            f"window={window}, cap_ratio={cap_ratio})."
+        )
+
+    return df
+
+
+# ---------------------------------------------------------------------------
 # 3. Lag (Gecikme) Özellikleri
 # ---------------------------------------------------------------------------
 
@@ -1463,6 +1587,10 @@ def build_feature_matrix(
 
     Adım sırası (data leakage riskine göre):
       1. Pandas → Polars dönüşümü + tarih sıralaması
+      1.5 Sansürlenmiş Talep (Censored Demand) düzeltmesi (her hedef sütun
+                                  için AYRI AYRI, rota bazlı 14 günlük
+                                  rolling_max ile sahte tavan tespiti +
+                                  %5 şişirme — tüm sonraki adımlardan ÖNCE)
       2. Zaman özellikleri      (mevcut satırdan, leakage yok)
       3. Tatil özellikleri      (mevcut tarihten, leakage yok)
       3.5 Kampanya özellikleri   (e-ticaret zirveleri + arife, leakage yok)
@@ -1545,6 +1673,17 @@ def build_feature_matrix(
     # Polars tarafında da datetime tipini garantiye al
     pl_df = pl_df.with_columns(
         pl.col(date_column).cast(pl.Datetime).alias(date_column)
+    )
+
+    # --- Adım 1.5: Sansürlenmiş Talep (Censored Demand) Düzeltmesi ---
+    # KRİTİK: Organik Backlog (3.8) / Lag (5) / Rolling (6) / Momentum (6.2)
+    # adımlarından ÖNCE çalıştırılmalı — aksi halde tüm geçmişe-bakan
+    # istatistikler sahte tavana (false ceiling) takılmış kırpılmış
+    # hacimlerden beslenir (PDF Bölüm 3 — Unconstraining). Wide format'ta
+    # her hedef sütun (09:00/17:00) KENDİ rota bazlı geçmişine göre ayrı
+    # ayrı düzeltilir.
+    pl_df = unconstrain_censored_demand(
+        pl_df, target_columns=target_cols, group_column=group_column
     )
 
     # --- Adım 2: Zaman özellikleri ---
