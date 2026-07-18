@@ -37,7 +37,7 @@ Kural:
 """
 
 import logging
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict
 
 import numpy as np
 import pandas as pd
@@ -1324,6 +1324,159 @@ def add_rolling_features(
 
 
 # ---------------------------------------------------------------------------
+# 4.1 Rota Bazlı Hedef Ölçeklendirme (Target Normalization) — PDF Strateji 2
+# ---------------------------------------------------------------------------
+
+DEFAULT_TARGET_SCALE_WINDOW_DAYS: int = 14
+DEFAULT_TARGET_SCALE_MIN: float = 1.0
+
+
+def add_scale_invariant_targets(
+    df: pl.DataFrame,
+    target_columns: Union[str, List[str]],
+    group_column: Optional[str],
+    window_days: int = DEFAULT_TARGET_SCALE_WINDOW_DAYS,
+    min_scale: float = DEFAULT_TARGET_SCALE_MIN,
+) -> pl.DataFrame:
+    """
+    PDF Strateji 2 — Rota Bazlı Hedef Ölçeklendirme (Target Normalization).
+
+    Neden: CatBoost'un Simetrik Ağaç (Oblivious Tree) mimarisi, bir
+    seviyedeki TÜM düğümler için ortak bir ayrım (split) kararı vermek
+    zorundadır (bkz. forecasters.py::_compute_decision_regret_weights
+    docstring'i — "Su Yatağı Etkisi"). Ayrım kriteri mutlak hata/varyans
+    azalmasına göre belirlendiğinden, 30.000 hacimli bir rotadaki %5'lik
+    bir iyileşme, 100 hacimli bir rotadaki %90'lık bir iyileşmeden çok
+    daha büyük bir gradyan sinyali üretir; ağaç yapısı büyük rotaların
+    dinamiklerine göre şekillenir ve küçük rotaları ihmal eder.
+
+    Çözüm: Hedefi, rotanın kendi SIZINTISIZ (yalnızca geçmiş) W-günlük
+    hareketli ortalamasına ("scale_factor") bölmek. Bu, 30.000 hacimli
+    ve 100 hacimli rotaları ağaç gözünde AYNI ölçeğe (≈1.0 civarı bir
+    "çarpan") getirir — ağaç artık mutlak hacim yerine mevsimsellik/
+    eşdeğişken kaynaklı ORANSAL sapmayı öğrenir (bkz. modül docstring'i,
+    "Rota Tipi" karşılaştırma tablosu).
+
+    Kantil Regresyonunun Eşdeğişkenlik (Equivariance) Özelliği:
+    Q_tau(Y/c) = Q_tau(Y)/c  (c > 0 sabit bir skaler için). CatBoost'un
+    MultiQuantile (Pinball loss) kayıp fonksiyonu bu özelliği sağladığından,
+    scaled hedef üzerinden eğitilen q10/q50/q90 tahminleri, çıkarım
+    (inference) aşamasında AYNI scale_factor ile geri çarpılarak
+    (un-scaling) orijinal (desi) uzayında kusursuz ve teorik olarak doğru
+    kantil aralıkları elde edilir — bkz. forecasters.py predict() /
+    _predict_single_batch() (un-scale adımı).
+
+    ⚠️  Leakage Güvencesi: scale_factor, shift(1) (bugünü hariç tutar) +
+    rolling_mean(window_size=window_days, min_samples=1) ile SADECE
+    geçmiş W güne bakar — add_rolling_features() ile BİREBİR AYNI
+    shift+rolling deseni kullanılır (bkz. yukarısı), dolayısıyla aynı
+    leakage garantisini taşır.
+
+    Alt Eşik (min_scale): Lojistik verilerinde sıklıkla karşılaşılan aşırı
+    düşük hacimli günlerde (scale_factor ≈ 0) bölme işleminin patlayıp
+    (division blow-up) scaled hedefi ve dolayısıyla gradyanları
+    ıraksatmasını (divergence) önlemek için scale_factor `min_scale`
+    (varsayılan 1.0) altına düşemez.
+
+    Wide format (09:00 / 17:00) desteği
+    -------------------------------------
+    target_columns birden fazla sütun içeriyorsa, her hedef için AYRI AYRI
+    scale_factor VE {hedef}_scaled üretilir, sütun adına slot soneki
+    eklenir:
+      scale_factor_0900, toplam_desi_0900_scaled, ...
+      scale_factor_1700, toplam_desi_1700_scaled, ...
+    Tek hedef sütun verilirse sonek yok: scale_factor, {target}_scaled
+    (eski/legacy tek-serili akışla geriye dönük uyumlu).
+
+    Parameters
+    ----------
+    df             : Polars DataFrame (date'e göre sıralı olmalı)
+    target_columns : Hedef sütun adı (str) veya sütun listesi (List[str])
+    group_column   : Grup (rota) sütunu; None ise tek seri
+    window_days    : Sızıntısız hareketli ortalama pencere uzunluğu (gün)
+    min_scale      : scale_factor için alt eşik (division blow-up önlemi)
+
+    Returns
+    -------
+    pl.DataFrame
+        Girdi df + her hedef için `scale_factor{suffix}` ve
+        `{hedef}_scaled{suffix}` sütunları eklenmiş hali. Orijinal hedef
+        sütunları HİÇBİR ŞEKİLDE değiştirilmez — ham (raw) ölçekte
+        kapasite proxy'si / regret / metrik hesapları bu sütunlara
+        bağımlı kalmaya devam eder (bkz. _compute_decision_regret_weights).
+    """
+    target_cols: List[str] = [target_columns] if isinstance(target_columns, str) else list(target_columns)
+
+    # --- 1. Ham (sızıntısız) scale_factor: shift(1) + rolling_mean ---
+    scale_exprs = []
+    scale_alias_map: Dict[str, str] = {}
+    for tcol in target_cols:
+        suffix = _feature_suffix(tcol, target_cols)
+        scale_alias = f"scale_factor{suffix}"
+        scale_alias_map[tcol] = scale_alias
+        shifted = pl.col(tcol).shift(1)
+
+        if group_column and group_column in df.columns:
+            scale_expr = (
+                shifted
+                .rolling_mean(window_size=window_days, min_samples=1)
+                .over(group_column)
+                .alias(scale_alias)
+            )
+        else:
+            scale_expr = (
+                shifted
+                .rolling_mean(window_size=window_days, min_samples=1)
+                .alias(scale_alias)
+            )
+        scale_exprs.append(scale_expr)
+
+    df = df.with_columns(scale_exprs)
+
+    # --- 2. İlk günler (rolling geçmişi olmayan satırlar) için doldurma + ---
+    #        alt eşik (division blow-up önlemi) ---
+    fill_and_clip_exprs = []
+    for tcol in target_cols:
+        scale_alias = scale_alias_map[tcol]
+
+        # Global (tüm veri seti) ortalaması — rotanın hiç geçmişi yoksa
+        # (fold'un ilk günü / yeni açılan rota) düşülecek son çare fallback.
+        # Diğer fonksiyonlardaki (organic backlog, proxy-spo capacity)
+        # "global_fallback" deseniyle tutarlı.
+        _global_mean = df.select(pl.col(tcol).mean()).item()
+        global_fallback = float(_global_mean) if _global_mean is not None else min_scale
+
+        if group_column and group_column in df.columns:
+            filled = (
+                pl.col(scale_alias)
+                .fill_null(strategy="forward")
+                .over(group_column)
+                .fill_null(global_fallback)
+            )
+        else:
+            filled = pl.col(scale_alias).fill_null(strategy="forward").fill_null(global_fallback)
+
+        clipped = pl.when(filled < min_scale).then(min_scale).otherwise(filled).alias(scale_alias)
+        fill_and_clip_exprs.append(clipped)
+
+    df = df.with_columns(fill_and_clip_exprs)
+
+    # --- 3. Ölçeklenmiş hedef: volume / scale_factor ---
+    scaled_exprs = []
+    produced_names: List[str] = []
+    for tcol in target_cols:
+        scale_alias = scale_alias_map[tcol]
+        scaled_alias = f"{tcol}_scaled"
+        scaled_exprs.append((pl.col(tcol) / pl.col(scale_alias)).alias(scaled_alias))
+        produced_names += [scale_alias, scaled_alias]
+
+    df = df.with_columns(scaled_exprs)
+
+    logger.debug(f"✅ Rota Bazlı Hedef Ölçeklendirme eklendi (Polars): {produced_names}")
+    return df
+
+
+# ---------------------------------------------------------------------------
 # 4.2 Kısa Vadeli Momentum (İvme) Özellikleri
 # ---------------------------------------------------------------------------
 
@@ -1566,6 +1719,9 @@ def build_feature_matrix(
     drop_na: bool = True,
     campaign_release_alpha: float = 5.25,
     campaign_max_release_days: int = 6,
+    enable_target_scaling: bool = False,
+    target_scale_window_days: int = DEFAULT_TARGET_SCALE_WINDOW_DAYS,
+    target_scale_min: float = DEFAULT_TARGET_SCALE_MIN,
 ) -> pd.DataFrame:
     """
     Tüm feature engineering adımlarını sırayla uygulayan ana fonksiyon.
@@ -1605,6 +1761,13 @@ def build_feature_matrix(
       4. Spatio-temporal        (grup × zaman etkileşimi)
       5. Lag özellikleri        (her hedef sütun için AYRI AYRI, shift() ile leakage yok)
       6. Rolling istatistikler  (her hedef sütun için AYRI AYRI, shift(1) + rolling, leakage yok)
+      6.1 Rota Bazlı Hedef Ölçeklendirme (Target Normalization, PDF Strateji 2 —
+                                  opsiyonel, enable_target_scaling=True ise):
+                                  her hedef sütun için AYRI AYRI, sızıntısız
+                                  W-günlük rolling ortalamaya (scale_factor)
+                                  bölünerek {hedef}_scaled üretilir. Orijinal
+                                  hedef sütunları DEĞİŞMEZ — yalnızca ek
+                                  sütunlar eklenir (bkz. add_scale_invariant_targets).
       6.2 Momentum (ivme)       (ema_3, momentum_ratio_3_14 — her hedef sütun için AYRI
                                   AYRI, shift(1) tabanlı, leakage yok; kısa vadeli trend
                                   kırılmalarını rolling_mean'in gecikmesi olmadan yakalar)
@@ -1638,6 +1801,14 @@ def build_feature_matrix(
     rolling_windows  : Rolling pencere boyutları
     holiday_lead_days: Tatil arifesi kaç gün önceden başlasın
     drop_na          : Lag'den kaynaklanan NaN satırları at (varsayılan: True)
+    enable_target_scaling    : True ise PDF Strateji 2 (Rota Bazlı Hedef
+                                Ölçeklendirme) uygulanır — her hedef için
+                                `scale_factor{suffix}` ve `{hedef}_scaled{suffix}`
+                                sütunları eklenir (varsayılan: False — geriye
+                                dönük uyumluluk; DemandForecaster kendi
+                                target_scaling_enabled_ bayrağıyla açar).
+    target_scale_window_days : Sızıntısız hedef-ölçekleme rolling penceresi (gün).
+    target_scale_min         : scale_factor alt eşiği (division blow-up önlemi).
 
     Returns
     -------
@@ -1746,6 +1917,22 @@ def build_feature_matrix(
     pl_df = add_rolling_features(
         pl_df, target_cols, group_column, windows=rolling_windows
     )
+
+    # --- Adım 6.1: Rota Bazlı Hedef Ölçeklendirme (PDF Strateji 2) ---
+    # Adım 6'dan HEMEN sonra çalışır çünkü add_rolling_features ile birebir
+    # aynı shift(1)+rolling_mean(min_samples=1) deseninden faydalanır — bu
+    # noktada hedef sütunları hâlâ Adım 1.5'te (Censored Demand) düzeltilmiş
+    # "gerçek" (unconstrained) hacimlerdir; sonraki adımlar (momentum,
+    # cross-lag, hub/graph/hierarchical) bu sıradan etkilenmez çünkü onlar
+    # hedef sütunların HAM (orijinal) haline bakar, scaled kopyasına değil.
+    if enable_target_scaling:
+        pl_df = add_scale_invariant_targets(
+            pl_df,
+            target_cols,
+            group_column,
+            window_days=target_scale_window_days,
+            min_scale=target_scale_min,
+        )
 
     # --- Adım 6.2: Kısa Vadeli Momentum (İvme) Özellikleri ---
     # lag_14/lag_30 ve rolling_mean_7/14 geniş pencereden baktığı için ani

@@ -99,6 +99,9 @@ Asimetrik Kayıp Mantığı:
 
 import pandas as pd
 import numpy as np
+import polars as pl  # PDF Bölüm 1 / Strateji 1 — Ters Hacim Ağırlıklandırması
+                      # (Gradient Equalization) için sızıntısız rolling-mean
+                      # hesaplaması; bkz. _compute_decision_regret_weights.
 import logging
 import time
 import joblib
@@ -616,6 +619,12 @@ class DemandForecaster(BaseForecaster):
         proxy_spo_spot_cost_multiplier: float = 3.0,
         proxy_spo_idle_cost_multiplier: float = 1.0,
         proxy_spo_weight_clip: Tuple[float, float] = (1.0, 5.0),
+        gradient_equalization_enabled: bool = True,
+        gradient_equalization_window_days: int = 14,
+        gradient_equalization_eps: float = 1.0,
+        target_scaling_enabled: bool = True,
+        target_scale_window_days: int = 14,
+        target_scale_min: float = 1.0,
         logging_enabled: bool = True,
         random_state: Optional[int] = 42,
         campaign_release_alpha: float = 5.25,
@@ -669,6 +678,36 @@ class DemandForecaster(BaseForecaster):
         self.proxy_spo_spot_cost_multiplier_ = proxy_spo_spot_cost_multiplier
         self.proxy_spo_idle_cost_multiplier_ = proxy_spo_idle_cost_multiplier
         self.proxy_spo_weight_clip_ = proxy_spo_weight_clip
+
+        # PDF Bölüm 1 / Strateji 1 — Ters Hacim Ağırlıklandırması (Gradient
+        # Equalization): büyük hacimli rotaların Proxy SPO pişmanlığının
+        # (regret) küçük rotaları "gradyan açlığına" (gradient starvation)
+        # sürüklemesini önlemek için, min-max normalizasyonundan ÖNCE ham
+        # regret skorları rotanın W-günlük (varsayılan 14) sızıntısız
+        # hareketli ortalama hacminin ters kareköküyle çarpılır — bkz.
+        # _compute_decision_regret_weights. enabled_=False → eski davranış
+        # (geriye dönük uyumlu, ek adım atlanır).
+        self.gradient_equalization_enabled_ = gradient_equalization_enabled
+        self.gradient_equalization_window_days_ = gradient_equalization_window_days
+        self.gradient_equalization_eps_ = gradient_equalization_eps
+
+        # PDF Bölüm 1 / Strateji 2 — Rota Bazlı Hedef Ölçeklendirme (Target
+        # Normalization): CatBoost'un düğüm ayrımlarını mutlak hacim yerine
+        # rotanın kendi geçmişine göre ORANSAL sapma üzerinden yapmasını
+        # sağlar (bkz. features.py::add_scale_invariant_targets). Yalnızca
+        # K-Fold ensemble (Model 1) eğitimini etkiler — Proxy SPO/Gradient
+        # Equalization ağırlıkları, clip/skewness/campaign-multiplier gibi
+        # tüm diğer hesaplamalar HER ZAMAN ham (raw) hacim üzerinde kalır.
+        # enabled_=False → eski davranış (geriye dönük uyumlu). Etkin olup
+        # olmadığı ve kullanılacak sütun adları fit()/_engineer_features()
+        # sırasında df_features'ta gerçekten üretilip üretilmediğine göre
+        # runtime'da belirlenir (bkz. self._target_scaling_active_).
+        self.target_scaling_enabled_ = target_scaling_enabled
+        self.target_scale_window_days_ = target_scale_window_days
+        self.target_scale_min_ = target_scale_min
+        self._target_scaling_active_ = False
+        self._scale_factor_col_ = None
+        self._scaled_target_col_ = None
 
         # Faz 2b — Segment Scale: correction'ı hacim aralığına göre
         # çarpımsal olarak ölçekler (clip DEĞİL). Format: [(low, high, scale), ...]
@@ -785,6 +824,16 @@ class DemandForecaster(BaseForecaster):
         if is_0900_model:
             drop_cols.append(self._CROSS_LAG_0900_COL)
 
+        # PDF Strateji 2 — Rota Bazlı Hedef Ölçeklendirme: scale_factor_*/
+        # *_scaled sütunları X'in bir PARÇASI OLMAMALI. `*_scaled` (özellikle
+        # KENDİ hedefin scaled kopyası) trivial leakage'dır (hedefin kendisinin
+        # basit bir dönüşümü); `scale_factor_*` da zaten mevcut
+        # rolling_mean_{window}_* feature'ının bir kopyası olduğundan (bkz.
+        # add_scale_invariant_targets docstring'i) X'te tutulmasının katma
+        # değeri yok — sadece df_features'ta (fit()/_predict_single_batch()
+        # içindeki un-scale adımı için) erişilebilir kalmaları yeterli.
+        drop_cols += [c for c in available_columns if c.startswith("scale_factor") or c.endswith("_scaled")]
+
         available = set(available_columns)
         return [c for c in drop_cols if c in available]
 
@@ -900,6 +949,7 @@ class DemandForecaster(BaseForecaster):
         self,
         X: pd.DataFrame,
         y: pd.Series,
+        dates: Optional[pd.Series] = None,
     ) -> np.ndarray:
         """
         PDF Bölüm 1 — Karar-Farkındalıklı Öğrenme (Proxy SPO) ve Örneklem
@@ -935,10 +985,39 @@ class DemandForecaster(BaseForecaster):
            regret = (y - c) × spot_cost_multiplier (spot araç riski —
            yüksek ceza); y ≤ c ise regret = (c - y) × idle_cost_multiplier
            (atıl kapasite — düşük, temel ceza).
-        3. Normalizasyon: Ham pişmanlık skorları min-max ile
+        2.5. Ters Hacim Ağırlıklandırması (Gradient Equalization — PDF
+           Strateji 1): CatBoost'un Simetrik Ağaç (oblivious tree) yapısı,
+           düğüm ayrımlarında mutlak hata büyüklüğüne göre karar verdiğinden,
+           yalnızca 2. adımdaki regret ile ağırlıklandırma hacimli
+           ("Head") rotaların gradyanına hakim olmaya devam eder ve küçük
+           ("Tail") rotalar gradyan açlığı (gradient starvation) yaşar.
+           Bunu nötralize etmek için, o rotanın `gradient_equalization_window_days_`
+           günlük (varsayılan 14) SIZINTISIZ (yalnızca geçmiş — closed="left")
+           hareketli ortalama hacminin ters kareköküyle regret ölçeklenir:
+               regret_eq = regret × 1 / sqrt(rolling_vol + eps)
+           Ters karekök (1/V yerine), lojistik verilerinde sık görülen
+           aşırı düşük hacimli günlerde (V≈0-2) ağırlığın patlayıp
+           gradyan tabanlı öğrenmeyi ıraksatmasını (divergence) önleyen
+           varyans-stabilize edici bir dönüşümdür. `dates` verilmezse
+           (geriye dönük uyumluluk) bu adım atlanır. gradient_equalization_enabled_
+           =False ise de atlanır.
+        3. Normalizasyon: (Gradient Equalization uygulanmışsa) ölçeklenmiş
+           regret_eq, aksi halde ham regret, min-max ile
            `proxy_spo_weight_clip_` (varsayılan [1.0, 5.0]) aralığına
            sıkıştırılır — CatBoost'un gradyan/split-arama ağırlığı bu
            dizi ile ölçeklenir (Pool(weight=...)).
+
+        Parameters
+        ----------
+        dates : pd.Series, optional
+            X ile aynı sırada, aynı uzunlukta ham tarih sütunu (örn.
+            fold_train_df[self.date_column]). X'in kendisi date_column'ı
+            İÇERMEZ (bkz. _get_drop_columns — leakage önlemi, feature
+            olarak kullanılmasın diye), bu yüzden Gradient Equalization
+            için tarih ayrıca bu parametreyle geçirilmelidir. ⚠️ Bu
+            fonksiyon SADECE ilgili fold'un KENDİ train penceresiyle
+            çağrıldığından (yukarıdaki leakage notuna bkz.), rolling
+            hacim hesaplaması da otomatik olarak sızıntısızdır.
 
         Returns
         -------
@@ -982,6 +1061,65 @@ class DemandForecaster(BaseForecaster):
             excess * float(self.proxy_spo_spot_cost_multiplier_),
             deficit * float(self.proxy_spo_idle_cost_multiplier_),
         )
+
+        # --- 2.5. Ters Hacim Ağırlıklandırması (Gradient Equalization) ---
+        # PDF Strateji 1: Su Yatağı Etkisi'ni (Waterbed Effect) azaltmak için,
+        # regret'i rotanın sızıntısız W-günlük hareketli ortalama hacminin
+        # ters kareköküyle ölçekle. Sadece tarih bilgisi verildiyse ve
+        # özellik açıksa çalışır (geriye dönük uyumluluk).
+        if self.gradient_equalization_enabled_ and dates is not None and len(dates) == n:
+            try:
+                route_ids = (
+                    X[self.group_column].to_numpy()
+                    if (self.group_column and self.group_column in X.columns)
+                    else np.zeros(n, dtype=int)
+                )
+                eq_df = pl.DataFrame(
+                    {
+                        "_row": np.arange(n),
+                        "route_id": route_ids.astype(str),
+                        "date": pd.to_datetime(
+                            dates.to_numpy() if isinstance(dates, pd.Series) else np.asarray(dates)
+                        ),
+                        "regret": regret,
+                    }
+                ).sort(["route_id", "date"])
+
+                eps = float(self.gradient_equalization_eps_)
+                window = f"{int(self.gradient_equalization_window_days_)}d"
+                # Rolling hacim, gerçek talep (y_arr) üzerinden hesaplanmalı —
+                # regret üzerinden değil (regret zaten asimetrik/ölçekli bir
+                # türev). y_arr'ı satır indeksiyle hizalayarak DataFrame'e ekliyoruz.
+                eq_df = eq_df.with_columns(volume=pl.Series(y_arr)[eq_df["_row"].to_numpy()])
+                eq_df = eq_df.with_columns(
+                    rolling_vol=pl.col("volume")
+                    .rolling_mean_by(by="date", window_size=window, closed="left", min_samples=1)
+                    .over("route_id")
+                )
+                eq_df = eq_df.with_columns(
+                    rolling_vol=pl.col("rolling_vol")
+                    .fill_null(strategy="forward")
+                    .over("route_id")
+                    .fill_null(eps)
+                )
+                eq_df = eq_df.with_columns(
+                    regret_eq=pl.col("regret") * (1.0 / (pl.col("rolling_vol") + eps).sqrt())
+                )
+                # Orijinal satır sırasına geri döndür (Polars sort permütasyonunu geri al)
+                eq_df = eq_df.sort("_row")
+                regret = eq_df["regret_eq"].to_numpy()
+
+                if self.logging_enabled:
+                    logger.info(
+                        f"   ⚖️  Gradient Equalization (Ters Hacim Ağırlıklandırması): "
+                        f"{window} sızıntısız rolling hacim ile regret ölçeklendi "
+                        f"(eps={eps})."
+                    )
+            except Exception as exc:  # pragma: no cover - savunma amaçlı; hiçbir zaman fit'i kırmasın
+                if self.logging_enabled:
+                    logger.warning(
+                        f"   ⚠️  Gradient Equalization atlandı (hesaplama hatası): {exc}"
+                    )
 
         # --- 3. Min-max normalizasyon + clip (gradyan patlaması önlemi) ---
         lo, hi = self.proxy_spo_weight_clip_
@@ -1414,6 +1552,9 @@ class DemandForecaster(BaseForecaster):
             campaign_release_alpha=self.campaign_release_alpha_,
             campaign_max_release_days=self.campaign_max_release_days_,
             drop_na=drop_na,
+            enable_target_scaling=self.target_scaling_enabled_,
+            target_scale_window_days=self.target_scale_window_days_,
+            target_scale_min=self.target_scale_min_,
         )
 
     def _split_X_y(
@@ -1502,6 +1643,43 @@ class DemandForecaster(BaseForecaster):
 
         df_features = self._engineer_features(df, drop_na=False)
 
+        # --- 2.1 Hedef Ölçeklendirme (Target Scaling) Aktivasyon Kontrolü ---
+        # PDF Strateji 2: add_scale_invariant_targets() beklenen sütunları
+        # gerçekten ürettiyse (enable_target_scaling=True VE grup/tarih
+        # bilgisi yeterliyse) K-Fold ensemble eğitimi bu sütunları kullanacak
+        # şekilde etkinleşir; aksi halde (örn. eski bir features.py sürümü
+        # veya target_scaling_enabled_=False) sessizce eski (raw) davranışa
+        # düşülür — hiçbir yerde sert hata fırlatılmaz.
+        _scale_suffix = f"_{self.target_column.rsplit('_', 1)[-1]}" if "_" in self.target_column else ""
+        _candidate_scale_col = f"scale_factor{_scale_suffix}"
+        _candidate_scaled_col = f"{self.target_column}_scaled"
+        self._target_scaling_active_ = bool(
+            self.target_scaling_enabled_
+            and _candidate_scale_col in df_features.columns
+            and _candidate_scaled_col in df_features.columns
+        )
+        if self._target_scaling_active_:
+            self._scale_factor_col_ = _candidate_scale_col
+            self._scaled_target_col_ = _candidate_scaled_col
+            if self.logging_enabled:
+                logger.info(
+                    f"   📐 Hedef Ölçeklendirme (Target Scaling) AKTİF: "
+                    f"K-Fold ensemble '{self._scaled_target_col_}' (rotanın "
+                    f"{self.target_scale_window_days_} günlük ortalamasına göre "
+                    f"oransal hedef) üzerinden eğitilecek; tahminler "
+                    f"'{self._scale_factor_col_}' ile geri çevrilecek."
+                )
+        else:
+            self._scale_factor_col_ = None
+            self._scaled_target_col_ = None
+            if self.target_scaling_enabled_ and self.logging_enabled:
+                logger.warning(
+                    f"   ⚠️  Hedef Ölçeklendirme istendi (target_scaling_enabled_=True) "
+                    f"ama beklenen sütunlar ('{_candidate_scale_col}', "
+                    f"'{_candidate_scaled_col}') df_features'ta bulunamadı — "
+                    f"eski (raw hedef) davranışına düşülüyor."
+                )
+
         # --- 3. Train/Test Split (walk-forward, zaman sıralı) ---
         train_df, test_df = self._train_test_split(df_features)
 
@@ -1583,6 +1761,23 @@ class DemandForecaster(BaseForecaster):
         X_train, y_train = self._split_X_y(train_df)
         X_test,  y_test  = self._split_X_y(test_df)
 
+        # --- Bug Fix — Target Scaling Un-scale (Self-Evaluation) ---
+        # _split_X_y() → _get_drop_columns() zaten scale_factor* sütununu X'ten
+        # düşürüyor (leakage önlemi, bkz. _get_drop_columns). _evaluate_on_test()
+        # ensemble modellerini DOĞRUDAN çağırdığı için (Pool + model.predict()),
+        # _target_scaling_active_ ise çıktı SCALED uzaydadır (~1.0 civarı oran) —
+        # bunu ham y_train/y_test (raw desi) ile karşılaştırmadan ÖNCE kendi
+        # scale_factor'üyle geri çarpmak gerekir (aksi halde WAPE ~%100 gibi
+        # anlamsız bir değere yapışır — bkz. _predict_single_batch()'teki AYNI
+        # un-scale adımı, satır ~2125). X'ten düşürülmeden ÖNCE train_df/test_df
+        # üzerinden ayrıca saklıyoruz.
+        scale_factor_train = scale_factor_test = None
+        if self._target_scaling_active_ and self._scale_factor_col_:
+            if self._scale_factor_col_ in train_df.columns:
+                scale_factor_train = train_df.loc[X_train.index, self._scale_factor_col_].to_numpy(dtype=float)
+            if self._scale_factor_col_ in test_df.columns:
+                scale_factor_test = test_df.loc[X_test.index, self._scale_factor_col_].to_numpy(dtype=float)
+
         # Kategorik sütunları tespit et (OHE YOK — string olarak kalır)
         self.cat_features_ = get_categorical_columns(X_train)
         self.feature_names_ = list(X_train.columns)
@@ -1638,9 +1833,21 @@ class DemandForecaster(BaseForecaster):
             # fold eğitimlerine LEAKAGE olarak sızmasına yol açan bir hataydı;
             # _split_X_y ile aynı kurala bağlanarak düzeltildi).
             X_fold_train = fold_train_df.drop(columns=self._get_drop_columns(fold_train_df.columns))
-            y_fold_train = fold_train_df[self.target_column]
+            y_fold_train_raw = fold_train_df[self.target_column]
             X_fold_val   = fold_val_df.drop(columns=self._get_drop_columns(fold_val_df.columns))
-            y_fold_val   = fold_val_df[self.target_column]
+            y_fold_val_raw   = fold_val_df[self.target_column]
+
+            # PDF Strateji 2 — Rota Bazlı Hedef Ölçeklendirme: aktifse CatBoost
+            # ham (raw) hacim yerine SCALED (rotanın kendi geçmiş ortalamasına
+            # göre oransal) hedefle eğitilir. Proxy SPO / Gradient Equalization
+            # ağırlıkları (aşağıda) HER ZAMAN y_fold_train_raw ile hesaplanır —
+            # "kapasite" kavramı yalnızca desi biriminde (raw) anlamlıdır.
+            if self._target_scaling_active_:
+                y_fold_train = fold_train_df[self._scaled_target_col_]
+                y_fold_val   = fold_val_df[self._scaled_target_col_]
+            else:
+                y_fold_train = y_fold_train_raw
+                y_fold_val   = y_fold_val_raw
 
             # Sütun uyumunu garantile
             for col in self.feature_names_:
@@ -1655,7 +1862,9 @@ class DemandForecaster(BaseForecaster):
                 data=X_fold_train,
                 label=y_fold_train,
                 cat_features=self.cat_features_,
-                weight=self._compute_decision_regret_weights(X_fold_train, y_fold_train),
+                weight=self._compute_decision_regret_weights(
+                    X_fold_train, y_fold_train_raw, dates=fold_train_df[self.date_column]
+                ),
             )
             fold_val_pool   = Pool(data=X_fold_val,   label=y_fold_val,   cat_features=self.cat_features_)
 
@@ -1698,8 +1907,14 @@ class DemandForecaster(BaseForecaster):
             # Bu fold'un modeli, kendi val haftasını hiç görmedi (use_best_model=False,
             # eval_set sadece izleme amaçlı) — yani bu gerçek bir out-of-sample tahmin.
             fold_val_pred = fold_model.predict(fold_val_pool)[:, 1]  # q50 (index=1)
+            # PDF Strateji 2 — model scaled uzayda eğitildiyse, tahmini KENDİ
+            # (val satırlarının) scale_factor'ü ile geri çarpıp raw desi
+            # uzayına döndür. Kantil Regresyonu ölçek dönüşümlerine karşı
+            # eşdeğişken (equivariant) olduğundan bu geri çevirme kusursuzdur.
+            if self._target_scaling_active_:
+                fold_val_pred = fold_val_pred * fold_val_df[self._scale_factor_col_].to_numpy(dtype=float)
             fold_val_pred = np.maximum(fold_val_pred, 0.0)
-            y_fold_val_actual = y_fold_val.to_numpy(dtype=float)
+            y_fold_val_actual = y_fold_val_raw.to_numpy(dtype=float)
             if self.log_transform_enabled:
                 fold_val_pred = np.square(fold_val_pred)
                 y_fold_val_actual = np.square(y_fold_val_actual)
@@ -1755,6 +1970,8 @@ class DemandForecaster(BaseForecaster):
             self._evaluate_on_test(
                 X_test, y_test, X_train, y_train,
                 abnormal_week_mask=abnormal_week_mask_test,
+                scale_factor_test=scale_factor_test,
+                scale_factor_train=scale_factor_train,
             )
 
         total_elapsed = time.time() - t_start
@@ -1914,6 +2131,32 @@ class DemandForecaster(BaseForecaster):
             q10_vals = np.maximum(q10_vals, 0)
             q50_vals = np.maximum(q50_vals, 0)
             q90_vals = np.maximum(q90_vals, 0)
+
+        # --- Hedef Ölçeklendirme Geri Çevirme (PDF Strateji 2 — Target Scaling un-scale) ---
+        # fit() sırasında K-Fold ensemble scaled (rotanın kendi geçmiş
+        # ortalamasına göre oransal) hedefle eğitildiyse, kantil tahminlerini
+        # her satırın KENDİ scale_factor'üyle çarparak orijinal desi uzayına
+        # geri döndür. Kantil Regresyonu ölçek dönüşümlerine karşı eşdeğişken
+        # (equivariant: Q_tau(Y/c) = Q_tau(Y)/c) olduğundan bu geri çevirme
+        # kusursuzdur ve q10 ≤ q50 ≤ q90 sıralaması korunur. Sqrt geri
+        # çevirmeden SONRA, aşağıdaki tüm raw-uzay düzeltmelerinden (surge,
+        # weekday bias, Pazar çarpanı, kampanya heuristiği) ÖNCE çalışmalı.
+        if getattr(self, "_target_scaling_active_", False) and getattr(self, "_scale_factor_col_", None) \
+                and self._scale_factor_col_ in df_features.columns:
+            _scale_vals = df_features[self._scale_factor_col_].to_numpy(dtype=float)
+            q10_vals = q10_vals * _scale_vals
+            q50_vals = q50_vals * _scale_vals
+            q90_vals = q90_vals * _scale_vals
+            q10_vals = np.maximum(q10_vals, 0)
+            q50_vals = np.maximum(q50_vals, 0)
+            q90_vals = np.maximum(q90_vals, 0)
+
+            if self.logging_enabled:
+                logger.info(
+                    f"   📐 Hedef Ölçeklendirme geri çevrildi (Target Scaling un-scale): "
+                    f"{len(_scale_vals)} satır, kendi {self.target_scale_window_days_} "
+                    f"günlük rolling ortalamasıyla çarpılarak orijinal desi uzayına döndürüldü."
+                )
 
         # --- Faz 1 Teşhis: düzeltme öncesi ham q50 (Model-1 only) ---
         # Surge/Residual ve Weekday Bias düzeltmelerinden ÖNCEKİ q50_vals'ın
@@ -2468,6 +2711,8 @@ class DemandForecaster(BaseForecaster):
         X_train: Optional[pd.DataFrame] = None,
         y_train: Optional[pd.Series] = None,
         abnormal_week_mask: Optional[np.ndarray] = None,
+        scale_factor_test: Optional[np.ndarray] = None,
+        scale_factor_train: Optional[np.ndarray] = None,
     ) -> Dict[str, float]:
         """
         Test ve Train setleri üzerinde WAPE ve Decision Regret hesaplar,
@@ -2482,6 +2727,24 @@ class DemandForecaster(BaseForecaster):
             ile gerçekten kıyaslanabilir hale gelir (aksi halde iki WAPE
             farklı istisna kümeleriyle hesaplanıp yanıltıcı şekilde
             karşılaştırılabiliyordu).
+        scale_factor_test, scale_factor_train : PDF Strateji 2 — Target
+            Scaling Bug Fix. `self.models_` (ensemble) `_target_scaling_active_`
+            iken SCALED hedef üzerinde eğitildi (bkz. fit() — y_fold_train =
+            fold_train_df[self._scaled_target_col_]); bu fonksiyon ise
+            model.predict()'i DOĞRUDAN çağırdığı için (Pool bazlı, tekil
+            batch), çıktısı da SCALED uzaydadır (~1.0 civarı oran). Bu diziler
+            verilirse (fit()'te train_df/test_df üzerinden, X'ten drop
+            edilmeden ÖNCE ayrıca alınır — bkz. çağıran kod), tahminler ham
+            y_true (raw desi) ile karşılaştırılmadan HEMEN önce kendi
+            scale_factor'üyle geri çarpılıp raw uzaya döndürülür — TIPKI
+            _predict_single_batch()'teki un-scale adımı gibi (satır ~2125).
+            None ise (target scaling kapalı veya eski/geriye-dönük çağrı)
+            hiçbir şey yapılmaz — eski davranışla birebir aynı kalır.
+            ⚠️ Bu düzeltme olmadan, scaled-uzay tahmini (~1.0) doğrudan ham
+            hacimle (yüzler/binler) karşılaştırılınca WAPE yapay olarak
+            ~%100'e yapışıyordu (Train VE Test'te aynı anda) — bir overfit/
+            model kalite sorunu DEĞİL, sadece bu raporlama fonksiyonunun
+            target scaling'den önce güncellenmemiş olmasıydı.
         """
         # --- TEST SETİ DEĞERLENDİRMESİ ---
         test_pool = Pool(data=X_test, cat_features=self.cat_features_)
@@ -2501,6 +2764,19 @@ class DemandForecaster(BaseForecaster):
             q50_preds_test = np.square(q50_preds_test)
             q90_preds_test = np.square(q90_preds_test)
             y_true_test = np.square(y_true_test)
+
+        # --- Bug Fix — Target Scaling Un-scale (bkz. docstring) ---
+        # sqrt geri-çevirmeden SONRA, y_true_test ile karşılaştırmadan ÖNCE —
+        # _predict_single_batch()'teki sıralamayla birebir tutarlı.
+        if scale_factor_test is not None and len(scale_factor_test) == len(q50_preds_test):
+            q50_preds_test = q50_preds_test * scale_factor_test
+            q90_preds_test = q90_preds_test * scale_factor_test
+            if self.logging_enabled:
+                logger.info(
+                    "   📐 [_evaluate_on_test] Hedef Ölçeklendirme geri çevrildi "
+                    f"(Test seti, {len(scale_factor_test)} satır) — WAPE artık raw desi uzayında."
+                )
+
         q50_preds_test = np.maximum(q50_preds_test, 0)
         q90_preds_test = np.maximum(q90_preds_test, 0)
 
@@ -2624,6 +2900,16 @@ class DemandForecaster(BaseForecaster):
             if self.log_transform_enabled:
                 q50_preds_train = np.square(q50_preds_train)
                 y_true_train = np.square(y_true_train)
+
+            # --- Bug Fix — Target Scaling Un-scale (bkz. fonksiyon docstring'i) ---
+            if scale_factor_train is not None and len(scale_factor_train) == len(q50_preds_train):
+                q50_preds_train = q50_preds_train * scale_factor_train
+                if self.logging_enabled:
+                    logger.info(
+                        "   📐 [_evaluate_on_test] Hedef Ölçeklendirme geri çevrildi "
+                        f"(Train seti, {len(scale_factor_train)} satır) — WAPE artık raw desi uzayında."
+                    )
+
             q50_preds_train = np.maximum(q50_preds_train, 0)
 
             sum_true_train = np.sum(y_true_train)
