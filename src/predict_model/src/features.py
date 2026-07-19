@@ -1114,7 +1114,8 @@ def unconstrain_censored_demand(
             parts = tcol.rsplit("_", 1)
             suffix = f"_{parts[-1]}" if len(parts) > 1 else f"_{tcol}"
 
-        rolling_max_expr = pl.col(tcol).rolling_max(window_size=window, min_samples=1)
+        # Cihan'ın yakaladığı bug'ın çözümü: shift(1) ile bugünü tavan hesabından çıkar
+        rolling_max_expr = pl.col(tcol).shift(1).rolling_max(window_size=window, min_samples=1)
         if group_column and group_column in df.columns:
             rolling_max_expr = rolling_max_expr.over(group_column)
 
