@@ -1064,14 +1064,35 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
     data = state.data
     src, dst = target_hat
     talep = {}
-    talep_id_by_gs = {}   # (gun, slot) -> bu talebe katki veren ID (varsa)
-    for (_, gun, slot, desi, tid) in hat_items:
-        talep[(gun, slot)] = talep.get((gun, slot), 0.0) + desi
-        if (gun, slot) not in talep_id_by_gs:
-            talep_id_by_gs[(gun, slot)] = tid
-        elif talep_id_by_gs[(gun, slot)] != tid:
-            talep_id_by_gs[(gun, slot)] = ""  # farkli ID'ler karisirsa guvenli tarafta kal
+    talep_queue_by_gs = {}
 
+    for (_, gun, slot, desi, tid) in hat_items:
+        key = (gun, slot)
+        talep[key] = talep.get(key, 0.0) + desi
+        talep_queue_by_gs.setdefault(key, []).append([tid, float(desi), gun, slot])
+
+    active_talep_queue = []
+
+    def take_from_active_queue(miktar):
+        pieces = []
+        remaining = float(miktar)
+
+        while remaining > 1e-6 and active_talep_queue:
+            tid, available, demand_gun, demand_slot = active_talep_queue[0]
+            take = min(float(available), remaining)
+
+            if take > 1e-6:
+                pieces.append((tid, take, demand_gun, demand_slot))
+
+            available = float(available) - take
+            remaining -= take
+
+            if available <= 1e-6:
+                active_talep_queue.pop(0)
+            else:
+                active_talep_queue[0][1] = available
+
+        return pieces
     model = cp_model.CpModel()
     zaman_sirali = data.zaman_sirali
     max_talep = max(1, int(round(sum(talep.values()))))
@@ -1169,57 +1190,66 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
     # artik miktar, diger repair operatorlerinin (greedy/force) isleyecegi sekilde
     # unassigned'a geri konur.
     for (g, s) in zaman_sirali:
+        active_talep_queue.extend(talep_queue_by_gs.get((g, s), []))
+        slotta_tasinan_yuk = max(0.0, float(solver.Value(bir[(g, s)]) - solver.Value(ert[(g, s)])))
+        remaining_slot_load = slotta_tasinan_yuk
+
         for a in data.arac_turleri:
+            if remaining_slot_load <= 1e-6:
+                break
+
             k_adet = solver.Value(kiralik_x[(g, s, a)])
             s_adet = solver.Value(spot_y[(g, s, a)])
             if k_adet <= 0 and s_adet <= 0:
                 continue
+
             kap = data.arac_parametreleri[a]["kapasite_desi"]
-            toplam_yuk = min(solver.Value(bir[(g, s)]), (k_adet + s_adet) * kap)
+            toplam_yuk = min(
+                remaining_slot_load,
+                float(solver.Value(yuk_dict[(g, s, a)])),
+                (k_adet + s_adet) * kap,
+            )
 
             if k_adet > 0 and toplam_yuk > 0:
                 istenen = min(toplam_yuk, k_adet * kap)
                 miktar = min(istenen, state.max_addable_on_leg(src, dst, g, s, a, True))
                 if miktar > 0:
                     state._commit_leg(src, dst, g, s, a, miktar, True)
-                    varis_g = arrival_day(data.route_lookup, data.gunler, target_hat, g, s, a) or g
-                    # NOT: deadline burada da (optimization.py'deki gibi) kalkis
-                    # slotundan (g,s) hesaplaniyor - CP-SAT'in bu kucuk alt-modeli
-                    # de talebin GERCEK olusum anini (yalnizca ne zaman sevk
-                    # edildigini) ayrica takip etmiyor; bu, aggregate `bir`/`ert`
-                    # degiskenlerinin bilinen bir sinirlamasi (bkz. optimization.py
-                    # SLA bolumundeki not). Cikis/varis ellecleme suresi burada
-                    # _completion_datetime uzerinden dogru ekleniyor.
                     leg = Leg(src, dst, g, s, a, True)
-                    tamamlanma = _completion_datetime(data, [leg], miktar)
-                    deadline = sla_deadline(slot_datetime(g, s), data.route_lookup[target_hat]["target_delivery_days"])
-                    sla_cost = sla_cezasi_tl(miktar, gecikme_saat(tamamlanma, deadline))
-                    state.assignments.append(Assignment(target_hat, g, s, miktar, (leg,), sla_cost, 0.0, talep_id_by_gs.get((g, s), "")))
+                    for tid, piece_desi, demand_gun, demand_slot in take_from_active_queue(miktar):
+                        piece_tamamlanma = _completion_datetime(data, [leg], piece_desi)
+                        piece_deadline = sla_deadline(slot_datetime(demand_gun, demand_slot), data.route_lookup[target_hat]["target_delivery_days"])
+                        piece_sla_cost = sla_cezasi_tl(piece_desi, gecikme_saat(piece_tamamlanma, piece_deadline))
+                        state.assignments.append(
+                            Assignment(target_hat, demand_gun, demand_slot, piece_desi, (leg,), piece_sla_cost, 0.0, tid)
+                        )
                     toplam_yuk -= miktar
+                    remaining_slot_load -= miktar
 
             if s_adet > 0 and toplam_yuk > 0:
                 istenen = min(toplam_yuk, s_adet * kap)
                 miktar = min(istenen, state.max_addable_on_leg(src, dst, g, s, a, False))
                 if miktar > 0:
                     vehicle_cost = state._commit_leg(src, dst, g, s, a, miktar, False)
-                    varis_g = arrival_day(data.route_lookup, data.gunler, target_hat, g, s, a) or g
                     leg = Leg(src, dst, g, s, a, False)
-                    tamamlanma = _completion_datetime(data, [leg], miktar)
-                    deadline = sla_deadline(slot_datetime(g, s), data.route_lookup[target_hat]["target_delivery_days"])
-                    sla_cost = sla_cezasi_tl(miktar, gecikme_saat(tamamlanma, deadline))
-                    state.assignments.append(Assignment(target_hat, g, s, miktar, (leg,), sla_cost, vehicle_cost, talep_id_by_gs.get((g, s), "")))
+                    for tid, piece_desi, demand_gun, demand_slot in take_from_active_queue(miktar):
+                        oran = piece_desi / miktar if miktar else 0.0
+                        piece_vehicle_cost = vehicle_cost * oran
+                        piece_tamamlanma = _completion_datetime(data, [leg], piece_desi)
+                        piece_deadline = sla_deadline(slot_datetime(demand_gun, demand_slot), data.route_lookup[target_hat]["target_delivery_days"])
+                        piece_sla_cost = sla_cezasi_tl(piece_desi, gecikme_saat(piece_tamamlanma, piece_deadline))
+                        state.assignments.append(
+                            Assignment(target_hat, demand_gun, demand_slot, piece_desi, (leg,), piece_sla_cost, piece_vehicle_cost, tid)
+                        )
                     toplam_yuk -= miktar
+                    remaining_slot_load -= miktar
 
             if toplam_yuk > 1e-6:
-                # CP-SAT'in onerdigi miktarin bir kismi (baska hatlarin o an
-                # kullandigi paylasimli kapasite yuzunden) clamp'lendi. Bu artigi
-                # BURADA, hemen yerlestiriyoruz (once diger yol/slot secenekleri,
-                # sonra son care force_insert) - "return state" ile birlikte
-                # unassigned'da yari-islenmis birakmiyoruz (bkz. objective() guvenlik
-                # agi + bu operatorun HER ZAMAN tam teslim garanti etmesi gerekliligi).
-                kalan = _insert_chunk(state, target_hat, g, s, toplam_yuk, rng, "")
-                if kalan > 1e-6:
-                    force_insert(state, target_hat, g, s, kalan, "")
+                for tid, piece_desi, demand_gun, demand_slot in take_from_active_queue(toplam_yuk):
+                    kalan2 = _insert_chunk(state, target_hat, demand_gun, demand_slot, piece_desi, rng, tid)
+                    if kalan2 > 1e-6:
+                        force_insert(state, target_hat, demand_gun, demand_slot, kalan2, tid)
+                remaining_slot_load -= toplam_yuk
 
     # Bu operator SADECE target_hat'i CP-SAT ile cozdu; destroy birden fazla
     # hattan parca kaldirmis olabilir - digerleri (other_items) hala
