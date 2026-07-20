@@ -581,7 +581,8 @@ def try_insert_path(
                 # yayarak sagladigi konsolidasyon verimliligi hic yakalanamiyordu
                 # (bkz. plan/sohbet gecmisi - asil maliyet farkinin nedeni buydu).
                 
-                # Spot araçlar için %10 kısıt kuralı kaldırıldı
+                # Spot araçlar için %10 kısıt kuralı kaldırıldı (jüri KISITLAR.md
+                # madde 8: Faz-2'de bu kural yok, küçük sevkiyat reddedilmez)
                 # if mevcut <= 0 and not is_final_slot and onerilen < 0.10 * kap:
                 #     continue
                 best = (onerilen, arac_turu, False)
@@ -802,7 +803,10 @@ def random_removal(state: State, rng: rnd.Generator, **kwargs) -> State:
     state = state.copy()
     if not state.assignments:
         return state
-    n = max(1, int(0.1 * len(state.assignments)))
+    # KUCULTULDU (0.10 -> 0.04): repair basina dusen is yuku kucultulerek ayni
+    # sure icinde COK DAHA FAZLA (kucuk) iterasyon sigdirilabiliyor - bkz.
+    # sohbet gecmisi: 60 sn'de sadece ~15 iterasyon tamamlanabiliyordu.
+    n = max(1, int(0.04 * len(state.assignments)))
     idx = rng.choice(len(state.assignments), size=min(n, len(state.assignments)), replace=False)
     for i in sorted(idx, reverse=True):
         _remove_assignment(state, state.assignments.pop(i))
@@ -857,8 +861,9 @@ def low_occupancy_removal(state, rng, **kwargs):
         return state
 
     # 4. ALNS Kuralı: Her şeyi aynı anda sökme! "Blast Radius" (Etki Alanı) belirle.
-    # Tüm atamaların maksimum %15-20'sini sökmeliyiz ki motor tamamen sıfırlanıp başa sarmasın.
-    max_removal_count = int(len(state.assignments) * 0.20) + 1
+    # KUCULTULDU (0.20 -> 0.08): repair yukunu azaltip iterasyon hizini artirmak
+    # icin (bkz. random_removal'daki not).
+    max_removal_count = int(len(state.assignments) * 0.08) + 1
     num_to_remove = min(len(candidates_to_remove), max_removal_count)
 
     # Adaylar arasından rastgele bir kısmını seç (Böylece model her seferinde farklı kombinasyonlar dener)
@@ -889,9 +894,10 @@ def shaw_related_removal(state, rng, **kwargs):
         return state
 
     # ALNS'nin her iterasyonda çok fazla veya çok az bozmasını engellemek için
-    # toplam atamaların %10'u ile %20'si arasında bir kısmını sökeceğiz.
-    min_remove = max(1, int(len(state.assignments) * 0.10))
-    max_remove = max(2, int(len(state.assignments) * 0.20))
+    # toplam atamaların %3'ü ile %8'i arasında bir kısmını sökeceğiz.
+    # KUCULTULDU (0.10-0.20 -> 0.03-0.08): bkz. random_removal'daki not.
+    min_remove = max(1, int(len(state.assignments) * 0.03))
+    max_remove = max(2, int(len(state.assignments) * 0.08))
     num_to_remove = rng.integers(min_remove, max_remove + 1)
     
     # Güvenlik kontrolü
@@ -963,7 +969,8 @@ def worst_removal(state: State, rng: rnd.Generator, **kwargs) -> State:
     state = state.copy()
     if not state.assignments:
         return state
-    n = max(1, int(0.1 * len(state.assignments)))
+    # KUCULTULDU (0.10 -> 0.04): bkz. random_removal'daki not.
+    n = max(1, int(0.04 * len(state.assignments)))
     ranked = sorted(state.assignments, key=lambda a: -(a.sla_cost + a.vehicle_cost))
     for a in ranked[:n]:
         state.assignments.remove(a)
@@ -1007,27 +1014,31 @@ def regret_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
 
     # 1. Aşama: Tüm kargolar için Pişmanlık (Regret) Skorunu Hesapla
     regret_scores = []
-    
+    # `state` bu döngü boyunca hiç değişmiyor (sadece deneme_1/deneme_2 kopyaları
+    # mutasyona uğruyor) - yani objective()'i döngü içinde item basina 2 kez
+    # yeniden hesaplamak yerine (objective() O(1) DEGIL, tum assignments +
+    # TM x gun ciftlerini tarar) bir kere hesaplayip yeniden kullaniyoruz.
+    base_obj = state.objective()
+
     for item in items:
         hat, orj_gun, orj_slot, orj_desi, talep_id = item
-        
+
         # Kargonun zaman çizelgesindeki başlangıç noktasını bul
         baslangic_idx = 0
         for z_idx, (g, s) in enumerate(zamanlar):
             if g == orj_gun and s == orj_slot:
                 baslangic_idx = z_idx
                 break
-                
+
         # --- Opsiyon 1: Orijinal (En iyi) vaktinde yerleştirme maliyeti ---
         deneme_1 = state.copy()
         kalan_1 = _insert_chunk(deneme_1, hat, zamanlar[baslangic_idx][0], zamanlar[baslangic_idx][1], orj_desi, rng, talep_id)
         yerlesen_1 = orj_desi - kalan_1
         if yerlesen_1 > 1e-6:
-            # Artımlı objective takibi sayesinde bu işlem O(1) hızındadır
-            maliyet_1 = (deneme_1.objective() - state.objective()) / yerlesen_1
+            maliyet_1 = (deneme_1.objective() - base_obj) / yerlesen_1
         else:
             maliyet_1 = float('inf') # Orijinal vakte hiç sığmıyor
-            
+
         # --- Opsiyon 2: Bir sonraki slotta (İkinci en iyi) yerleştirme maliyeti ---
         maliyet_2 = float('inf')
         if baslangic_idx + 1 < len(zamanlar):
@@ -1035,7 +1046,7 @@ def regret_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
             kalan_2 = _insert_chunk(deneme_2, hat, zamanlar[baslangic_idx + 1][0], zamanlar[baslangic_idx + 1][1], orj_desi, rng, talep_id)
             yerlesen_2 = orj_desi - kalan_2
             if yerlesen_2 > 1e-6:
-                maliyet_2 = (deneme_2.objective() - state.objective()) / yerlesen_2
+                maliyet_2 = (deneme_2.objective() - base_obj) / yerlesen_2
 
         # --- Regret (Pişmanlık) Hesabı ---
         if maliyet_1 == float('inf'):
