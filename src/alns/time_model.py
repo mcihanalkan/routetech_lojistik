@@ -139,3 +139,5 @@ def next_dispatch_slot(
     # Günün tüm slotları geride kaldı -> ertesi günün ilk slotu
     aday_gun = (date.fromisoformat(gun) + timedelta(days=int(gun_offset) + 1)).isoformat()
     return (aday_gun, DEMAND_ARRIVAL_TIMES[0]) if aday_gun in valid_days else None
+
+

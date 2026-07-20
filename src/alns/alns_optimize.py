@@ -55,6 +55,7 @@ from src.alns.alns_engine import (  # noqa: E402
     tm_overload_removal,
     worst_removal,
 )
+from src.alns.schedule import leg_zaman_cizelgesi  # noqa: E402
 from src.alns.time_model import build_route_lookup  # noqa: E402
 
 # ============================================================================
