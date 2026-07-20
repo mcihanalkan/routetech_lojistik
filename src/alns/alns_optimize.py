@@ -123,10 +123,11 @@ df_forecast["slot"] = df_forecast["slot"].astype(str) # 09:00 veya 17:00
 
 gunler = sorted(df_forecast["gun_key"].unique())
 
-if "2026-07-06" not in gunler:
-    gunler.append("2026-07-06")
-if "2026-07-07" not in gunler:
-    gunler.append("2026-07-07")
+son_gun = pd.to_datetime(gunler[-1])
+for ek in (1, 2):
+    ek_gun = (son_gun + pd.Timedelta(days=ek)).strftime("%Y-%m-%d")
+    if ek_gun not in gunler:
+        gunler.append(ek_gun)
     
 merkezler = sorted(set(handling_capacity) | set(tir_capacity))
 
