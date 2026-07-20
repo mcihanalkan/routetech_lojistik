@@ -518,8 +518,8 @@ def try_insert_path(
             return None
         # Zamanlama tahmini icin en ucuz turun seyir suresi kullanilir (gercek
         # arac turu asagidaki leg_plans dongusunde ayrica/bagimsiz secilir).
-        est_arac_turu = _rank_spot_types_by_cost(data, (leg_src, leg_dst), desi)[0] # 0. indis, en uygun araç
-        cur_gun, cur_slot = leg_departures[-1] # Son eleman, yani bir önceki iterasyonda sonraki diye eklediğimiz zaman dilimi.
+        est_arac_turu = _rank_spot_types_by_cost(data, (leg_src, leg_dst), desi)[0]
+        cur_gun, cur_slot = leg_departures[-1]
         sonraki = next_dispatch_slot(data.gunler, cur_gun, cur_slot, entry[est_arac_turu])
         if sonraki is None:
             return None
@@ -528,7 +528,7 @@ def try_insert_path(
     leg_pairs = [
         (stops[i], stops[i + 1], leg_departures[i][0], leg_departures[i][1])
         for i in range(len(stops) - 1)
-    ] # Araç bu TM'den bu TM'ye şu günde şu saatte (09:00 veya 17:00) kalkacak. (src,dest,gun,slot)
+    ] # Araç bu TM'den bu TM'ye şu günde şu saatte (09:00 veya 17:00) kalkacak.
 
     # Her bacak icin once KIRALIK (marjinal maliyet 0, ucretsiz kapasite) denenir;
     # yoksa SPOT icin en UCUZ (en buyuk kapasiteli degil!) arac turu secilir - bkz.
@@ -544,10 +544,10 @@ def try_insert_path(
                     best = (miktar, arac_turu, True)
                     break
         is_final_slot = (leg_gun, leg_slot) == data.zaman_sirali[-1]
-        if best is None: # Kiraliklarda boş yer bulunamadiysa buna bakilir
+        if best is None:
             for arac_turu in _rank_spot_types_by_cost(data, (leg_src, leg_dst), desi):
                 miktar = state.max_addable_on_leg(leg_src, leg_dst, leg_gun, leg_slot, arac_turu, False)
-                if miktar <= 0: # Bu araç türünde yer yoksa, devam et.
+                if miktar <= 0:
                     continue
                 kap = data.arac_parametreleri[arac_turu]["kapasite_desi"]
                 mevcut = state.leg_spot_desi.get((leg_src, leg_dst, leg_gun, leg_slot, arac_turu), 0.0)
@@ -1004,10 +1004,10 @@ def greedy_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
     state.unassigned = []
     
     # Kargo sırasını rastgele karıştır ki her iterasyonda farklı bir rota ağacı oluşsun
-    shuffeld_unassigned_items = rng.permutation(len(items)) if items else [] 
+    order = rng.permutation(len(items)) if items else [] 
     zamanlar = state.data.zaman_sirali
     
-    for i in shuffeld_unassigned_items:
+    for i in order:
         hat, orj_gun, orj_slot, orj_desi, talep_id = items[i]
         kalan_desi = orj_desi
         
