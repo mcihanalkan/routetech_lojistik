@@ -310,6 +310,13 @@ for a in best.assignments:
         if key not in bucket_parcalari:
             bucket_parcalari[key] = []
         bucket_parcalari[key].append((a, leg, a.desi, leg_i))
+# Bu bacağı (aynı src-dst-gun-slot-arac_turu) kaç FARKLI talep paylaşıyor -
+# uğrama (rota kaç bacaklı) ile konsolidasyon (bacağı kaç talep paylaşıyor)
+# birbirinden bağımsız iki soru, bu yüzden ayrı hesaplanıyor.
+bucket_konsolidasyon_sayisi: dict = {
+    key: len({id(a) for (a, leg, desi, leg_i) in parcalar})
+    for key, parcalar in bucket_parcalari.items()
+}
 
 def _bacak_arac_dagilimi(bucket_key, parcalar):
     src, dst, gun, slot, arac_turu, is_kiralik = bucket_key
@@ -495,6 +502,7 @@ for a in best.assignments:
                     + a.sla_cost * (pay_desi / a.desi), 2
                 ),
                 "Rota_Tipi": rota_tipi, "Talep_Tarihi": a.demand_gun, "Talep_Slotu": a.demand_slot,
+                "Konsolide_Talep_Sayisi": bucket_konsolidasyon_sayisi[key],
                 "Varis_Tarihi": varis_gun, "Varis_Saati": varis_saat,
         })
     else:
@@ -540,7 +548,8 @@ for a in best.assignments:
                         arac_maliyeti[(key, arac_index)] * (pay_desi / arac_toplam_yuk[(key, arac_index)])
                         + (a.sla_cost * (pay_desi / a.desi) if i == len(a.legs) - 1 else 0), 2
                     ),
-                    "Rota_Tipi": f"Konsolidasyon {i + 1}/{len(a.legs)} (via {ara_duraklar}, nihai varis: {nihai_varis})",
+                    "Rota_Tipi": f"Uğramalı {i + 1}/{len(a.legs)} (via {ara_duraklar}, nihai varis: {nihai_varis})",
+                    "Konsolide_Talep_Sayisi": bucket_konsolidasyon_sayisi[key],
                     "Talep_Tarihi": a.demand_gun, "Talep_Slotu": a.demand_slot,
                     "Varis_Tarihi": varis_gun, "Varis_Saati": varis_saat,
                 })
@@ -624,7 +633,8 @@ if data.tir_arac_turu is not None:
                 tir_ceza_toplam += asim * 50000.0
 
 genel_toplam = best.objective()
-konsolidasyon_sayisi = sum(1 for a in best.assignments if len(a.legs) > 1)
+ugramali_talep_sayisi = sum(1 for a in best.assignments if len(a.legs) > 1)
+gercek_konsolidasyon_bacak_sayisi = sum(1 for v in bucket_konsolidasyon_sayisi.values() if v > 1)
 
 # YENİ: yerleştirilemeyen (unassigned) talep cezası - force_insert kaldırıldığından
 # beri (Task #1) bu kalem daha sık/büyük görünebiliyor, önceden özet raporda hiç
@@ -653,6 +663,10 @@ OZET ISTATISTIKLER (Faz 2 - ALNS, saat bazli, konsolidasyon destekli)
   SLA Gecikme Cezasi          : {sla_ceza_toplam:>15,.0f} TL
 {'-' * 80}
   OPERASYONEL MALIYET         : {(kiralik_gercek_toplam + spot_toplam_maliyet + sla_ceza_toplam):>15,.0f} TL
+{'-' * 80}
+  UGRAMA / KONSOLIDASYON
+      -> Ugramali talep sayisi        : {ugramali_talep_sayisi:>10}
+      -> Gercek konsolide bacak sayisi: {gercek_konsolidasyon_bacak_sayisi:>10}
 {'-' * 80}
   KAPASITE ASIM CEZALARI (Sanal Maliyetler)
       -> Ellecleme Asim Cezasi: {ellecleme_ceza_toplam:>15,.0f} TL
