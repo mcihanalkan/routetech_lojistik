@@ -51,6 +51,7 @@ from src.alns.alns_engine import (  # noqa: E402
     greedy_repair,
     leg_zaman_cizelgesi,
     random_removal,
+    regret_repair,
     low_occupancy_removal,
     shaw_related_removal,
     tm_overload_removal,
@@ -121,6 +122,12 @@ df_forecast["gun_key"] = df_forecast["date"].dt.strftime("%Y-%m-%d")
 df_forecast["slot"] = df_forecast["slot"].astype(str) # 09:00 veya 17:00
 
 gunler = sorted(df_forecast["gun_key"].unique())
+
+if "2026-07-06" not in gunler:
+    gunler.append("2026-07-06")
+if "2026-07-07" not in gunler:
+    gunler.append("2026-07-07")
+    
 merkezler = sorted(set(handling_capacity) | set(tir_capacity))
 
 # (hat,gun,slot) -> desi şeklinde bir dict. slot'tan kasıt 09:00, 17:00
@@ -176,6 +183,7 @@ alns.add_destroy_operator(tm_overload_removal, "tm_overload_removal")
 alns.add_destroy_operator(low_occupancy_removal, "low_occupancy_removal")
 alns.add_destroy_operator(shaw_related_removal, "shaw_related_removal")
 alns.add_repair_operator(greedy_repair, "greedy_repair")
+alns.add_repair_operator(regret_repair, "regret_repair")
 alns.add_repair_operator(cpsat_hat_repair, "cpsat_hat_repair")
 
 # En iyi sonuç -> 25 puan
@@ -184,7 +192,7 @@ alns.add_repair_operator(cpsat_hat_repair, "cpsat_hat_repair")
 # Reddedilen berbat bir sonuç -> 0.5 puan
 # decay -> unutma katsayısı. Eski başarılara takılıp kalmamak için puanlar her iterasyonda %80 korunur.
 
-select = RouletteWheel(scores=[25, 5, 2, 0.5], decay=0.8, num_destroy=5, num_repair=2) 
+select = RouletteWheel(scores=[25, 5, 2, 0.5], decay=0.8, num_destroy=5, num_repair=3) 
 # num_iters tahmini: cpsat_hat_repair en fazla 5 sn, greedy cok daha hizli -
 # ortalama ~2 sn/iterasyon varsayimi (kaba, autofit sicaklik egrisini olceklemek icin yeterli).
 tahmini_iterasyon = max(20, int(ENV_MAX_TIME / 2))
@@ -624,11 +632,15 @@ konsolidasyon_sayisi = sum(1 for a in best.assignments if len(a.legs) > 1)
 # ZAMAN dogru) bu kalem olarak gosteriyoruz.
 unassigned_desi_toplam = sum(x[3] for x in best.unassigned)
 unassigned_satir_sayisi = len(best.unassigned)
-unassigned_cezasi = genel_toplam - (
-    kiralik_gercek_toplam + spot_toplam_maliyet + sla_ceza_toplam
-    + ellecleme_ceza_toplam + tir_ceza_toplam
-)
-
+if unassigned_satir_sayisi == 0:
+    unassigned_cezasi = 0.0
+    genel_toplam = (kiralik_gercek_toplam + spot_toplam_maliyet + sla_ceza_toplam 
+                    + ellecleme_ceza_toplam + tir_ceza_toplam)
+else:
+    unassigned_cezasi = genel_toplam - (
+        kiralik_gercek_toplam + spot_toplam_maliyet + sla_ceza_toplam
+        + ellecleme_ceza_toplam + tir_ceza_toplam
+    )
 ozet = f"""
 {'=' * 80}
 OZET ISTATISTIKLER (Faz 2 - ALNS, saat bazli, konsolidasyon destekli)

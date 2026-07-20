@@ -594,6 +594,23 @@ def try_insert_path(
     if tasinabilir <= 0:
         return None
 
+    # YENİ EKLENECEK GÜVENLİK BLOĞU: Aktarma (Relay) merkezlerindeki çift sayımı engelle
+    path_handling = {}
+    for (leg_src, leg_dst, leg_gun, leg_slot, _miktar, arac_turu, is_kiralik) in leg_plans:
+        # Bu rotanın hangi TM'de, hangi gün ne kadar çarpanla kapasite tükettiğini bul
+        path_handling[(leg_src, leg_gun)] = path_handling.get((leg_src, leg_gun), 0.0) + 1.0
+        varis_g = arrival_day(data.route_lookup, data.gunler, (leg_src, leg_dst), leg_gun, leg_slot, arac_turu)
+        if varis_g:
+             path_handling[(leg_dst, varis_g)] = path_handling.get((leg_dst, varis_g), 0.0) + 1.0
+             
+    # Eğer bir TM aynı gün hem varış hem çıkış alıyorsa (multiplier = 2.0 olur), taşınabilir miktarı tıraşla
+    for (tm, g), multiplier in path_handling.items():
+        avail = state.handling_available(tm, g)
+        if tasinabilir * multiplier > avail:
+            tasinabilir = avail / multiplier
+        if tasinabilir <= 1e-6:
+            return None # Daha fazla bakmaya gerek yok, bu yol zaten kapasiteyi aşıyor!
+
     legs = []
     vehicle_cost = 0.0
     for (leg_src, leg_dst, leg_gun, leg_slot, _miktar, arac_turu, is_kiralik) in leg_plans:
@@ -974,21 +991,90 @@ def tm_overload_removal(state: State, rng: rnd.Generator, **kwargs) -> State:
     return state
 
 
-# ============================================================================
-# Repair operatörleri
-# ============================================================================
-# def greedy_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
-#     state = state.copy()
-#     items = list(state.unassigned)
-#     state.unassigned = []
-#     order = rng.permutation(len(items)) if items else [] # Rastgele karıştırıyor kendi içinde.
-#     for i in order:
-#         hat, gun, slot, desi, talep_id = items[i]
-#         kalan = _insert_chunk(state, hat, gun, slot, desi, rng, talep_id)
-#         if kalan > 1e-6: # Eğer kalan(yerleştirilemeyen) desi miktarı 10^-6'dan büyükse
-#             force_insert(state, hat, gun, slot, kalan, talep_id) # Zorla yerleştir (TM Elleçleme, tır, kapasite kısıtlarını hiçe say.)
-#     return state
 
+def regret_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
+    """
+    Regret-2 (Pişmanlık Odaklı) Onarıcı Operatör.
+    Talepleri sadece en ucuz yerleşime göre değil, "Bu kargoyu kendi orijinal vaktinde 
+    yerleştirmezsem, bir sonraki slotta (ikinci en iyi) yerleştirmenin bana faturası 
+    ne olur?" mantığıyla (Regret) sıralar.
+    Pişmanlık (Regret) skoru en yüksek olan kargolar ilk önce yerleştirilir.
+    """
+    state = state.copy()
+    items = list(state.unassigned)
+    state.unassigned = []
+    zamanlar = state.data.zaman_sirali
+
+    # 1. Aşama: Tüm kargolar için Pişmanlık (Regret) Skorunu Hesapla
+    regret_scores = []
+    
+    for item in items:
+        hat, orj_gun, orj_slot, orj_desi, talep_id = item
+        
+        # Kargonun zaman çizelgesindeki başlangıç noktasını bul
+        baslangic_idx = 0
+        for z_idx, (g, s) in enumerate(zamanlar):
+            if g == orj_gun and s == orj_slot:
+                baslangic_idx = z_idx
+                break
+                
+        # --- Opsiyon 1: Orijinal (En iyi) vaktinde yerleştirme maliyeti ---
+        deneme_1 = state.copy()
+        kalan_1 = _insert_chunk(deneme_1, hat, zamanlar[baslangic_idx][0], zamanlar[baslangic_idx][1], orj_desi, rng, talep_id)
+        yerlesen_1 = orj_desi - kalan_1
+        if yerlesen_1 > 1e-6:
+            # Artımlı objective takibi sayesinde bu işlem O(1) hızındadır
+            maliyet_1 = (deneme_1.objective() - state.objective()) / yerlesen_1
+        else:
+            maliyet_1 = float('inf') # Orijinal vakte hiç sığmıyor
+            
+        # --- Opsiyon 2: Bir sonraki slotta (İkinci en iyi) yerleştirme maliyeti ---
+        maliyet_2 = float('inf')
+        if baslangic_idx + 1 < len(zamanlar):
+            deneme_2 = state.copy()
+            kalan_2 = _insert_chunk(deneme_2, hat, zamanlar[baslangic_idx + 1][0], zamanlar[baslangic_idx + 1][1], orj_desi, rng, talep_id)
+            yerlesen_2 = orj_desi - kalan_2
+            if yerlesen_2 > 1e-6:
+                maliyet_2 = (deneme_2.objective() - state.objective()) / yerlesen_2
+
+        # --- Regret (Pişmanlık) Hesabı ---
+        if maliyet_1 == float('inf'):
+            # İlk slota zaten sığmıyor, sistem her türlü erteleyecek, önceliği düşük.
+            regret = -1.0 
+        elif maliyet_2 == float('inf'):
+            # İlk slota sığıyor ama ikinciye SIĞMIYOR! Bunu ŞU AN yerleştirmezsek yanarız!
+            regret = 1e9 
+        else:
+            # İkinci seçeneğin maliyeti ile ilk seçeneğin maliyeti arasındaki fark
+            regret = maliyet_2 - maliyet_1
+            
+        # Büyük kargoları geride bırakmamak için Regret skorunu desi ile ağırlıklandırıyoruz
+        agirlikli_regret = regret * orj_desi if regret > 0 else regret
+        regret_scores.append((agirlikli_regret, item, baslangic_idx))
+        
+    # 2. Aşama: En çok pişman olacağımız (skoru en yüksek) kargodan başlayarak sırala
+    regret_scores.sort(key=lambda x: x[0], reverse=True)
+    
+    # 3. Aşama: Sıralanmış kargoları gerçek state üzerine (gerçekten) yerleştir
+    for score, item, baslangic_idx in regret_scores:
+        hat, orj_gun, orj_slot, orj_desi, talep_id = item
+        kalan_desi = orj_desi
+        
+        for idx in range(baslangic_idx, len(zamanlar)):
+            aktif_gun, aktif_slot = zamanlar[idx]
+            
+            kalan_desi = _insert_chunk(
+                state, hat, aktif_gun, aktif_slot, kalan_desi, rng, talep_id
+            )
+            
+            if kalan_desi <= 1e-6:
+                break
+                
+        # Zamanın sonuna kadar sığmadıysa mecburen havuzda kalır
+        if kalan_desi > 1e-6:
+            state.unassigned.append((hat, orj_gun, orj_slot, kalan_desi, talep_id))
+            
+    return state
 
 def greedy_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
     """
