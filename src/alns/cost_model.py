@@ -14,6 +14,9 @@ from src.alns.time_model import RouteLookup
 from src.config import (
     ELLECLEME_DAKIKA_PER_DESI
 )
+_vehicle_leg_cost_cache: dict = {}
+
+
 def vehicle_leg_cost(
     route_lookup: RouteLookup,
     hat: tuple[str, str],
@@ -28,15 +31,23 @@ def vehicle_leg_cost(
     PDF formülü: Toplam Araç Maliyeti = (Saatlik Kiralama Maliyeti × Kullanım Süresi)
     + (Kat Edilen Mesafe × Kilometre Başı Maliyet). CP-SAT tamsayı katsayı gerektirdiği
     için en yakın TL'ye yuvarlanır (ALNS için de tutarlılık amacıyla aynı yuvarlama).
-    """
-    toplam_sure = 0
-    # ellecleme_suresi = tasinan_desi * 0.01 # dakika cinsinden
-    # ellecleme_suresi_saat = ellecleme_suresi / 60
+
+    PERFORMANS: bu fonksiyonun sonucu SADECE (route_lookup, hat, arac_turu, hourly_rate,
+    km_rate)'e bağlı - taşınan desiye ya da state'e HİÇ bağlı değil, yani ALNS'in tüm
+    çalışması boyunca AYNI girdiler için hep AYNI sonucu üretir. Bu fonksiyon saniyede
+    binlerce kez (arama sırasında her aday değerlendirmesinde) çağrıldığı için,
+    sonuçları önbelleğe alıp gereksiz yeniden hesaplamayı önlüyoruz (profil ile
+    doğrulandı - bkz. sohbet geçmişi)."""
+    cache_key = (id(route_lookup), hat, arac_turu, hourly_rate, km_rate)
+    if cache_key in _vehicle_leg_cost_cache:
+        return _vehicle_leg_cost_cache[cache_key]
+
     entry = route_lookup.get(hat)
     dist = entry["distance_km"] if entry else 0.0
     seyir_saat = entry[arac_turu] if entry else 0.0
-    # toplam_sure = seyir_saat + ellecleme_suresi_saat
-    return int(round(hourly_rate * seyir_saat + dist * km_rate))
+    sonuc = int(round(hourly_rate * seyir_saat + dist * km_rate))
+    _vehicle_leg_cost_cache[cache_key] = sonuc
+    return sonuc
 
 
 def ellecleme_maliyet_hesapla(desi: float, kiralık_saat_maliyet: float) -> float:

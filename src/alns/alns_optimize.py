@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 import json
+import math
 import os
 import sys
 import time
@@ -41,7 +42,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.alns.cost_model import spot_vehicle_count  # noqa: E402
+from src.alns.cost_model import spot_vehicle_count, vehicle_leg_cost, ellecleme_maliyet_hesapla  # noqa: E402
 from src.alns.alns_engine import (  # noqa: E402
     ProblemData,
     State,
@@ -55,7 +56,7 @@ from src.alns.alns_engine import (  # noqa: E402
     tm_overload_removal,
     worst_removal,
 )
-from src.alns.time_model import build_route_lookup, slot_datetime, varis_zamani, ellecleme_tamamlanma_zamani  # noqa: E402
+from src.alns.time_model import build_route_lookup, slot_datetime, varis_zamani, ellecleme_tamamlanma_zamani, ellecleme_suresi_dakika  # noqa: E402
 
 # ============================================================================
 # 1. ORTAM DEĞİŞKENLERİ
@@ -351,6 +352,37 @@ for key, parcalar in bucket_dagilim.items():
         arac_key = (key, arac_index)
         arac_gruplari.setdefault(arac_key, []).append((a, leg, pay_desi, leg_i))
 
+# Her fiziksel araca (arac_key), jüri şablonundaki gibi basit ve sıralı bir kod
+# ("V0001", "V0002", ...) atıyoruz - onceki uzun/aciklayici string yerine.
+# Kronolojik (gun, slot, cikis-varis) sirayla numaralandiriyoruz ki okunabilir olsun.
+_siralanmis_arac_keyler = sorted(arac_gruplari.keys(), key=lambda k: (k[0][2], k[0][3], k[0][0], k[0][1], k[1]))
+arac_id_kodu: dict = {
+    arac_key: f"V{sira + 1:04d}"
+    for sira, arac_key in enumerate(_siralanmis_arac_keyler)
+}
+
+# Her aracin GERCEK toplam maliyetini, motorun "kim once geldi" (marjinal)
+# muhasebesine BAKMADAN, bagimsiz olarak yeniden hesapliyoruz - boylece her
+# parcaya, o aracin toplam maliyetinden ADIL (yukune orantili) bir pay
+# verebiliriz. Kiralik aracta seyir maliyeti sabit/batik oldugu (ayrica
+# raporlaniyor) icin sadece ellecleme payi hesaplaniyor.
+arac_maliyeti: dict = {}
+for arac_key in arac_gruplari:
+    key, arac_index = arac_key
+    src, dst, gun, slot, arac_turu, is_kiralik = key
+    p = arac_parametreleri[arac_turu]
+    toplam_yuk = arac_toplam_yuk[arac_key]
+
+    if is_kiralik:
+        seyir_maliyeti = 0.0
+        hourly_rate = p["rental_hourly"]
+    else:
+        seyir_maliyeti = vehicle_leg_cost(data.route_lookup, (src, dst), arac_turu, p["spot_hourly"], p["spot_km"])
+        hourly_rate = p["spot_hourly"]
+
+    ellecleme_maliyeti = ellecleme_maliyet_hesapla(toplam_yuk, hourly_rate)
+    arac_maliyeti[arac_key] = seyir_maliyeti + ellecleme_maliyeti
+
 # Her (assignment, leg_i) cifti hangi (bucket_key, arac_index)'e denk geliyor -
 # bagimlilik zincirini takip edebilmek icin (leg_i-1'in GERCEK arac_key'ini bulmak).
 # NOT: aynı assignment'in aynı bacaktaki yuku BIRDEN FAZLA araca bolunebilir
@@ -419,7 +451,7 @@ for a in best.assignments:
     if len(a.legs) == 1:
         leg = a.legs[0]
         rota_tipi = "Direkt" if leg.gun == a.demand_gun and leg.slot == a.demand_slot else "Direkt (Ertelenmis)"
-        arac_tipi = ("Kiralik " if leg.is_kiralik else "Spot ") + leg.arac_turu
+        arac_tipi = "Kiralik" if leg.is_kiralik else "Spot"
         key = _bucket_key(leg)
         bu_sevkiyatin_paylari = []
         for (aa, ll, arac_index, pay_desi, ll_i) in bucket_dagilim[key]:
@@ -436,15 +468,23 @@ for a in best.assignments:
             varis_saat = varis_dt.strftime("%H:%M")
 
             csv_records.append({
-                "Tarih": gercek_gun, "Slot": gercek_slot, "Arac_Tipi": arac_tipi,
-                "Arac_ID": f"{'Kiralik' if leg.is_kiralik else 'Spot'}-{leg.src}-{leg.dst}-{leg.gun}-{leg.slot}-{leg.arac_turu}-{arac_index + 1}",
+                "Tarih": gercek_gun, "Slot": gercek_slot, "Arac_Tipi": arac_tipi, "Arac_Turu": leg.arac_turu,
+                "Arac_ID": arac_id_kodu[(key, arac_index)],
                 "Talep_ID": talep_id_goruntu.get(id(a), a.talep_id),
                 "Cikis_TM": leg.src, "Varis_TM": leg.dst,
+                "Yolculuk_Suresi_Dk": math.ceil(data.route_lookup[(leg.src, leg.dst)][leg.arac_turu] * 60),
+                "Cikis_Ellecleme_Dk": math.ceil(ellecleme_suresi_dakika(pay_desi, consolidation=False)),
+                "Varis_Ellecleme_Dk": math.ceil(ellecleme_suresi_dakika(pay_desi, consolidation=False)),
                 "Nihai_Kaynak": nihai_kaynak, "Nihai_Varis": nihai_varis,
                 "Bacaktaki_Arac_Sayisi": _bacak_arac_sayisi(leg),
                 "Bu_Talebin_Desisi": round(pay_desi, 2),
                 "Bacak_Toplam_Desi": round(bucket_toplam_desi[key], 2),
-                "Maliyet_TL": round(a.vehicle_cost * (pay_desi / a.desi), 2),
+                "Maliyet_TL": round(arac_maliyeti[(key, arac_index)] * (pay_desi / arac_toplam_yuk[(key, arac_index)]), 2),
+                "SLA_Cezasi_TL": round(a.sla_cost * (pay_desi / a.desi), 2),
+                "Toplam_Maliyet_TL": round(
+                    arac_maliyeti[(key, arac_index)] * (pay_desi / arac_toplam_yuk[(key, arac_index)])
+                    + a.sla_cost * (pay_desi / a.desi), 2
+                ),
                 "Rota_Tipi": rota_tipi, "Talep_Tarihi": a.demand_gun, "Talep_Slotu": a.demand_slot,
                 "Varis_Tarihi": varis_gun, "Varis_Saati": varis_saat,
         })
@@ -452,7 +492,7 @@ for a in best.assignments:
         ara_duraklar = " -> ".join(leg.dst for leg in a.legs[:-1])
         for i, leg in enumerate(a.legs):
 
-            arac_tipi = ("Kiralik " if leg.is_kiralik else "Spot ") + leg.arac_turu
+            arac_tipi = "Kiralik" if leg.is_kiralik else "Spot"
             key = _bucket_key(leg)
             bu_sevkiyatin_paylari = []
             for (aa, ll, arac_index, pay_desi, ll_i) in bucket_dagilim[key]:
@@ -469,15 +509,28 @@ for a in best.assignments:
                 varis_saat = varis_dt.strftime("%H:%M")
 
                 csv_records.append({
-                    "Tarih": gercek_gun, "Slot": gercek_slot, "Arac_Tipi": arac_tipi, # BURASI GÜNCELLENDİ
-                    "Arac_ID": f"{'Kiralik' if leg.is_kiralik else 'Spot'}-{leg.src}-{leg.dst}-{leg.gun}-{leg.slot}-{leg.arac_turu}-{arac_index + 1}",
+                    "Tarih": gercek_gun, "Slot": gercek_slot, "Arac_Tipi": arac_tipi, "Arac_Turu": leg.arac_turu, # BURASI GÜNCELLENDİ
+                    "Arac_ID": arac_id_kodu[(key, arac_index)],
                     "Talep_ID": talep_id_goruntu.get(id(a), a.talep_id),
                     "Cikis_TM": leg.src, "Varis_TM": leg.dst,
+                    "Yolculuk_Suresi_Dk": math.ceil(data.route_lookup[(leg.src, leg.dst)][leg.arac_turu] * 60),
+                    "Cikis_Ellecleme_Dk": math.ceil(ellecleme_suresi_dakika(pay_desi, consolidation=(i > 0))),
+                    "Varis_Ellecleme_Dk": math.ceil(ellecleme_suresi_dakika(pay_desi, consolidation=(i < len(a.legs) - 1))),
                     "Nihai_Kaynak": nihai_kaynak, "Nihai_Varis": nihai_varis,
                     "Bacaktaki_Arac_Sayisi": _bacak_arac_sayisi(leg),
                     "Bu_Talebin_Desisi": round(pay_desi, 2),
                     "Bacak_Toplam_Desi": round(bucket_toplam_desi[key], 2),
-                    "Maliyet_TL": (round(a.vehicle_cost * (pay_desi / a.desi), 2) if i == len(a.legs) - 1 else 0),
+                    # NOT: Maliyet_TL artik HER bacakta yaziliyor (eskiden sadece son
+                    # bacakta yaziliyordu, cunku maliyet assignment bazliydi) - simdi
+                    # arac bazli hesaplandigi icin her bacagin KENDI aracinin gercek
+                    # payi kendi satirinda gosteriliyor. SLA cezasi ise teslimat anina
+                    # bagli bir kavram oldugu icin hala SADECE son bacakta yaziliyor.
+                    "Maliyet_TL": round(arac_maliyeti[(key, arac_index)] * (pay_desi / arac_toplam_yuk[(key, arac_index)]), 2),
+                    "SLA_Cezasi_TL": (round(a.sla_cost * (pay_desi / a.desi), 2) if i == len(a.legs) - 1 else 0),
+                    "Toplam_Maliyet_TL": round(
+                        arac_maliyeti[(key, arac_index)] * (pay_desi / arac_toplam_yuk[(key, arac_index)])
+                        + (a.sla_cost * (pay_desi / a.desi) if i == len(a.legs) - 1 else 0), 2
+                    ),
                     "Rota_Tipi": f"Konsolidasyon {i + 1}/{len(a.legs)} (via {ara_duraklar}, nihai varis: {nihai_varis})",
                     "Talep_Tarihi": a.demand_gun, "Talep_Slotu": a.demand_slot,
                     "Varis_Tarihi": varis_gun, "Varis_Saati": varis_saat,
@@ -532,8 +585,12 @@ for key, toplam_desi in bucket_toplam_desi.items():
         # Kiralık araca yüklenen toplam desinin yarattığı saatlik maliyet
         kiralik_ellecleme_toplam += ((toplam_desi * 0.01) / 60) * p["rental_hourly"]
 
-# Atamalardaki tüm araç maliyetleri (Spot Tamamı + Kiralık Elleçleme)
-karma_arac_maliyeti = sum(a.vehicle_cost for a in best.assignments)
+# Atamalardaki tüm araç maliyetleri (Spot Tamamı + Kiralık Elleçleme).
+# NOT: artik best.assignments'in kendi (potansiyel olarak BAYAT/stale)
+# vehicle_cost degerlerinden DEGIL, arac_maliyeti sozlugunden (her aracin
+# GUNCEL toplam yukune gore sifirdan hesaplanan gercek maliyeti) topluyoruz -
+# boylece objective()'teki duzeltmeyle TUTARLI kalir (bkz. sohbet gecmisi).
+karma_arac_maliyeti = sum(arac_maliyeti.values())
 
 # Spot ve Kiralık maliyetleri birbirinden temizce ayırıyoruz
 spot_toplam_maliyet = karma_arac_maliyeti - kiralik_ellecleme_toplam
@@ -560,6 +617,18 @@ if data.tir_arac_turu is not None:
 genel_toplam = best.objective()
 konsolidasyon_sayisi = sum(1 for a in best.assignments if len(a.legs) > 1)
 
+# YENİ: yerleştirilemeyen (unassigned) talep cezası - force_insert kaldırıldığından
+# beri (Task #1) bu kalem daha sık/büyük görünebiliyor, önceden özet raporda hiç
+# gösterilmiyordu (bkz. sohbet gecmisi - "toplamda 4.7M TL kayboldu" bulgusu).
+# objective()'i degistirmek yerine, geriye kalan farki (matematiksel olarak HER
+# ZAMAN dogru) bu kalem olarak gosteriyoruz.
+unassigned_desi_toplam = sum(x[3] for x in best.unassigned)
+unassigned_satir_sayisi = len(best.unassigned)
+unassigned_cezasi = genel_toplam - (
+    kiralik_gercek_toplam + spot_toplam_maliyet + sla_ceza_toplam
+    + ellecleme_ceza_toplam + tir_ceza_toplam
+)
+
 ozet = f"""
 {'=' * 80}
 OZET ISTATISTIKLER (Faz 2 - ALNS, saat bazli, konsolidasyon destekli)
@@ -575,6 +644,10 @@ OZET ISTATISTIKLER (Faz 2 - ALNS, saat bazli, konsolidasyon destekli)
   KAPASITE ASIM CEZALARI (Sanal Maliyetler)
       -> Ellecleme Asim Cezasi: {ellecleme_ceza_toplam:>15,.0f} TL
       -> TIR Park Asim Cezasi : {tir_ceza_toplam:>15,.0f} TL
+{'-' * 80}
+  YERLESTIRILEMEYEN TALEP CEZASI (Sanal Maliyet)
+      -> Bekleyen satir/desi   : {unassigned_satir_sayisi:>10} satir / {unassigned_desi_toplam:>10,.0f} desi
+      -> Ceza                  : {unassigned_cezasi:>15,.0f} TL
 {'-' * 80}
   TOPLAM MALIYET (Objective)  : {genel_toplam:>15,.0f} TL
 {'=' * 80}
@@ -609,15 +682,17 @@ if csv_records:
     ws1.title = "Teslim Plani (Talep Bazli)"
     _yaz_sayfa(
         ws1,
-        ["Arac ID", "Tarih", "Slot", "Arac Tipi", "Cikis TM", "Varis TM", "Nihai Kaynak", "Nihai Varis",
+        ["Arac ID", "Tarih", "Slot", "Arac Tipi", "Arac Turu", "Cikis TM", "Varis TM", "Yolculuk Suresi (dk)",
+         "Cikis Ellecleme (dk)", "Varis Ellecleme (dk)", "Nihai Kaynak", "Nihai Varis",
          "Bacaktaki Arac Sayisi", "Bu Talebin Desisi", "Bacak Toplam Desi", "Maliyet TL",
+         "SLA Cezasi TL", "Toplam Maliyet TL",
          "Rota Tipi", "Talep Tarihi", "Talep Slotu", "Varis Tarihi", "Varis Saati"],
-        [[rec["Arac_ID"], rec["Tarih"], rec["Slot"], rec["Arac_Tipi"], rec["Cikis_TM"], rec["Varis_TM"],
-          rec["Nihai_Kaynak"], rec["Nihai_Varis"],
+        [[rec["Arac_ID"], rec["Tarih"], rec["Slot"], rec["Arac_Tipi"], rec["Arac_Turu"], rec["Cikis_TM"], rec["Varis_TM"], rec["Yolculuk_Suresi_Dk"],
+          rec["Cikis_Ellecleme_Dk"], rec["Varis_Ellecleme_Dk"], rec["Nihai_Kaynak"], rec["Nihai_Varis"],
           rec["Bacaktaki_Arac_Sayisi"], rec["Bu_Talebin_Desisi"], rec["Bacak_Toplam_Desi"],
-          rec["Maliyet_TL"], rec["Rota_Tipi"], rec["Talep_Tarihi"], rec["Talep_Slotu"], rec["Varis_Tarihi"], rec["Varis_Saati"]]
+          rec["Maliyet_TL"], rec["SLA_Cezasi_TL"], rec["Toplam_Maliyet_TL"], rec["Rota_Tipi"], rec["Talep_Tarihi"], rec["Talep_Slotu"], rec["Varis_Tarihi"], rec["Varis_Saati"]]
          for rec in csv_records],
-        [40, 12, 8, 16, 14, 14, 14, 14, 14, 14, 14, 12, 30, 14, 10, 14, 10],
+        [40, 12, 8, 16, 14, 14, 14, 16, 16, 16, 14, 14, 14, 14, 12, 14, 16, 30, 14, 10, 14, 10],
     )
 
     ws2 = wb.create_sheet("Arac Sevkiyat Ozeti")
@@ -642,5 +717,27 @@ if csv_records:
 
     wb.save(output_xlsx)
     print(f"Excel kaydedildi: {output_xlsx} (3 sayfa: Teslim Plani, Arac Sevkiyat Ozeti, TM Kapasite Kullanimi)")
+
+    # ---- Resmi "TASIMA PLANI" formati - jüri şablonuyla BİREBİR aynı 16
+    # sütun, aynı sıra, aynı isim. Yukarıdaki detayli/debug sayfadan farklı -
+    # burada sadece şablonun istedigi sütunlar var, ekstra analiz sütunu yok. ----
+    output_tasima_plani_xlsx = results_dir / "Tasima_Plani.xlsx"
+    wb_resmi = Workbook()
+    ws_resmi = wb_resmi.active
+    ws_resmi.title = "Tasima Plani"
+    _yaz_sayfa(
+        ws_resmi,
+        ["Araç ID", "Araç Tipi", "Araç türü", "Çıkış Transfer Merkezi", "Varış Transfer Merkezi",
+         "Çıkış Tarihi", "Çıkış Saati", "Varış Tarihi", "Varış Saati", "Talep ID", "Taşınan Desi",
+         "Yolculuk süresi", "Varış elleçleme süresi", "Çıkış Elleçleme süresi", "SLA cezası", "Toplam maliyet"],
+        [[rec["Arac_ID"], rec["Arac_Tipi"], rec["Arac_Turu"], rec["Cikis_TM"], rec["Varis_TM"],
+          rec["Tarih"], rec["Slot"], rec["Varis_Tarihi"], rec["Varis_Saati"], rec["Talep_ID"],
+          rec["Bu_Talebin_Desisi"], rec["Yolculuk_Suresi_Dk"], rec["Varis_Ellecleme_Dk"],
+          rec["Cikis_Ellecleme_Dk"], rec["SLA_Cezasi_TL"], rec["Toplam_Maliyet_TL"]]
+         for rec in csv_records],
+        [40, 12, 14, 20, 20, 14, 12, 14, 12, 12, 14, 14, 18, 18, 12, 14],
+    )
+    wb_resmi.save(output_tasima_plani_xlsx)
+    print(f"Resmi Tasima Plani kaydedildi: {output_tasima_plani_xlsx}")
 else:
     print("Kayit yok - CSV/Excel uretilmedi.")

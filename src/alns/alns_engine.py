@@ -201,6 +201,12 @@ class State:
         self.tir_usage: dict = {}          # (tm,gun) -> adet (spot kaynakli, kiralik ayrica sabit)
         # self._fixed_kiralik_cost = self._compute_fixed_kiralik_cost()
         self._fixed_kiralik_cost = self._kiralik_bos_seyir_maliyeti()
+        # Her bacagin GUNCEL arac maliyetinin (seyir+ellecleme) ARTIMLI takibi -
+        # _commit_leg/force_insert eklerken, _remove_assignment cikarirken bunu
+        # gunceller. objective() bu sayede O(1) okuyor, her cagrida TUM bacaklari
+        # yeniden taramak zorunda kalmiyor (performans), ama HALA guncel/dogru
+        # kaliyor (silme sirasinda da dogru dusuruldugu icin bayatlamiyor).
+        self._arac_maliyeti_toplam: float = 0.0
 
     # def _compute_fixed_kiralik_cost(self) -> float:
     #     total = 0.0
@@ -244,12 +250,26 @@ class State:
         new.handling_usage = dict(self.handling_usage)
         new.tir_usage = dict(self.tir_usage)
         new._fixed_kiralik_cost = self._fixed_kiralik_cost
+        new._arac_maliyeti_toplam = self._arac_maliyeti_toplam
         return new
 
     def objective(self) -> float:
-        total = self._fixed_kiralik_cost
+        # DUZELTME: arac maliyeti artik assignment'larin kendi (potansiyel
+        # olarak BAYAT/stale) vehicle_cost degerlerinden degil, _arac_maliyeti_
+        # toplam adli ARTIMLI takip edilen bir alandan okunuyor - bu alan
+        # _commit_leg/force_insert eklerken, _remove_assignment cikarirken
+        # dogru sekilde guncelleniyor (bkz. o fonksiyonlar). Eski yontemde bir
+        # talep silindiginde kapasite takibi guncelleniyordu ama KALAN
+        # taleplerin kayitli vehicle_cost'u guncellenmiyordu - bu da ALNS'in
+        # arama sirasinda gercek olmayan (bayat) bir maliyet sinyaline gore
+        # karar vermesine yol aciyordu (bkz. sohbet gecmisi). Tum bacaklari
+        # her cagrida yeniden taramak (ilk denenen duzeltme) DOGRU ama COK
+        # YAVASTI (ALNS'in iterasyon sayisini ciddi dusurdu) - bu yuzden
+        # artimli takibe gecildi: hem dogru hem O(1).
+        total = self._fixed_kiralik_cost + self._arac_maliyeti_toplam
+
         for a in self.assignments:
-            total += a.vehicle_cost + a.sla_cost
+            total += a.sla_cost
         if self.unassigned:
             # Guvenlik agi: "tum desiler teslim edilmeli" sert bir gereksinim (bkz.
             # plan/PDF). Repair operatorleri her zaman unassigned'i tam bosaltmali;
@@ -386,6 +406,8 @@ class State:
                 if varis_g:
                     self.tir_usage[(dst, varis_g)] = self.tir_usage.get((dst, varis_g), 0) + delta_adet
 
+        self._arac_maliyeti_toplam += marjinal_maliyet
+
         ellecleme_suresi_saat = (desi * 0.01) / 60
 
         self.handling_usage[(src, gun)] = self.handling_usage.get((src, gun), 0.0) + desi
@@ -412,7 +434,7 @@ def _rank_spot_types_by_cost(data: ProblemData, hat: tuple, desi: float) -> list
     bir araç (Tır) seçmek maliyeti ciddi şekilde şişirir; bu yüzden her çağrıda
     gerçek maliyet karşılaştırılır."""
     def tahmini_maliyet(arac_turu: str) -> float:
-        p = data.arac_parametreleri[arac_turu] 
+        p = data.arac_parametreleri[arac_turu]
         kap = p["kapasite_desi"] # Araç türünün kapasitesi
         adet = spot_vehicle_count(desi, kap, 10 ** 9) if desi > 0 else 0 # Bu kadar araç
         birim_maliyet = vehicle_leg_cost(data.route_lookup, hat, arac_turu, p["spot_hourly"], p["spot_km"])
@@ -636,6 +658,7 @@ def _insert_chunk(state: State, hat, gun, slot, desi, rng, talep_id) -> float:
         state.leg_kiralik_desi = kazanan_state.leg_kiralik_desi
         state.handling_usage = kazanan_state.handling_usage
         state.tir_usage = kazanan_state.tir_usage
+        state._arac_maliyeti_toplam = kazanan_state._arac_maliyeti_toplam
         kalan -= kazanan.desi
 
     if kalan > 1e-6:
@@ -650,48 +673,6 @@ def _insert_chunk(state: State, hat, gun, slot, desi, rng, talep_id) -> float:
                 kalan -= a.desi
     return kalan
 
-
-def force_insert(state: State, hat, gun, slot, desi, talep_id) -> None:
-    """Son çare: kapasite kısıtlarını yok sayarak direkt yola zorla ekler — TÜM
-    desilerin teslim edilmesini garanti eder (bkz. plan/PDF: erteleme yasağı).
-    Normal koşullarda spot kapasitesi (MAX_SPOT çok yüksek) bu fonksiyona hiç
-    gelinmeden yeterli olur; bu yalnızca aşırı uç senaryolar için bir emniyet ağıdır.
-    """
-    src, dst = hat
-    data = state.data
-    arac_turu = _rank_spot_types_by_cost(data, hat, desi)[0]  # bu miktar icin en ucuz tur
-    key = (src, dst, gun, slot, arac_turu)
-    eski = state.leg_spot_desi.get(key, 0.0)
-    kap = data.arac_parametreleri[arac_turu]["kapasite_desi"]
-    eski_adet = spot_vehicle_count(eski, kap, 10 ** 9)
-    yeni = eski + desi
-    yeni_adet = spot_vehicle_count(yeni, kap, 10 ** 9)
-    delta_adet = (yeni_adet - eski_adet) 
-    state.leg_spot_desi[key] = yeni
-    p = data.arac_parametreleri[arac_turu]
-
-    ellecleme_maliyet = ellecleme_maliyet_hesapla(desi, p["spot_hourly"])
-    
-    birim = vehicle_leg_cost(data.route_lookup, hat, arac_turu, p["spot_hourly"], p["spot_km"])
-    vehicle_cost = delta_adet * birim + ellecleme_maliyet
-    state.handling_usage[(src, gun)] = state.handling_usage.get((src, gun), 0.0) + desi
-    varis_g = arrival_day(data.route_lookup, data.gunler, hat, gun, slot, arac_turu) or gun
-    state.handling_usage[(dst, varis_g)] = state.handling_usage.get((dst, varis_g), 0.0) + desi
-
-    leg = Leg(src, dst, gun, slot, arac_turu, False)
-
-    #eski
-    # varis = varis_zamani(slot_datetime(gun, slot), data.route_lookup[hat][arac_turu])
-    # tamamlanma = ellecleme_tamamlanma_zamani(varis, desi, consolidation=False)
-    
-    #yeni
-    tamamlanma = _completion_datetime(data, [leg], desi)
-    
-    deadline = sla_deadline(slot_datetime(gun, slot), data.route_lookup[hat]["target_delivery_days"])
-    sla_cost = sla_cezasi_tl(desi, gecikme_saat(tamamlanma, deadline))
-    state.assignments.append(
-        Assignment(hat, gun, slot, desi, (leg,), sla_cost, vehicle_cost, talep_id)
-    )
 
 
 def dummy_initial_builder(state, rng, **kwargs):
@@ -763,15 +744,30 @@ def dummy_initial_builder(state, rng, **kwargs):
 def _remove_assignment(state: State, a: Assignment) -> None:
     for leg in a.legs:
         key = (leg.src, leg.dst, leg.gun, leg.slot, leg.arac_turu)
+        p = state.data.arac_parametreleri[leg.arac_turu]
         if leg.is_kiralik:
-            state.leg_kiralik_desi[key] = state.leg_kiralik_desi.get(key, 0.0) - a.desi
+            # DUZELTME: silme sirasinda da (ekleme sirasindaki gibi) GERCEK
+            # maliyet farkini _arac_maliyeti_toplam'dan dusuyoruz - aksi halde
+            # kalan taleplerin maliyeti BAYATLASIR (bkz. sohbet gecmisi).
+            eski_desi = state.leg_kiralik_desi.get(key, 0.0)
+            yeni_desi = max(0.0, eski_desi - a.desi)
+            state.leg_kiralik_desi[key] = yeni_desi
+            eski_ellecleme = ellecleme_maliyet_hesapla(eski_desi, p["rental_hourly"])
+            yeni_ellecleme = ellecleme_maliyet_hesapla(yeni_desi, p["rental_hourly"])
+            state._arac_maliyeti_toplam += (yeni_ellecleme - eski_ellecleme)
         else:
             eski = state.leg_spot_desi.get(key, 0.0)
-            kap = state.data.arac_parametreleri[leg.arac_turu]["kapasite_desi"]
+            kap = p["kapasite_desi"]
             eski_adet = spot_vehicle_count(eski, kap, MAX_SPOT)
             yeni = max(0.0, eski - a.desi)
             yeni_adet = spot_vehicle_count(yeni, kap, MAX_SPOT)
             state.leg_spot_desi[key] = yeni
+
+            birim = vehicle_leg_cost(state.data.route_lookup, (leg.src, leg.dst), leg.arac_turu, p["spot_hourly"], p["spot_km"])
+            eski_maliyet = eski_adet * birim + ellecleme_maliyet_hesapla(eski, p["spot_hourly"])
+            yeni_maliyet = yeni_adet * birim + ellecleme_maliyet_hesapla(yeni, p["spot_hourly"])
+            state._arac_maliyeti_toplam += (yeni_maliyet - eski_maliyet)
+
             if leg.arac_turu == state.data.tir_arac_turu:
                 delta = yeni_adet - eski_adet
                 state.tir_usage[(leg.src, leg.gun)] = state.tir_usage.get((leg.src, leg.gun), 0) + delta
@@ -1248,7 +1244,12 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
                 for tid, piece_desi, demand_gun, demand_slot in take_from_active_queue(toplam_yuk):
                     kalan2 = _insert_chunk(state, target_hat, demand_gun, demand_slot, piece_desi, rng, tid)
                     if kalan2 > 1e-6:
-                        force_insert(state, target_hat, demand_gun, demand_slot, kalan2, tid)
+                        # DUZELTME: force_insert (kapasiteyi yok sayarak zorla ekleme)
+                        # KULLANMIYORUZ artik - hicbir yere sigmayan kismi, mevcut
+                        # "yerlestirilemedi -> gecikme cezasi öder" mekanizmasina
+                        # (unassigned) gonderiyoruz. Boylece kapasite GERCEKTEN sert
+                        # bir kisit oluyor (bkz. sohbet gecmisi, Task #1).
+                        state.unassigned.append((target_hat, demand_gun, demand_slot, kalan2, tid))
                 remaining_slot_load -= toplam_yuk
 
     # Bu operator SADECE target_hat'i CP-SAT ile cozdu; destroy birden fazla
@@ -1260,6 +1261,7 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
     for (hat2, gun2, slot2, desi2, talep_id2) in kalan_items:
         kalan2 = _insert_chunk(state, hat2, gun2, slot2, desi2, rng, talep_id2)
         if kalan2 > 1e-6:
-            force_insert(state, hat2, gun2, slot2, kalan2, talep_id2)
+            # DUZELTME: force_insert yerine unassigned'a gonder (bkz. yukaridaki not).
+            state.unassigned.append((hat2, gun2, slot2, kalan2, talep_id2))
 
     return state
