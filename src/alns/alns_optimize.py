@@ -55,7 +55,7 @@ from src.alns.alns_engine import (  # noqa: E402
     tm_overload_removal,
     worst_removal,
 )
-from src.alns.time_model import build_route_lookup  # noqa: E402
+from src.alns.time_model import build_route_lookup, slot_datetime, varis_zamani, ellecleme_tamamlanma_zamani  # noqa: E402
 
 # ============================================================================
 # 1. ORTAM DEĞİŞKENLERİ
@@ -293,12 +293,122 @@ for a in best.assignments:
         key = _bucket_key(leg)
         bucket_toplam_desi[key] = bucket_toplam_desi.get(key, 0.0) + a.desi
 
+bucket_parcalari: dict = {}
+for a in best.assignments:
+    for leg_i, leg in enumerate(a.legs):
+        key = _bucket_key(leg)
+        if key not in bucket_parcalari:
+            bucket_parcalari[key] = []
+        bucket_parcalari[key].append((a, leg, a.desi, leg_i))
+
+def _bacak_arac_dagilimi(bucket_key, parcalar):
+    src, dst, gun, slot, arac_turu, is_kiralik = bucket_key
+
+    kap = arac_parametreleri[arac_turu]["kapasite_desi"]
+    sonuc = []
+    arac_index = 0
+    mevcut_doluluk = 0.0
+
+    for (a, leg, desi, leg_i) in parcalar:
+        kalan = desi
+        while kalan > 1e-9:
+            bos_yer = kap - mevcut_doluluk
+            if bos_yer <= 1e-9:
+                arac_index = arac_index + 1
+                mevcut_doluluk = 0.0
+                bos_yer = kap
+            bu_araca = min(kalan, bos_yer)
+            sonuc.append((a, leg, arac_index, bu_araca, leg_i))
+            mevcut_doluluk = mevcut_doluluk + bu_araca
+            kalan = kalan - bu_araca
+
+    return sonuc
+
+bucket_dagilim: dict = {}
+for key in bucket_parcalari:
+    bucket_dagilim[key] = _bacak_arac_dagilimi(key, bucket_parcalari[key])
+
+# COZUM A: Ayni fiziksel araca (bucket_key, arac_index) binen TUM parcalarin
+# ORTAK, TEK bir kalkis/varis zamani olmasi icin - artik her parca kendi
+# (kucuk) desisine gore degil, o aracin GERCEK TOPLAM yukune gore elleclenip
+# kalkiyor. Onceden her assignment kendi desisiyle bagimsiz hesaplaniyordu,
+# bu da ayni araca binen farkli taleplerin farkli kalkis/varis saati
+# gostermesine yol aciyordu (bkz. sohbet gecmisi).
+arac_toplam_yuk: dict = {}
+for key, parcalar in bucket_dagilim.items():
+    for (a, leg, arac_index, pay_desi, leg_i) in parcalar:
+        arac_key = (key, arac_index)
+        arac_toplam_yuk[arac_key] = arac_toplam_yuk.get(arac_key, 0.0) + pay_desi
+
+# COZUM A (devam): sadece toplam yuke gore hesaplamak yetmiyor - bu bacak bir
+# ONCEKI bacaktan gelen aktarmali (relay) bir devam ise, arac o parcanin
+# BAGLANTISININ gelmesini de beklemek zorunda. Her arac (bucket_key,
+# arac_index) icin, kalkis = max( normal yukleme zamani, ustune binen HER
+# aktarmali parcanin kendi baglanti zamani ).
+arac_gruplari: dict = {}
+for key, parcalar in bucket_dagilim.items():
+    for (a, leg, arac_index, pay_desi, leg_i) in parcalar:
+        arac_key = (key, arac_index)
+        arac_gruplari.setdefault(arac_key, []).append((a, leg, pay_desi, leg_i))
+
+# Her (assignment, leg_i) cifti hangi (bucket_key, arac_index)'e denk geliyor -
+# bagimlilik zincirini takip edebilmek icin (leg_i-1'in GERCEK arac_key'ini bulmak).
+# NOT: aynı assignment'in aynı bacaktaki yuku BIRDEN FAZLA araca bolunebilir
+# (bin-packing sirasinda kapasite tasarsa), bu yuzden TEK bir arac_key değil,
+# LISTE tutuyoruz - yoksa bir onceki bacaktaki araclardan biri sessizce
+# unutulup yanlis (erken) bir baglanti zamani hesaplanabilirdi.
+parca_arac_index: dict = {}
+for arac_key, kayitlar in arac_gruplari.items():
+    for (a, leg, pay_desi, leg_i) in kayitlar:
+        parca_arac_index.setdefault((id(a), leg_i), set()).add(arac_key)
+
+# COZUM A (nihai): kalkis = max( normal yukleme zamani, ustune binen HER
+# aktarmali parcanin - kendi ONCEKI bacaginin YENI/duzeltilmis varisina gore -
+# hesaplanan baglanti zamani ). Onceki bacagin zamani da kendisi bu ayni
+# sekilde (once digerlerine bagli) hesaplandigi icin, recursive/memoized
+# olarak (bagimliliklar once cozulerek) hesapliyoruz - zincir her zaman ILERI
+# gittigi icin (leg_i hep artiyor) sonsuz dongu olusmaz.
+arac_zamanlari: dict = {}
+def _arac_zamani_hesapla(arac_key):
+    if arac_key in arac_zamanlari:
+        return arac_zamanlari[arac_key]
+
+    key, arac_index = arac_key
+    kayitlar = arac_gruplari[arac_key]
+    ornek_leg = kayitlar[0][1]
+    slot_zamani = slot_datetime(ornek_leg.gun, ornek_leg.slot)
+    toplam_yuk = arac_toplam_yuk[arac_key]
+
+    yukleme_kalkisi = leg_zaman_cizelgesi(data, [ornek_leg], toplam_yuk)[0][0]
+
+    baglanti_kisitlari = []
+    for (a, leg, pay_desi, leg_i) in kayitlar:
+        if leg_i > 0:
+            # Onceki bacakta bu ayni yuk birden fazla araca binmis olabilir -
+            # hangisinden geldigi belirsiz oldugu icin, EN SON varan aracin
+            # zamanini esas alarak (en guvenli/tutarli tahmin) bekliyoruz.
+            onceki_arac_keyler = parca_arac_index[(id(a), leg_i - 1)]
+            onceki_varisler = [_arac_zamani_hesapla(k)[1] for k in onceki_arac_keyler]
+            onceki_varis = max(onceki_varisler)
+            baglanti_kisitlari.append(
+                ellecleme_tamamlanma_zamani(onceki_varis, pay_desi, consolidation=True)
+            )
+
+    gercek_kalkis = max([yukleme_kalkisi, slot_zamani] + baglanti_kisitlari)
+    seyir = data.route_lookup[(ornek_leg.src, ornek_leg.dst)][ornek_leg.arac_turu]
+    gercek_varis = varis_zamani(gercek_kalkis, seyir)
+    arac_zamanlari[arac_key] = (gercek_kalkis, gercek_varis)
+    return arac_zamanlari[arac_key]
+
+for arac_key in arac_gruplari:
+    _arac_zamani_hesapla(arac_key)
+
 
 def _bacak_arac_sayisi(leg) -> int:
-    if leg.is_kiralik:
-        return 1
     kap = arac_parametreleri[leg.arac_turu]["kapasite_desi"]
     return spot_vehicle_count(bucket_toplam_desi[_bucket_key(leg)], kap, 10 ** 9)
+
+
 
 
 
@@ -308,46 +418,70 @@ for a in best.assignments:
     nihai_kaynak, nihai_varis = a.demand_hat
     if len(a.legs) == 1:
         leg = a.legs[0]
-        # YENİ DEĞİŞİKLİK: Yapay slotu ezip gerçek dakikayı çekiyoruz
-        gercek_dt = assignment_cizelgeleri[id(a)][0][0]
-        gercek_gun = gercek_dt.strftime("%Y-%m-%d")
-        gercek_slot = gercek_dt.strftime("%H:%M")
-        
         rota_tipi = "Direkt" if leg.gun == a.demand_gun and leg.slot == a.demand_slot else "Direkt (Ertelenmis)"
         arac_tipi = ("Kiralik " if leg.is_kiralik else "Spot ") + leg.arac_turu
-        csv_records.append({
-            "Tarih": gercek_gun, "Slot": gercek_slot, "Arac_Tipi": arac_tipi, # BURASI GÜNCELLENDİ
-            "Talep_ID": talep_id_goruntu.get(id(a), a.talep_id),
-            "Cikis_TM": leg.src, "Varis_TM": leg.dst,
-            "Nihai_Kaynak": nihai_kaynak, "Nihai_Varis": nihai_varis,
-            "Bacaktaki_Arac_Sayisi": _bacak_arac_sayisi(leg),
-            "Bu_Talebin_Desisi": round(a.desi, 2),
-            "Bacak_Toplam_Desi": round(bucket_toplam_desi[_bucket_key(leg)], 2),
-            "Maliyet_TL": round(a.vehicle_cost, 2),
-            "Rota_Tipi": rota_tipi, "Talep_Tarihi": a.demand_gun, "Talep_Slotu": a.demand_slot,
-        })
-    else:
-        ara_duraklar = " -> ".join(leg.dst for leg in a.legs[:-1])
-        cizelge = assignment_cizelgeleri[id(a)]
-        for i, leg in enumerate(a.legs):
+        key = _bucket_key(leg)
+        bu_sevkiyatin_paylari = []
+        for (aa, ll, arac_index, pay_desi, ll_i) in bucket_dagilim[key]:
+            if aa is a:
+                bu_sevkiyatin_paylari.append((arac_index, pay_desi))
 
-            gercek_dt = cizelge[i][0]
+        for arac_index, pay_desi in bu_sevkiyatin_paylari:
+            # YENİ DEĞİŞİKLİK (Cozum A): kalkis/varis artik bu SPESIFIK aracin
+            # TOPLAM yukune gore hesaplaniyor, bu talebin kendi desisine gore degil.
+            gercek_dt, varis_dt = arac_zamanlari[(key, arac_index)]
             gercek_gun = gercek_dt.strftime("%Y-%m-%d")
             gercek_slot = gercek_dt.strftime("%H:%M")
-            
-            arac_tipi = ("Kiralik " if leg.is_kiralik else "Spot ") + leg.arac_turu
+            varis_gun = varis_dt.strftime("%Y-%m-%d")
+            varis_saat = varis_dt.strftime("%H:%M")
+
             csv_records.append({
-                "Tarih": gercek_gun, "Slot": gercek_slot, "Arac_Tipi": arac_tipi, # BURASI GÜNCELLENDİ
+                "Tarih": gercek_gun, "Slot": gercek_slot, "Arac_Tipi": arac_tipi,
+                "Arac_ID": f"{'Kiralik' if leg.is_kiralik else 'Spot'}-{leg.src}-{leg.dst}-{leg.gun}-{leg.slot}-{leg.arac_turu}-{arac_index + 1}",
                 "Talep_ID": talep_id_goruntu.get(id(a), a.talep_id),
                 "Cikis_TM": leg.src, "Varis_TM": leg.dst,
                 "Nihai_Kaynak": nihai_kaynak, "Nihai_Varis": nihai_varis,
                 "Bacaktaki_Arac_Sayisi": _bacak_arac_sayisi(leg),
-                "Bu_Talebin_Desisi": round(a.desi, 2),
-                "Bacak_Toplam_Desi": round(bucket_toplam_desi[_bucket_key(leg)], 2),
-                "Maliyet_TL": round(a.vehicle_cost, 2) if i == len(a.legs) - 1 else 0,
-                "Rota_Tipi": f"Konsolidasyon {i + 1}/{len(a.legs)} (via {ara_duraklar}, nihai varis: {nihai_varis})",
-                "Talep_Tarihi": a.demand_gun, "Talep_Slotu": a.demand_slot,
-            })
+                "Bu_Talebin_Desisi": round(pay_desi, 2),
+                "Bacak_Toplam_Desi": round(bucket_toplam_desi[key], 2),
+                "Maliyet_TL": round(a.vehicle_cost * (pay_desi / a.desi), 2),
+                "Rota_Tipi": rota_tipi, "Talep_Tarihi": a.demand_gun, "Talep_Slotu": a.demand_slot,
+                "Varis_Tarihi": varis_gun, "Varis_Saati": varis_saat,
+        })
+    else:
+        ara_duraklar = " -> ".join(leg.dst for leg in a.legs[:-1])
+        for i, leg in enumerate(a.legs):
+
+            arac_tipi = ("Kiralik " if leg.is_kiralik else "Spot ") + leg.arac_turu
+            key = _bucket_key(leg)
+            bu_sevkiyatin_paylari = []
+            for (aa, ll, arac_index, pay_desi, ll_i) in bucket_dagilim[key]:
+                if aa is a:
+                    bu_sevkiyatin_paylari.append((arac_index, pay_desi))
+
+            for arac_index, pay_desi in bu_sevkiyatin_paylari:
+                # YENİ DEĞİŞİKLİK (Cozum A): kalkis/varis artik bu SPESIFIK aracin
+                # TOPLAM yukune gore hesaplaniyor, bu talebin kendi desisine gore degil.
+                gercek_dt, varis_dt = arac_zamanlari[(key, arac_index)]
+                gercek_gun = gercek_dt.strftime("%Y-%m-%d")
+                gercek_slot = gercek_dt.strftime("%H:%M")
+                varis_gun = varis_dt.strftime("%Y-%m-%d")
+                varis_saat = varis_dt.strftime("%H:%M")
+
+                csv_records.append({
+                    "Tarih": gercek_gun, "Slot": gercek_slot, "Arac_Tipi": arac_tipi, # BURASI GÜNCELLENDİ
+                    "Arac_ID": f"{'Kiralik' if leg.is_kiralik else 'Spot'}-{leg.src}-{leg.dst}-{leg.gun}-{leg.slot}-{leg.arac_turu}-{arac_index + 1}",
+                    "Talep_ID": talep_id_goruntu.get(id(a), a.talep_id),
+                    "Cikis_TM": leg.src, "Varis_TM": leg.dst,
+                    "Nihai_Kaynak": nihai_kaynak, "Nihai_Varis": nihai_varis,
+                    "Bacaktaki_Arac_Sayisi": _bacak_arac_sayisi(leg),
+                    "Bu_Talebin_Desisi": round(pay_desi, 2),
+                    "Bacak_Toplam_Desi": round(bucket_toplam_desi[key], 2),
+                    "Maliyet_TL": (round(a.vehicle_cost * (pay_desi / a.desi), 2) if i == len(a.legs) - 1 else 0),
+                    "Rota_Tipi": f"Konsolidasyon {i + 1}/{len(a.legs)} (via {ara_duraklar}, nihai varis: {nihai_varis})",
+                    "Talep_Tarihi": a.demand_gun, "Talep_Slotu": a.demand_slot,
+                    "Varis_Tarihi": varis_gun, "Varis_Saati": varis_saat,
+                })
 
 csv_records.sort(key=lambda r: (r["Tarih"], r["Slot"], r["Cikis_TM"], r["Varis_TM"], r["Talep_Tarihi"], r["Talep_Slotu"]))
 
@@ -475,15 +609,15 @@ if csv_records:
     ws1.title = "Teslim Plani (Talep Bazli)"
     _yaz_sayfa(
         ws1,
-        ["Tarih", "Slot", "Arac Tipi", "Cikis TM", "Varis TM", "Nihai Kaynak", "Nihai Varis",
+        ["Arac ID", "Tarih", "Slot", "Arac Tipi", "Cikis TM", "Varis TM", "Nihai Kaynak", "Nihai Varis",
          "Bacaktaki Arac Sayisi", "Bu Talebin Desisi", "Bacak Toplam Desi", "Maliyet TL",
-         "Rota Tipi", "Talep Tarihi", "Talep Slotu"],
-        [[rec["Tarih"], rec["Slot"], rec["Arac_Tipi"], rec["Cikis_TM"], rec["Varis_TM"],
+         "Rota Tipi", "Talep Tarihi", "Talep Slotu", "Varis Tarihi", "Varis Saati"],
+        [[rec["Arac_ID"], rec["Tarih"], rec["Slot"], rec["Arac_Tipi"], rec["Cikis_TM"], rec["Varis_TM"],
           rec["Nihai_Kaynak"], rec["Nihai_Varis"],
           rec["Bacaktaki_Arac_Sayisi"], rec["Bu_Talebin_Desisi"], rec["Bacak_Toplam_Desi"],
-          rec["Maliyet_TL"], rec["Rota_Tipi"], rec["Talep_Tarihi"], rec["Talep_Slotu"]]
+          rec["Maliyet_TL"], rec["Rota_Tipi"], rec["Talep_Tarihi"], rec["Talep_Slotu"], rec["Varis_Tarihi"], rec["Varis_Saati"]]
          for rec in csv_records],
-        [12, 8, 16, 14, 14, 14, 14, 14, 14, 14, 12, 30, 14, 10],
+        [40, 12, 8, 16, 14, 14, 14, 14, 14, 14, 14, 12, 30, 14, 10, 14, 10],
     )
 
     ws2 = wb.create_sheet("Arac Sevkiyat Ozeti")

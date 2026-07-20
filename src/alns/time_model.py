@@ -27,7 +27,6 @@ DISPATCH_SLOTS = [
 DEMAND_ARRIVAL_TIMES = [
     "09:00", "17:00"
 ]
-KIRALIK_DISPATCH_SLOT = DEMAND_ARRIVAL_TIMES[0]
 
 RouteLookup = dict[tuple[str, str], dict]
 
