@@ -12,6 +12,7 @@ küçük-pencere bir repair operatörü olarak devreye girer.
 """
 
 from __future__ import annotations
+from collections import defaultdict
 
 import json
 import os
@@ -44,9 +45,13 @@ from src.alns.cost_model import spot_vehicle_count  # noqa: E402
 from src.alns.alns_engine import (  # noqa: E402
     ProblemData,
     State,
+    dummy_initial_builder,
     cpsat_hat_repair,
     greedy_repair,
+    leg_zaman_cizelgesi,
     random_removal,
+    low_occupancy_removal,
+    shaw_related_removal,
     tm_overload_removal,
     worst_removal,
 )
@@ -118,15 +123,17 @@ gunler = sorted(df_forecast["gun_key"].unique())
 merkezler = sorted(set(handling_capacity) | set(tir_capacity))
 
 # (hat,gun,slot) -> desi şeklinde bir dict. slot'tan kasıt 09:00, 17:00
+# burası ebubekirin tahmin modelinden gelen her talep için bir kimlik.
 talep_verisi: dict = {}
+talep_id_map: dict = {}
 for row in df_forecast.itertuples():
     hat = (row.source, row.destination)
     key = (hat, row.gun_key, row.slot)
     talep_verisi[key] = talep_verisi.get(key, 0.0) + max(0.0, float(row.recommended_demand))
+    talep_id_map[key] = row.talep_id
 
-# Desi'si 0 olan talepleri göz ardı etmek için yeni liste.
 demands = [
-    (hat, gun, slot, round(desi))
+    (hat, gun, slot, round(desi), talep_id_map[(hat, gun, slot)])
     for (hat, gun, slot), desi in talep_verisi.items()
     if round(desi) > 0
 ]
@@ -153,7 +160,7 @@ data = ProblemData(
 rng = rnd.default_rng(42) # Neden 42 seedini veriyoruz generator'ü oluşturmak için?
 
 initial_state = State(data) 
-initial_state = greedy_repair(initial_state, rng) # Burada neden removal kullanmadan repair yapmış claude?
+initial_state = dummy_initial_builder(initial_state, rng) # Burada neden removal kullanmadan repair yapmış claude?
 initial_obj = initial_state.objective() # mevcut çözümün maliyeti
 print(f"Baslangic (greedy) cozum maliyeti: {initial_obj:,.0f} TL")
 
@@ -165,6 +172,8 @@ alns = ALNS(rng) # ALNS'yi generator ile kurduk
 alns.add_destroy_operator(random_removal, "random_removal") 
 alns.add_destroy_operator(worst_removal, "worst_removal")
 alns.add_destroy_operator(tm_overload_removal, "tm_overload_removal")
+alns.add_destroy_operator(low_occupancy_removal, "low_occupancy_removal")
+alns.add_destroy_operator(shaw_related_removal, "shaw_related_removal")
 alns.add_repair_operator(greedy_repair, "greedy_repair")
 alns.add_repair_operator(cpsat_hat_repair, "cpsat_hat_repair")
 
@@ -174,12 +183,12 @@ alns.add_repair_operator(cpsat_hat_repair, "cpsat_hat_repair")
 # Reddedilen berbat bir sonuç -> 0.5 puan
 # decay -> unutma katsayısı. Eski başarılara takılıp kalmamak için puanlar her iterasyonda %80 korunur.
 
-select = RouletteWheel(scores=[25, 5, 2, 0.5], decay=0.8, num_destroy=3, num_repair=2) 
+select = RouletteWheel(scores=[25, 5, 2, 0.5], decay=0.8, num_destroy=5, num_repair=2) 
 # num_iters tahmini: cpsat_hat_repair en fazla 5 sn, greedy cok daha hizli -
 # ortalama ~2 sn/iterasyon varsayimi (kaba, autofit sicaklik egrisini olceklemek icin yeterli).
 tahmini_iterasyon = max(20, int(ENV_MAX_TIME / 2))
 accept = SimulatedAnnealing.autofit(
-    init_obj=initial_obj, worse=0.05, accept_prob=0.5, num_iters=tahmini_iterasyon
+    init_obj=initial_obj, worse=0.06, accept_prob=0.5, num_iters=tahmini_iterasyon
 )
 stop = MaxRuntime(ENV_MAX_TIME)
 
@@ -187,23 +196,44 @@ stop = MaxRuntime(ENV_MAX_TIME)
 # ayrintili arama logunun ALNS'teki esdegeri (bkz. sohbet gecmisi: "eskiden her
 # saniye/yenisini bulduğunda görünürdü" - ALNS varsayilan motor olduktan sonra
 # bu geri bildirim hic eklenmemisti).
-_ilerleme_baslangic = time.time()
-_ilerleme_sayac = {"n": 0}
+_ilerleme_baslangic = time.time() # Şu anki zaman.
+_ilerleme_sayac = {"n": 0} # Daha iyi bir maliyet buldukca artirilir.
 
 
 def _yeni_en_iyi_bulundu(candidate_state, rng_):
     _ilerleme_sayac["n"] += 1
-    gecen_sn = time.time() - _ilerleme_baslangic
-    print(f"  [{gecen_sn:7.1f} sn] Yeni en iyi #{_ilerleme_sayac['n']}: {candidate_state.objective():,.0f} TL")
+    gecen_sn = time.time() - _ilerleme_baslangic # şu ana kadar ne kadar süre geçti?
+    print(f"[{gecen_sn:7.1f} sn] Yeni en iyi #{_ilerleme_sayac['n']}: {candidate_state.objective():,.0f} TL")
 
 
-alns.on_best(_yeni_en_iyi_bulundu)
+alns.on_best(_yeni_en_iyi_bulundu)# ALNS en iyi maliyeti bulunca bu callback fonksiyonu çağırsın diyoruz.
 
 print(f"ALNS calistiriliyor (bütce: {ENV_MAX_TIME:.0f} sn)...")
 result = alns.iterate(initial_state, select, accept, stop)
 best: State = result.best_state
 print(f"ALNS tamamlandi. En iyi maliyet: {best.objective():,.0f} TL "
       f"(baslangica gore {'%.1f' % (100 * (1 - best.objective() / max(1, initial_obj)))}% iyilesme)")
+
+def _talep_id_goruntule():
+    """Nihai cozumdeki her Assignment'in hangi ID ile gorunecegini hesaplar.
+    Bir talep birden fazla parcaya bolunmusse -1,-2... eki eklenir; tek
+    parcaysa direkt ID kalir. Bos ID'ler (cok nadir, bilinen bir sinirlama
+    icin) hic dokunulmadan birakilir."""
+    gruplu = defaultdict(list)
+    for a in best.assignments:
+        if a.talep_id:  # bos ID'leri disarida birak
+            gruplu[a.talep_id].append(a)
+
+    goruntu_id = {}
+    for kok_id, parcalar in gruplu.items():
+        if len(parcalar) == 1:
+            goruntu_id[id(parcalar[0])] = kok_id
+        else:
+            for i, a in enumerate(parcalar, start=1):
+                goruntu_id[id(a)] = f"{kok_id}-{i}"
+    return goruntu_id
+
+talep_id_goruntu = _talep_id_goruntule()
 
 # ---- Kapasite ihlali dogrulamasi (bu oturumun kontrolu icin, kalici test degil) ----
 ihlal_sayisi = 0
@@ -233,7 +263,24 @@ output_xlsx = results_dir / "optimization_results.xlsx"
 def _bucket_key(leg):
     return (leg.src, leg.dst, leg.gun, leg.slot, leg.arac_turu, leg.is_kiralik)
 
+# Her kargonun (assignment) kendi bağımsız zaman çizelgesini hesaplıyoruz - başka
+# bir kargonun aynı bacağı ne zaman kullandığına bakmadan, sadece bu kargonun kendi
+# elleçleme+yol süresine göre gerçek kalkış/varış anlarını buluyoruz.
+# bucket_gercek_kalkis ise sadece "bu bacak en son ne zaman kalkmış" bilgisini özet
+# tabloda göstermek için - hiçbir kargonun kendi zaman hesabına karışmıyor.
+assignment_cizelgeleri = {}   # id(a) -> [(kalkis0, varis0), (kalkis1, varis1), ...]
+bucket_gercek_kalkis = {}     # bucket_key -> en gec kalkis (sadece ozet icin)
 
+for a in best.assignments:
+    cizelge = leg_zaman_cizelgesi(data, a.legs, a.desi)
+    assignment_cizelgeleri[id(a)] = cizelge
+    for leg, (kalkis, _varis) in zip(a.legs, cizelge):
+        key = _bucket_key(leg)
+        if key not in bucket_gercek_kalkis:
+            bucket_gercek_kalkis[key] = kalkis
+        else:
+            bucket_gercek_kalkis[key] = max(bucket_gercek_kalkis[key], kalkis)
+            
 # Bacak (leg-dispatch) basina GERCEK toplam desi - birden fazla talep parcasi
 # ayni fiziksel sevkiyati (ayni TM-cift/gun/slot/arac_turu) paylasabilir; tek
 # tek assignment'in kendi desi'sinden arac sayisi hesaplamak (eski yontem)
@@ -254,15 +301,23 @@ def _bacak_arac_sayisi(leg) -> int:
     return spot_vehicle_count(bucket_toplam_desi[_bucket_key(leg)], kap, 10 ** 9)
 
 
+
+
 csv_records = []
 for a in best.assignments:
     nihai_kaynak, nihai_varis = a.demand_hat
     if len(a.legs) == 1:
         leg = a.legs[0]
+        # YENİ DEĞİŞİKLİK: Yapay slotu ezip gerçek dakikayı çekiyoruz
+        gercek_dt = assignment_cizelgeleri[id(a)][0][0]
+        gercek_gun = gercek_dt.strftime("%Y-%m-%d")
+        gercek_slot = gercek_dt.strftime("%H:%M")
+        
         rota_tipi = "Direkt" if leg.gun == a.demand_gun and leg.slot == a.demand_slot else "Direkt (Ertelenmis)"
         arac_tipi = ("Kiralik " if leg.is_kiralik else "Spot ") + leg.arac_turu
         csv_records.append({
-            "Tarih": leg.gun, "Slot": leg.slot, "Arac_Tipi": arac_tipi,
+            "Tarih": gercek_gun, "Slot": gercek_slot, "Arac_Tipi": arac_tipi, # BURASI GÜNCELLENDİ
+            "Talep_ID": talep_id_goruntu.get(id(a), a.talep_id),
             "Cikis_TM": leg.src, "Varis_TM": leg.dst,
             "Nihai_Kaynak": nihai_kaynak, "Nihai_Varis": nihai_varis,
             "Bacaktaki_Arac_Sayisi": _bacak_arac_sayisi(leg),
@@ -272,15 +327,18 @@ for a in best.assignments:
             "Rota_Tipi": rota_tipi, "Talep_Tarihi": a.demand_gun, "Talep_Slotu": a.demand_slot,
         })
     else:
-        # Konsolidasyon: bacağın kendi uçları (Cikis_TM/Varis_TM) ile talebin GERÇEK
-        # nihai varışı (Nihai_Varis) farklı olabilir — örn. Kocaeli->Eskişehir bacağı,
-        # aslında Eskişehir üzerinden Isparta'ya giden bir yükü taşıyor olabilir.
-        # Bu ayrım olmadan konsolidasyon anlamsız/gereksiz göründüğü için eklendi.
-        ara_duraklar = " -> ".join(leg.dst for leg in a.legs[:-1])  # tum aktarma noktalari (1 ya da 2)
+        ara_duraklar = " -> ".join(leg.dst for leg in a.legs[:-1])
+        cizelge = assignment_cizelgeleri[id(a)]
         for i, leg in enumerate(a.legs):
+
+            gercek_dt = cizelge[i][0]
+            gercek_gun = gercek_dt.strftime("%Y-%m-%d")
+            gercek_slot = gercek_dt.strftime("%H:%M")
+            
             arac_tipi = ("Kiralik " if leg.is_kiralik else "Spot ") + leg.arac_turu
             csv_records.append({
-                "Tarih": leg.gun, "Slot": leg.slot, "Arac_Tipi": arac_tipi,
+                "Tarih": gercek_gun, "Slot": gercek_slot, "Arac_Tipi": arac_tipi, # BURASI GÜNCELLENDİ
+                "Talep_ID": talep_id_goruntu.get(id(a), a.talep_id),
                 "Cikis_TM": leg.src, "Varis_TM": leg.dst,
                 "Nihai_Kaynak": nihai_kaynak, "Nihai_Varis": nihai_varis,
                 "Bacaktaki_Arac_Sayisi": _bacak_arac_sayisi(leg),
@@ -317,19 +375,54 @@ if data.tir_arac_turu is not None:
 dispatch_records = []
 for key, toplam_desi in sorted(bucket_toplam_desi.items()):
     src, dst, gun, slot, arac_turu, is_kiralik = key
+    gercek_dt = bucket_gercek_kalkis[key]
+    gercek_gun = gercek_dt.strftime("%Y-%m-%d")
+    gercek_slot = gercek_dt.strftime("%H:%M")
+    
     kap = arac_parametreleri[arac_turu]["kapasite_desi"]
     adet = 1 if is_kiralik else spot_vehicle_count(toplam_desi, kap, 10 ** 9)
     dispatch_records.append({
-        "Tarih": gun, "Slot": slot, "Cikis_TM": src, "Varis_TM": dst,
+        "Tarih": gercek_gun, "Slot": gercek_slot, "Cikis_TM": src, "Varis_TM": dst, # BURASI GÜNCELLENDİ
         "Arac_Tipi": ("Kiralik " if is_kiralik else "Spot ") + arac_turu,
         "Arac_Sayisi": adet, "Toplam_Desi": round(toplam_desi, 2), "Kapasite": kap,
         "Doluluk_Yuzde": round(100 * toplam_desi / (adet * kap), 1) if adet else 0,
     })
 
-# Kiralıklar sabit toplanamaz! Spotlar gibi dinamik toplanmalıdır!
 kiralik_sabit_toplam = best._fixed_kiralik_cost
-spot_toplam_maliyet = sum(a.vehicle_cost for a in best.assignments)
+# Kiralıkların elleçleme maliyetini bucket üzerinden ayrıştırıyoruz
+kiralik_ellecleme_toplam = 0.0
+for key, toplam_desi in bucket_toplam_desi.items():
+    src, dst, gun, slot, arac_turu, is_kiralik = key
+    if is_kiralik:
+        p = arac_parametreleri[arac_turu]
+        # Kiralık araca yüklenen toplam desinin yarattığı saatlik maliyet
+        kiralik_ellecleme_toplam += ((toplam_desi * 0.01) / 60) * p["rental_hourly"]
+
+# Atamalardaki tüm araç maliyetleri (Spot Tamamı + Kiralık Elleçleme)
+karma_arac_maliyeti = sum(a.vehicle_cost for a in best.assignments)
+
+# Spot ve Kiralık maliyetleri birbirinden temizce ayırıyoruz
+spot_toplam_maliyet = karma_arac_maliyeti - kiralik_ellecleme_toplam
+kiralik_gercek_toplam = kiralik_sabit_toplam + kiralik_ellecleme_toplam
 sla_ceza_toplam = sum(a.sla_cost for a in best.assignments)
+
+# YENİ: Kapasite aşım cezalarını hesapla
+ellecleme_ceza_toplam = 0.0
+for tm, cap in data.handling_capacity.items():
+    for gun in data.gunler:
+        asim = best.handling_usage.get((tm, gun), 0.0) - cap
+        if asim > 0:
+            ellecleme_ceza_toplam += asim * 1000.0
+
+tir_ceza_toplam = 0.0
+if data.tir_arac_turu is not None:
+    for tm, cap in data.tir_capacity.items():
+        for gun in data.gunler:
+            kullanim = best.tir_usage.get((tm, gun), 0) + data.fixed_kiralik_tir_usage.get((tm, gun), 0)
+            asim = kullanim - cap
+            if asim > 0:
+                tir_ceza_toplam += asim * 50000.0
+
 genel_toplam = best.objective()
 konsolidasyon_sayisi = sum(1 for a in best.assignments if len(a.legs) > 1)
 
@@ -337,16 +430,19 @@ ozet = f"""
 {'=' * 80}
 OZET ISTATISTIKLER (Faz 2 - ALNS, saat bazli, konsolidasyon destekli)
 {'=' * 80}
-  Kiralık Sabit Maliyet       : {kiralik_sabit_toplam:>15,.0f} TL
+  Kiralık Arac Maliyeti       : {kiralik_gercek_toplam:>15,.0f} TL
+      -> Sabit Seyir          : {kiralik_sabit_toplam:>15,.0f} TL
+      -> Ellecleme (Marjinal) : {kiralik_ellecleme_toplam:>15,.0f} TL
   Spot Arac Maliyeti          : {spot_toplam_maliyet:>15,.0f} TL
   SLA Gecikme Cezasi          : {sla_ceza_toplam:>15,.0f} TL
 {'-' * 80}
-  TOPLAM MALIYET              : {genel_toplam:>15,.0f} TL
-{'=' * 80}
-  Baslangic (greedy) maliyet  : {initial_obj:>15,.0f} TL
-  Toplam atama sayisi         : {len(best.assignments)}
-  Konsolidasyonlu (relay) sayi: {konsolidasyon_sayisi}
-  Karsilanamayan (garanti 0)  : {sum(x[3] for x in best.unassigned):>15,.2f} desi
+  OPERASYONEL MALIYET         : {(kiralik_gercek_toplam + spot_toplam_maliyet + sla_ceza_toplam):>15,.0f} TL
+{'-' * 80}
+  KAPASITE ASIM CEZALARI (Sanal Maliyetler)
+      -> Ellecleme Asim Cezasi: {ellecleme_ceza_toplam:>15,.0f} TL
+      -> TIR Park Asim Cezasi : {tir_ceza_toplam:>15,.0f} TL
+{'-' * 80}
+  TOPLAM MALIYET (Objective)  : {genel_toplam:>15,.0f} TL
 {'=' * 80}
 """
 print(ozet)

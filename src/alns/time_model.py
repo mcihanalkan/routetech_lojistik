@@ -9,7 +9,7 @@ sabit kalmasını sağlayan kilit karardır — bkz. plan dosyası.
 from __future__ import annotations
 
 import math
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 
@@ -21,7 +21,13 @@ from src.config import (
 
 # Talep günde yalnızca bu iki sabit saatte oluşur (PDF: "Talep Tamamlanma Saati").
 # Kalkış kararları da bu epoklarda alınır.
-DISPATCH_SLOTS = ["09:00", "17:00"]
+DISPATCH_SLOTS = [
+    "00:00", "04:00", "08:00", "12:00","16:00", "20:00"
+]
+DEMAND_ARRIVAL_TIMES = [
+    "09:00", "17:00"
+]
+KIRALIK_DISPATCH_SLOT = DEMAND_ARRIVAL_TIMES[0]
 
 RouteLookup = dict[tuple[str, str], dict]
 
@@ -52,17 +58,13 @@ def seyir_suresi_saat(route_lookup: RouteLookup, source: str, destination: str, 
 
 
 def ellecleme_suresi_dakika(desi: float, consolidation: bool = False) -> float:
-    """Elleçleme süresi = desi * 0.01 dk. Konsolidasyonda (indir + tekrar yükle) 2x sayılır."""
+    """Elleçleme süresi = desi * 0.01 dk. Konsolidasyonda (indir + tekrar yükle) 2x sayılır.
+    En yakın büyük tam sayıya yuvarlanır. Konsolidasyonda 2x sayılır."""
     sure = desi * ELLECLEME_DAKIKA_PER_DESI
-    return sure * 2 if consolidation else sure
+    sure = sure * 2 if consolidation else sure
+    return math.ceil(sure)
 
 
-def ellecleme_maliyet_hesapla(desi: float, kiralık_saat_maliyet: float) -> float:
-    """Elleçleme süresi = desi * 0.01 dk. Konsolidasyonda (indir + tekrar yükle) 2x sayılır."""
-    sure = desi * ELLECLEME_DAKIKA_PER_DESI
-    sure_saat = sure / 60
-    maliyet = sure_saat * kiralık_saat_maliyet
-    return maliyet
 
 
 def varis_zamani(kalkis: datetime, seyir_saat: float) -> datetime:
@@ -112,7 +114,7 @@ def arrival_day(
         return None
     toplam_saat = slot_to_hour(slot) + entry[arac_turu]
     gun_offset = int(toplam_saat // 24)
-    varis_gun = (pd.Timestamp(gun) + pd.Timedelta(days=gun_offset)).strftime("%Y-%m-%d")
+    varis_gun = (date.fromisoformat(gun) + timedelta(days=gun_offset)).isoformat()
     return varis_gun if varis_gun in valid_days else None
 
 
@@ -129,11 +131,11 @@ def next_dispatch_slot(
     slotta asla kalkış yapılmaz (elleçlemeye zaman tanımak için).
     `valid_days` ufkunun dışına düşerse None."""
     toplam_saat = slot_to_hour(slot) + seyir_saat
-    gun_offset, saat_of_day = divmod(toplam_saat, 24)
-    for aday_slot in DISPATCH_SLOTS:
+    gun_offset, saat_of_day = divmod(toplam_saat, 24) 
+    for aday_slot in DEMAND_ARRIVAL_TIMES:
         if slot_to_hour(aday_slot) > saat_of_day:
-            aday_gun = (pd.Timestamp(gun) + pd.Timedelta(days=int(gun_offset))).strftime("%Y-%m-%d")
+            aday_gun = (date.fromisoformat(gun) + timedelta(days=int(gun_offset))).isoformat()
             return (aday_gun, aday_slot) if aday_gun in valid_days else None
     # Günün tüm slotları geride kaldı -> ertesi günün ilk slotu
-    aday_gun = (pd.Timestamp(gun) + pd.Timedelta(days=int(gun_offset) + 1)).strftime("%Y-%m-%d")
-    return (aday_gun, DISPATCH_SLOTS[0]) if aday_gun in valid_days else None
+    aday_gun = (date.fromisoformat(gun) + timedelta(days=int(gun_offset) + 1)).isoformat()
+    return (aday_gun, DEMAND_ARRIVAL_TIMES[0]) if aday_gun in valid_days else None

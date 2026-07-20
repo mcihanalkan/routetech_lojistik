@@ -11,6 +11,10 @@ Performans Mimarisi:
   - Dönüşüm maliyeti (Polars → Pandas) benchmark'ta < 50ms — ihmal edilebilir.
 
 Strateji:
+  Sansürlenmiş Talep     : Rota bazında (her hedef sütun için AYRI AYRI)
+                            14 günlük rolling_max ile sahte tavan (false
+                            ceiling) tespiti + %5 şişirme — tüm lag/rolling/
+                            backlog adımlarından ÖNCE çalışır (PDF Bölüm 3)
   Zaman özellikleri      : weekday, month, quarter, is_weekend, week_of_year
   Lag özellikleri        : lag_1, lag_7, lag_14, lag_30   (leakage riski sıfır)
   Tatil özellikleri      : `holidays` kütüphanesi — TR resmi + dini bayram
@@ -33,7 +37,7 @@ Kural:
 """
 
 import logging
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict
 
 import numpy as np
 import pandas as pd
@@ -173,6 +177,8 @@ def add_campaign_features(
     date_column: str,
     lead_days: int = 5,
     group_column: Optional[str] = None,
+    campaign_release_alpha: float = 5.25,
+    campaign_max_release_days: int = 6,
 ) -> pl.DataFrame:
     """
     E-Ticaret kampanya günlerini, kampanya öncesi sipariş dönemini VE
@@ -206,8 +212,17 @@ def add_campaign_features(
         aktif gün sayısı (Int64, 1-indeksli). Eve döneminde -1.
     campaign_release_index : Kampanya sonrası üstel sönümlü "release" sinyali
         (Float64) — campaign_release_alpha/max_campaign_release_days ile
-        ayarlanır (varsayılan: alpha=2.5, 6 gün — holiday'in 1.4/4'ünden
-        daha YAVAŞ sönüm, çünkü gözlemlenen etki daha uzun sürüyor).
+        ayarlanır (varsayılan: alpha=5.25, 6 gün — holiday'in 1.4/4'ünden
+        daha YAVAŞ sönüm, çünkü gözlemlenen etki daha uzun sürüyor;
+        Çarşamba/Perşembe rezidüsü çok hızlı sönüyordu ve o günlerde
+        ~293 bin desilik ciddi bir underprediction'a yol açıyordu — bkz.
+        debug_backtest.py Babalar Günü ablasyonu. ⚠️ DİKKAT: alpha
+        büyüdükçe kuyruk daha da uzar; bu değer sadece ilgili backtest
+        penceresinde doğrulanmıştır, farklı kampanya/rota profillerinde
+        tekrar kalibre edilmeden production'a alınmamalıdır — aşırı büyük
+        alpha, kampanya etkisi çoktan bitmiş günlerde de gereksiz yere
+        yüksek tahmin üretebilir (overprediction riski diğer günlere
+        kayar).
 
     Parameters
     ----------
@@ -238,21 +253,24 @@ def add_campaign_features(
           .cast(pl.Int8).alias("is_campaign_eve"),
     ])
 
-    # v15: Kampanya SONRASI birikim/sönüm — tatildeki AYNI çekirdek, farklı
-    # bayrak (is_campaign_eve). alpha=2.5/max_release_days=6, holiday'in
-    # 1.4/4'ünden daha yavaş sönüyor çünkü gözlemlenen post-kampanya etkisi
-    # (bkz. fonksiyon docstring'i) daha uzun sürüyor. Bu iki parametre ilk
-    # tahmindir — yeniden HPO/backtest sonrası ayarlanabilir.
+    # v17: Kampanya SONRASI birikim/sönüm — tatildeki AYNI çekirdek, farklı
+    # bayrak (is_campaign_eve). alpha=5.25/max_release_days=6 — Çarşamba/
+    # Perşembe rezidüsü çok hızlı sönüyordu (depolar hâlâ dolu olmasına
+    # rağmen model hacmi erken düşürüyor, ~293 bin desilik underprediction'a
+    # yol açıyordu). alpha=5.25 ile exp(-resumption/alpha) daha yavaş sönüyor.
+    # ⚠️ Bu değer ilgili backtest penceresine göre kalibre edildi — HPO
+    # sonrası ve farklı veri setlerinde yeniden doğrulanmadan production'a
+    # kalıcı olarak gömülmemeli.
     df = _compute_streak_backlog_features(
         df,
         flag_col="is_campaign_eve",
         group_column=group_column,
-        alpha=2.5,
+        alpha=campaign_release_alpha,
         accumulated_col="accumulated_campaign_eve_days",
         resumption_col="days_since_campaign_end",
         release_col="campaign_release_index",
         weight_col=None,
-        max_release_days=6,
+        max_release_days=campaign_max_release_days,
         tmp_prefix="_camp",
     )
 
@@ -262,6 +280,100 @@ def add_campaign_features(
     )
     return df
 
+
+
+# ---------------------------------------------------------------------------
+# 2.6 Gecikmeli Kampanya Etkisi — Lag Matrisi + Kategorik Etkileşim
+#     (PDF: "Gecikmeli Kampanya Etkisi: Online Sipariş ile Fiziksel
+#     Karşılama Arasındaki Faz Kayması" — Teknik 1 ve Teknik 3)
+# ---------------------------------------------------------------------------
+
+def add_campaign_lag_interaction_features(
+    df: pl.DataFrame,
+    date_column: str,
+    group_column: Optional[str] = None,
+    n_lags: int = 2,
+) -> pl.DataFrame:
+    """
+    Dijital sipariş anı (Pazar kampanya) ile fiziksel lojistik gerçekleşme
+    anı (Pazartesi/Salı yığılma) arasındaki faz kaymasını (phase shift)
+    modele hiçbir sert kural (if-else) olmadan öğretir.
+
+    Teknik 1 — Zaman Kaydırma (Temporal Shifting):
+        is_campaign_day bayrağını takip eden günlere taşıyan
+        campaign_lag_1 .. campaign_lag_{n_lags} sütunları üretir.
+        Örn. Pazar kampanya varsa, Pazartesi satırında campaign_lag_1 == 1
+        olur. Karar ağacı "Gün=Pazartesi" ve "campaign_lag_1==1" yapraklarında
+        hedefteki büyük artışı doğrudan yakalar (PDF, "Tarih/Gün/is_campaign/
+        campaign_lag_1/campaign_lag_2" örnek tablosu).
+
+    Teknik 3 — Kategorik Etkileşim Matrisi (Cross-Interaction):
+        campaign_lag_1 ile haftanın gününü birleştiren tek bir kategorik
+        sütun (Campaign_Lag1_Day_Interaction) üretir — örn. "CampaignLag1_5"
+        (Cuma kampanyasının ardından gelen Cumartesi-Pazar nedeniyle
+        Pazartesiye sarkan "Post-Weekend Holiday Effect"i, Çarşamba
+        kampanyasının Perşembe'de hızlı erimesinden ayrıştırır).
+
+    ⚠️  ÖNEMLİ — Özellik Uzayı Ortogonalleştirmesi (Çift Sayım Önleme):
+    Bu fonksiyonun ürettiği TÜM sütunlar (campaign_lag_*,
+    Campaign_Lag1_Day_Interaction) yalnızca Taban (Stage 1 / q50) modeline
+    verilmelidir. is_campaign_day'in doğrudan türevi oldukları için Kalıntı
+    (Surge/Residual, Stage 2) modeline verilmemelidir — aksi halde PDF'in
+    tanımladığı "Çift Sayım" (Double-Counting) paradoksu tekrar oluşur.
+    Bu ayrım forecasters.py::SURGE_STATIC_EXCLUDED_FEATURES listesinde
+    mekanik olarak uygulanır; bu fonksiyon sadece üretimden sorumludur.
+
+    Parameters
+    ----------
+    df            : Polars DataFrame (is_campaign_day zaten hesaplanmış olmalı
+                    — bkz. add_campaign_features, bu fonksiyondan ÖNCE çağrılmalı)
+    date_column   : Kullanılmıyor, imza tutarlılığı için tutuldu
+    group_column  : Rota bazında shift (leakage'sız); None ise tek seri
+    n_lags        : Kaç gün sonrasına kadar kampanya etkisi taşınsın (varsayılan: 2)
+
+    Returns
+    -------
+    pl.DataFrame
+    """
+    if "is_campaign_day" not in df.columns:
+        logger.debug(
+            "⚠️  add_campaign_lag_interaction_features atlandı: "
+            "'is_campaign_day' sütunu yok (add_campaign_features önce çağrılmalı)."
+        )
+        return df
+
+    over_keys = [group_column] if group_column and group_column in df.columns else None
+
+    lag_exprs = []
+    for lag in range(1, n_lags + 1):
+        col_name = f"campaign_lag_{lag}"
+        shifted = pl.col("is_campaign_day").shift(lag)
+        if over_keys:
+            shifted = shifted.over(over_keys)
+        lag_exprs.append(shifted.fill_null(0).cast(pl.Int8).alias(col_name))
+    df = df.with_columns(lag_exprs)
+
+    # Kategorik etkileşim: sadece campaign_lag_1 (en güçlü sinyal, ertesi gün)
+    # ile haftanın günü birleştirilir. weekday yoksa (add_time_features henüz
+    # çağrılmadıysa) etkileşim üretilmez — sessizce atlanır.
+    if "weekday" in df.columns:
+        df = df.with_columns([
+            pl.when(pl.col("campaign_lag_1") == 1)
+              .then(pl.lit("CampaignLag1_day") + pl.col("weekday").cast(pl.Utf8))
+              .otherwise(pl.lit("NoCampaignLag1_day") + pl.col("weekday").cast(pl.Utf8))
+              .alias("Campaign_Lag1_Day_Interaction")
+        ])
+    else:
+        logger.debug(
+            "⚠️  Campaign_Lag1_Day_Interaction üretilmedi: 'weekday' sütunu yok "
+            "(add_time_features, add_campaign_lag_interaction_features'tan ÖNCE çağrılmalı)."
+        )
+
+    logger.debug(
+        f"✅ Gecikmeli Kampanya Etkisi özellikleri eklendi: "
+        f"campaign_lag_1..{n_lags}, Campaign_Lag1_Day_Interaction (Polars)."
+    )
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -917,6 +1029,127 @@ def add_organic_backlog_features(
 
 
 # ---------------------------------------------------------------------------
+# 2.9 Sansürlenmiş Talep (Censored Demand) Kısıtlarının Kaldırılması
+# ---------------------------------------------------------------------------
+
+def unconstrain_censored_demand(
+    df: pl.DataFrame,
+    target_columns: Union[str, List[str]],
+    group_column: Optional[str],
+    window: int = 14,
+    min_volume_threshold: float = 50.0,
+    cap_ratio: float = 0.98,
+    inflation_factor: float = 1.05,
+) -> pl.DataFrame:
+    """
+    Sahte tavanları (kapasiteye takılıp eksik yazılmış kargoları) düzeltir.
+
+    SOTA raporu (Bölüm 3 — Unconstraining) — bu adım build_feature_matrix
+    içinde Adım 1'den HEMEN SONRA, Adım 2'den (zaman özellikleri) ve
+    özellikle Organik Backlog / Lag / Rolling / Momentum adımlarından
+    ÖNCE çalıştırılır. Aksi halde tüm geçmişe-bakan istatistikler
+    (organic_activity_ratio*, lag_*, rolling_mean_*, ema_*, ...)
+    sansürlenmiş/kırpılmış hacimlerden beslenir ve q90 tahmini kalıcı
+    olarak eksik kalır (false ceiling). Hedef sütun(lar) burada
+    kendisi düzeltildiği için, ardından hesaplanacak her özellik
+    otomatik olarak "kısıtsız" (unconstrained) talebi yansıtır.
+
+    Wide format (09:00 / 17:00) desteği
+    -------------------------------------
+    target_columns birden fazla sütun içeriyorsa (örn.
+    ["toplam_desi_0900", "toplam_desi_1700"]), her sütun KENDİ rota bazlı
+    geçmişine göre AYRI AYRI kontrol edilir (09:00 kesimi 17:00 kesiminin
+    tavanından etkilenmez). Üretilen bayrak sütunu da slot soneki alır:
+    is_demand_censored_0900, is_demand_censored_1700. Tek sütun verilirse
+    eski sütun adı (is_demand_censored) korunur.
+
+    Mantık
+    ------
+    1. Yerel Tavan   : Rota/grup bazında (`over(group_column)`) son
+                       `window` günün (bugün dahil) hareketli maksimumu
+                       (`rolling_max`) hesaplanır.
+    2. Sansür Tespiti: Bir günün hacmi hem gürültü eşiğinin üzerindeyse
+                       (`> min_volume_threshold`, mikro dalgalanmaları
+                       dışlamak için) HEM DE o günün yerel tavanının
+                       `cap_ratio` (örn. %98) katına eşit veya
+                       üzerindeyse, bu gün kapasiteye çarpıp
+                       sansürlenmiş kabul edilir.
+    3. Düzeltme      : Sansürlü olarak işaretlenen günlerin hedef
+                       değeri `inflation_factor` (örn. 1.05) ile
+                       çarpılarak sahte tavan kaldırılır (%5 şişirme).
+
+    Parameters
+    ----------
+    df                    : Polars DataFrame (tarihe göre sıralı olmalı)
+    target_columns        : Düzeltilecek hedef sütun(lar) — str veya
+                             List[str] (örn. ["toplam_desi_0900", "toplam_desi_1700"])
+    group_column          : Rota/grup sütunu (örn. "rota", "TM_ID"); None ise tek seri
+    window                : Yerel tavanın hesaplanacağı gün penceresi
+    min_volume_threshold  : Mikro gürültüyü dışlamak için alt hacim eşiği
+    cap_ratio             : Tavana "değme" oranı (0.98 → %98)
+    inflation_factor      : Sansürlü günlere uygulanacak şişirme çarpanı
+
+    Returns
+    -------
+    pl.DataFrame
+        Her `target_columns` üyesi sansürsüzleştirilmiş (unconstrained)
+        değerlerle güncellenmiş olarak döner. Ek olarak her hedef için
+        `is_demand_censored{suffix}` (Int8, 0/1) bayrak sütunu eklenir
+        (denetlenebilirlik için).
+    """
+    target_cols: List[str] = [target_columns] if isinstance(target_columns, str) else list(target_columns)
+
+    for tcol in target_cols:
+        if tcol not in df.columns:
+            logger.warning(
+                f"⚠️  '{tcol}' bulunamadı — unconstrain_censored_demand() bu sütun için atlandı."
+            )
+            continue
+
+        # Tek sütunda eski isim korunur; birden fazla sütunda slot soneki eklenir
+        # (lag_/rolling_ ile aynı '_0900' / '_1700' desenine uyar).
+        if len(target_cols) <= 1:
+            suffix = ""
+        else:
+            parts = tcol.rsplit("_", 1)
+            suffix = f"_{parts[-1]}" if len(parts) > 1 else f"_{tcol}"
+
+        # Cihan'ın yakaladığı bug'ın çözümü: shift(1) ile bugünü tavan hesabından çıkar
+        rolling_max_expr = pl.col(tcol).shift(1).rolling_max(window_size=window, min_samples=1)
+        if group_column and group_column in df.columns:
+            rolling_max_expr = rolling_max_expr.over(group_column)
+
+        local_cap_col = f"_local_cap_{window}{suffix}"
+        df = df.with_columns(rolling_max_expr.alias(local_cap_col))
+
+        is_censored = (
+            (pl.col(tcol) > min_volume_threshold)
+            & (pl.col(tcol) >= cap_ratio * pl.col(local_cap_col))
+        )
+
+        flag_col = f"is_demand_censored{suffix}"
+        df = df.with_columns([
+            is_censored.cast(pl.Int8).alias(flag_col),
+            pl.when(is_censored)
+              .then(pl.col(tcol) * inflation_factor)
+              .otherwise(pl.col(tcol))
+              .alias(tcol),
+        ])
+
+        n_censored = int(df.select(pl.col(flag_col).sum()).item())
+        df = df.drop(local_cap_col)
+
+        logger.info(
+            f"✅ Sansürlenmiş talep düzeltmesi (unconstraining) uygulandı: "
+            f"{n_censored} gün sahte tavana takılmış olarak işaretlendi ve "
+            f"×{inflation_factor} ile şişirildi (target='{tcol}', "
+            f"window={window}, cap_ratio={cap_ratio})."
+        )
+
+    return df
+
+
+# ---------------------------------------------------------------------------
 # 3. Lag (Gecikme) Özellikleri
 # ---------------------------------------------------------------------------
 
@@ -1088,6 +1321,159 @@ def add_rolling_features(
 
     df = df.with_columns(roll_exprs)
     logger.debug(f"✅ Rolling özellikler eklendi (Polars): {produced_names}")
+    return df
+
+
+# ---------------------------------------------------------------------------
+# 4.1 Rota Bazlı Hedef Ölçeklendirme (Target Normalization) — PDF Strateji 2
+# ---------------------------------------------------------------------------
+
+DEFAULT_TARGET_SCALE_WINDOW_DAYS: int = 14
+DEFAULT_TARGET_SCALE_MIN: float = 1.0
+
+
+def add_scale_invariant_targets(
+    df: pl.DataFrame,
+    target_columns: Union[str, List[str]],
+    group_column: Optional[str],
+    window_days: int = DEFAULT_TARGET_SCALE_WINDOW_DAYS,
+    min_scale: float = DEFAULT_TARGET_SCALE_MIN,
+) -> pl.DataFrame:
+    """
+    PDF Strateji 2 — Rota Bazlı Hedef Ölçeklendirme (Target Normalization).
+
+    Neden: CatBoost'un Simetrik Ağaç (Oblivious Tree) mimarisi, bir
+    seviyedeki TÜM düğümler için ortak bir ayrım (split) kararı vermek
+    zorundadır (bkz. forecasters.py::_compute_decision_regret_weights
+    docstring'i — "Su Yatağı Etkisi"). Ayrım kriteri mutlak hata/varyans
+    azalmasına göre belirlendiğinden, 30.000 hacimli bir rotadaki %5'lik
+    bir iyileşme, 100 hacimli bir rotadaki %90'lık bir iyileşmeden çok
+    daha büyük bir gradyan sinyali üretir; ağaç yapısı büyük rotaların
+    dinamiklerine göre şekillenir ve küçük rotaları ihmal eder.
+
+    Çözüm: Hedefi, rotanın kendi SIZINTISIZ (yalnızca geçmiş) W-günlük
+    hareketli ortalamasına ("scale_factor") bölmek. Bu, 30.000 hacimli
+    ve 100 hacimli rotaları ağaç gözünde AYNI ölçeğe (≈1.0 civarı bir
+    "çarpan") getirir — ağaç artık mutlak hacim yerine mevsimsellik/
+    eşdeğişken kaynaklı ORANSAL sapmayı öğrenir (bkz. modül docstring'i,
+    "Rota Tipi" karşılaştırma tablosu).
+
+    Kantil Regresyonunun Eşdeğişkenlik (Equivariance) Özelliği:
+    Q_tau(Y/c) = Q_tau(Y)/c  (c > 0 sabit bir skaler için). CatBoost'un
+    MultiQuantile (Pinball loss) kayıp fonksiyonu bu özelliği sağladığından,
+    scaled hedef üzerinden eğitilen q10/q50/q90 tahminleri, çıkarım
+    (inference) aşamasında AYNI scale_factor ile geri çarpılarak
+    (un-scaling) orijinal (desi) uzayında kusursuz ve teorik olarak doğru
+    kantil aralıkları elde edilir — bkz. forecasters.py predict() /
+    _predict_single_batch() (un-scale adımı).
+
+    ⚠️  Leakage Güvencesi: scale_factor, shift(1) (bugünü hariç tutar) +
+    rolling_mean(window_size=window_days, min_samples=1) ile SADECE
+    geçmiş W güne bakar — add_rolling_features() ile BİREBİR AYNI
+    shift+rolling deseni kullanılır (bkz. yukarısı), dolayısıyla aynı
+    leakage garantisini taşır.
+
+    Alt Eşik (min_scale): Lojistik verilerinde sıklıkla karşılaşılan aşırı
+    düşük hacimli günlerde (scale_factor ≈ 0) bölme işleminin patlayıp
+    (division blow-up) scaled hedefi ve dolayısıyla gradyanları
+    ıraksatmasını (divergence) önlemek için scale_factor `min_scale`
+    (varsayılan 1.0) altına düşemez.
+
+    Wide format (09:00 / 17:00) desteği
+    -------------------------------------
+    target_columns birden fazla sütun içeriyorsa, her hedef için AYRI AYRI
+    scale_factor VE {hedef}_scaled üretilir, sütun adına slot soneki
+    eklenir:
+      scale_factor_0900, toplam_desi_0900_scaled, ...
+      scale_factor_1700, toplam_desi_1700_scaled, ...
+    Tek hedef sütun verilirse sonek yok: scale_factor, {target}_scaled
+    (eski/legacy tek-serili akışla geriye dönük uyumlu).
+
+    Parameters
+    ----------
+    df             : Polars DataFrame (date'e göre sıralı olmalı)
+    target_columns : Hedef sütun adı (str) veya sütun listesi (List[str])
+    group_column   : Grup (rota) sütunu; None ise tek seri
+    window_days    : Sızıntısız hareketli ortalama pencere uzunluğu (gün)
+    min_scale      : scale_factor için alt eşik (division blow-up önlemi)
+
+    Returns
+    -------
+    pl.DataFrame
+        Girdi df + her hedef için `scale_factor{suffix}` ve
+        `{hedef}_scaled{suffix}` sütunları eklenmiş hali. Orijinal hedef
+        sütunları HİÇBİR ŞEKİLDE değiştirilmez — ham (raw) ölçekte
+        kapasite proxy'si / regret / metrik hesapları bu sütunlara
+        bağımlı kalmaya devam eder (bkz. _compute_decision_regret_weights).
+    """
+    target_cols: List[str] = [target_columns] if isinstance(target_columns, str) else list(target_columns)
+
+    # --- 1. Ham (sızıntısız) scale_factor: shift(1) + rolling_mean ---
+    scale_exprs = []
+    scale_alias_map: Dict[str, str] = {}
+    for tcol in target_cols:
+        suffix = _feature_suffix(tcol, target_cols)
+        scale_alias = f"scale_factor{suffix}"
+        scale_alias_map[tcol] = scale_alias
+        shifted = pl.col(tcol).shift(1)
+
+        if group_column and group_column in df.columns:
+            scale_expr = (
+                shifted
+                .rolling_mean(window_size=window_days, min_samples=1)
+                .over(group_column)
+                .alias(scale_alias)
+            )
+        else:
+            scale_expr = (
+                shifted
+                .rolling_mean(window_size=window_days, min_samples=1)
+                .alias(scale_alias)
+            )
+        scale_exprs.append(scale_expr)
+
+    df = df.with_columns(scale_exprs)
+
+    # --- 2. İlk günler (rolling geçmişi olmayan satırlar) için doldurma + ---
+    #        alt eşik (division blow-up önlemi) ---
+    fill_and_clip_exprs = []
+    for tcol in target_cols:
+        scale_alias = scale_alias_map[tcol]
+
+        # Global (tüm veri seti) ortalaması — rotanın hiç geçmişi yoksa
+        # (fold'un ilk günü / yeni açılan rota) düşülecek son çare fallback.
+        # Diğer fonksiyonlardaki (organic backlog, proxy-spo capacity)
+        # "global_fallback" deseniyle tutarlı.
+        _global_mean = df.select(pl.col(tcol).mean()).item()
+        global_fallback = float(_global_mean) if _global_mean is not None else min_scale
+
+        if group_column and group_column in df.columns:
+            filled = (
+                pl.col(scale_alias)
+                .fill_null(strategy="forward")
+                .over(group_column)
+                .fill_null(global_fallback)
+            )
+        else:
+            filled = pl.col(scale_alias).fill_null(strategy="forward").fill_null(global_fallback)
+
+        clipped = pl.when(filled < min_scale).then(min_scale).otherwise(filled).alias(scale_alias)
+        fill_and_clip_exprs.append(clipped)
+
+    df = df.with_columns(fill_and_clip_exprs)
+
+    # --- 3. Ölçeklenmiş hedef: volume / scale_factor ---
+    scaled_exprs = []
+    produced_names: List[str] = []
+    for tcol in target_cols:
+        scale_alias = scale_alias_map[tcol]
+        scaled_alias = f"{tcol}_scaled"
+        scaled_exprs.append((pl.col(tcol) / pl.col(scale_alias)).alias(scaled_alias))
+        produced_names += [scale_alias, scaled_alias]
+
+    df = df.with_columns(scaled_exprs)
+
+    logger.debug(f"✅ Rota Bazlı Hedef Ölçeklendirme eklendi (Polars): {produced_names}")
     return df
 
 
@@ -1332,6 +1718,11 @@ def build_feature_matrix(
     rolling_windows: List[int] = DEFAULT_ROLLING_WINDOWS,
     holiday_lead_days: int = HOLIDAY_LEAD_DAYS,
     drop_na: bool = True,
+    campaign_release_alpha: float = 5.25,
+    campaign_max_release_days: int = 6,
+    enable_target_scaling: bool = False,
+    target_scale_window_days: int = DEFAULT_TARGET_SCALE_WINDOW_DAYS,
+    target_scale_min: float = DEFAULT_TARGET_SCALE_MIN,
 ) -> pd.DataFrame:
     """
     Tüm feature engineering adımlarını sırayla uygulayan ana fonksiyon.
@@ -1353,9 +1744,17 @@ def build_feature_matrix(
 
     Adım sırası (data leakage riskine göre):
       1. Pandas → Polars dönüşümü + tarih sıralaması
+      1.5 Sansürlenmiş Talep (Censored Demand) düzeltmesi (her hedef sütun
+                                  için AYRI AYRI, rota bazlı 14 günlük
+                                  rolling_max ile sahte tavan tespiti +
+                                  %5 şişirme — tüm sonraki adımlardan ÖNCE)
       2. Zaman özellikleri      (mevcut satırdan, leakage yok)
       3. Tatil özellikleri      (mevcut tarihten, leakage yok)
       3.5 Kampanya özellikleri   (e-ticaret zirveleri + arife, leakage yok)
+      3.6 Gecikmeli Kampanya Lag/Etkileşim (campaign_lag_1/2,
+                                  Campaign_Lag1_Day_Interaction — faz kayması,
+                                  SADECE Stage 1/Taban modeline; bkz.
+                                  forecasters.py::SURGE_STATIC_EXCLUDED_FEATURES)
       3.8 Organik backlog özellikleri (takvimden bağımsız durgunluk sinyali +
                                   is_closed ile birleşen genel "is_low_activity"
                                   tetikleyicisi; her hedef sütun için AYRI AYRI,
@@ -1363,6 +1762,13 @@ def build_feature_matrix(
       4. Spatio-temporal        (grup × zaman etkileşimi)
       5. Lag özellikleri        (her hedef sütun için AYRI AYRI, shift() ile leakage yok)
       6. Rolling istatistikler  (her hedef sütun için AYRI AYRI, shift(1) + rolling, leakage yok)
+      6.1 Rota Bazlı Hedef Ölçeklendirme (Target Normalization, PDF Strateji 2 —
+                                  opsiyonel, enable_target_scaling=True ise):
+                                  her hedef sütun için AYRI AYRI, sızıntısız
+                                  W-günlük rolling ortalamaya (scale_factor)
+                                  bölünerek {hedef}_scaled üretilir. Orijinal
+                                  hedef sütunları DEĞİŞMEZ — yalnızca ek
+                                  sütunlar eklenir (bkz. add_scale_invariant_targets).
       6.2 Momentum (ivme)       (ema_3, momentum_ratio_3_14 — her hedef sütun için AYRI
                                   AYRI, shift(1) tabanlı, leakage yok; kısa vadeli trend
                                   kırılmalarını rolling_mean'in gecikmesi olmadan yakalar)
@@ -1396,6 +1802,14 @@ def build_feature_matrix(
     rolling_windows  : Rolling pencere boyutları
     holiday_lead_days: Tatil arifesi kaç gün önceden başlasın
     drop_na          : Lag'den kaynaklanan NaN satırları at (varsayılan: True)
+    enable_target_scaling    : True ise PDF Strateji 2 (Rota Bazlı Hedef
+                                Ölçeklendirme) uygulanır — her hedef için
+                                `scale_factor{suffix}` ve `{hedef}_scaled{suffix}`
+                                sütunları eklenir (varsayılan: False — geriye
+                                dönük uyumluluk; DemandForecaster kendi
+                                target_scaling_enabled_ bayrağıyla açar).
+    target_scale_window_days : Sızıntısız hedef-ölçekleme rolling penceresi (gün).
+    target_scale_min         : scale_factor alt eşiği (division blow-up önlemi).
 
     Returns
     -------
@@ -1433,6 +1847,17 @@ def build_feature_matrix(
         pl.col(date_column).cast(pl.Datetime).alias(date_column)
     )
 
+    # --- Adım 1.5: Sansürlenmiş Talep (Censored Demand) Düzeltmesi ---
+    # KRİTİK: Organik Backlog (3.8) / Lag (5) / Rolling (6) / Momentum (6.2)
+    # adımlarından ÖNCE çalıştırılmalı — aksi halde tüm geçmişe-bakan
+    # istatistikler sahte tavana (false ceiling) takılmış kırpılmış
+    # hacimlerden beslenir (PDF Bölüm 3 — Unconstraining). Wide format'ta
+    # her hedef sütun (09:00/17:00) KENDİ rota bazlı geçmişine göre ayrı
+    # ayrı düzeltilir.
+    pl_df = unconstrain_censored_demand(
+        pl_df, target_columns=target_cols, group_column=group_column
+    )
+
     # --- Adım 2: Zaman özellikleri ---
     pl_df = add_time_features(pl_df, date_column)
 
@@ -1443,7 +1868,24 @@ def build_feature_matrix(
     # lead_days=3: Anneler Günü gibi kampanyalarda 5 günlük arife
     # Nisan/Mayıs tatil birikim dönemleriyle çakışıyor.
     # 3 gün, gerçek e-ticaret sipariş penceresini daha temiz modelliyor.
-    pl_df = add_campaign_features(pl_df, date_column, lead_days=3, group_column=group_column)
+    pl_df = add_campaign_features(
+        pl_df,
+        date_column,
+        lead_days=3,
+        group_column=group_column,
+        campaign_release_alpha=campaign_release_alpha,
+        campaign_max_release_days=campaign_max_release_days,
+    )
+
+    # --- Adım 3.6: Gecikmeli Kampanya Etkisi (Lag Matrisi + Kategorik Etkileşim) ---
+    # is_campaign_day (Adım 3.5) ve weekday (Adım 2) sütunlarına bağımlı,
+    # ikisinden de SONRA çalıştırılır. Ürettiği campaign_lag_* ve
+    # Campaign_Lag1_Day_Interaction sütunları SADECE Taban modeline (Stage 1)
+    # gitmeli — forecasters.py::SURGE_STATIC_EXCLUDED_FEATURES bu ayrımı
+    # Kalıntı (Surge) modeli tarafında mekanik olarak uygular.
+    pl_df = add_campaign_lag_interaction_features(
+        pl_df, date_column, group_column=group_column, n_lags=2
+    )
 
     # --- Adım 3.7: Kaggle Takvim Özellikleri (Maaş günü + Rota-Gün + Birikim) ---
     # is_holiday ve is_campaign_eve sütunlarına bağımlı olduğu için
@@ -1476,6 +1918,22 @@ def build_feature_matrix(
     pl_df = add_rolling_features(
         pl_df, target_cols, group_column, windows=rolling_windows
     )
+
+    # --- Adım 6.1: Rota Bazlı Hedef Ölçeklendirme (PDF Strateji 2) ---
+    # Adım 6'dan HEMEN sonra çalışır çünkü add_rolling_features ile birebir
+    # aynı shift(1)+rolling_mean(min_samples=1) deseninden faydalanır — bu
+    # noktada hedef sütunları hâlâ Adım 1.5'te (Censored Demand) düzeltilmiş
+    # "gerçek" (unconstrained) hacimlerdir; sonraki adımlar (momentum,
+    # cross-lag, hub/graph/hierarchical) bu sıradan etkilenmez çünkü onlar
+    # hedef sütunların HAM (orijinal) haline bakar, scaled kopyasına değil.
+    if enable_target_scaling:
+        pl_df = add_scale_invariant_targets(
+            pl_df,
+            target_cols,
+            group_column,
+            window_days=target_scale_window_days,
+            min_scale=target_scale_min,
+        )
 
     # --- Adım 6.2: Kısa Vadeli Momentum (İvme) Özellikleri ---
     # lag_14/lag_30 ve rolling_mean_7/14 geniş pencereden baktığı için ani

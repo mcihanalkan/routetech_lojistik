@@ -47,6 +47,45 @@ Talep Patlaması (Surge) Entegrasyonu — PDF Referansı:
     yetersiz veriyle (surge_min_rows altı) eğitilemediğinde B Planı
     olarak devrede kalır.
 
+Çift Sayım (Double-Counting) ve Gecikmeli Kampanya Etkisi Entegrasyonu
+(bkz. PDF "Fiziksel Lojistik Hacim Tahminlemesinde İki Aşamalı Modeller:
+Gecikmeli Kampanya Etkisi ve Çift Sayım Sorunlarının Çözümü"):
+  1. Özellik Uzayı Ortogonalleştirmesi — SURGE_STATIC_EXCLUDED_FEATURES
+     (bu dosyada) is_campaign_day/is_campaign_eve/is_holiday/campaign_lag_*
+     gibi statik bayrakları Kalıntı (Stage 2) modelinin feature matrisinden
+     çıkarır; bkz. _train_surge_residual_model.
+  2. Gecikmeli Kampanya Etkisi (faz kayması) — features.py::
+     add_campaign_lag_interaction_features ile üretilen campaign_lag_1/2 ve
+     Campaign_Lag1_Day_Interaction, SADECE Taban (Stage 1) modeline gider;
+     Pazar kampanyasının Pazartesi/Salı'daki fiziksel yansımasını organik
+     olarak öğretir.
+  3. Dinamik Asimetrik Kayıp + Uyarlanabilir Örneklem Ağırlıklandırması —
+     bkz. _compute_surge_dampening_weights: Pazar+kampanya satırlarında,
+     Taban modelin ZATEN yükselttiği tahminlere göre CatBoost'un
+     gradyan/Hessian ve split-arama ağırlığını aynı anda sönümleyen tek
+     bir vektör (surge_dampening_alpha_ ile ayarlanır, 0 → kapalı).
+
+Karar-Farkındalıklı Öğrenme (Proxy SPO) — PDF Bölüm 1 ("Karar-Farkındalıklı
+Öğrenme (Proxy SPO) ve Örneklem Ağırlıklandırma Stratejileri"):
+  Taban model (Model 1 — 4-fold ensemble) artık CatBoost'un yerleşik kayıp
+  fonksiyonunu (MultiQuantile) DEĞİŞTİRMEDEN, her fold'un KENDİ train
+  penceresinden (walk-forward, leakage yok) türetilen bir `decision_weight`
+  vektörüyle eğitiliyor — bkz. _compute_decision_regret_weights.
+  Mantık: ALNS'in gerçek maliyeti istatistiksel hata değil, karar
+  pişmanlığıdır (Regret = Cost(x*(ŷ),c) - Cost(x*(c),c)). C++ çekirdeğine
+  dokunmadan bu etkiyi simüle etmek için, o rotanın geçmiş hacim dağılımından
+  (fold içi, sadece o ana kadarki günler) ampirik bir "kapasite" proxy'si
+  (örn. 90. persentil) çıkarılır; kapasiteyi aşan (spot araç riski taşıyan)
+  satırlara aşım miktarı × spot maliyet katsayısıyla orantılı, kapasite
+  altındaki satırlara ise daha düşük (atıl kapasite maliyetine orantılı)
+  bir ağırlık verilir. Ham pişmanlık skorları min-max normalize edilip
+  [1.0, 5.0] aralığına sıkıştırılarak Pool(weight=...) parametresine
+  verilir — CatBoost'un split arama ve gradyan büyüklüğü otomatik olarak
+  bu ağırlıkla ölçeklenir. Ek çalışma süresi maliyeti yoktur (ALNS
+  çözücüsü hiç çağrılmaz — tamamen vektörize Pandas/NumPy ön-işleme).
+  proxy_spo_enabled=False → tamamen kapalı, eski davranışla (weight=None)
+  birebir geriye dönük uyumlu.
+
 Quantile Anlamları (ALNS motoruna):
   q10 → Düşük senaryo  : "En kötümser, ama gerçekçi alt sınır"
   q50 → Medyan         : "En olası talep tahmini"
@@ -60,6 +99,9 @@ Asimetrik Kayıp Mantığı:
 
 import pandas as pd
 import numpy as np
+import polars as pl  # PDF Bölüm 1 / Strateji 1 — Ters Hacim Ağırlıklandırması
+                      # (Gradient Equalization) için sızıntısız rolling-mean
+                      # hesaplaması; bkz. _compute_decision_regret_weights.
 import logging
 import time
 import joblib
@@ -124,12 +166,12 @@ class AsymmetricLogCoshObjective:
     Kullanım
     --------
     >>> model = CatBoostRegressor(
-    ...     loss_function=AsymmetricLogCoshObjective(tau=0.85),
+    ...     loss_function=AsymmetricLogCoshObjective(tau=0.95),
     ...     eval_metric="RMSE",   # custom objective ile birlikte zorunlu
     ... )
     """
 
-    def __init__(self, tau: float = 0.85, eps: float = 1e-12):
+    def __init__(self, tau: float = 0.95, eps: float = 1e-12):
         if not (0.0 < tau < 1.0):
             raise ValueError(f"❌ tau (0,1) aralığında olmalı, verilen: {tau}")
         self.tau = float(tau)
@@ -305,8 +347,56 @@ SURGE_BINARY_TRIGGER_COLUMNS: List[str] = [
 # Sürekli (binary olmayan) sinyal — pozitif değer, kapanış sonrası ilk
 # saatlerdeki üstel-azalan birikim baskısını temsil eder (bkz. features.py:
 # backlog_release_index = α · exp(-d/alpha)).
-SURGE_CONTINUOUS_TRIGGER_COLUMN: str = "backlog_release_index"
+SURGE_CONTINUOUS_TRIGGER_COLUMNS: List[str] = [
+    "backlog_release_index",
+    "campaign_release_index",
+]
 SURGE_CONTINUOUS_TRIGGER_THRESHOLD: float = 0.05
+
+# ---------------------------------------------------------------------------
+# Özellik Uzayı Ortogonalleştirmesi (Feature Orthogonalization) — PDF Bölüm
+# "Çift Sayım (Double-Counting) Paradoksunun Algoritmik Anatomisi" +
+# "Kalıntı Modelini Sönümleme Stratejileri"
+# ---------------------------------------------------------------------------
+# Bu sütunlar, Taban (Stage 1/q50) modelin zaten absorbe ettiği STATİK
+# takvimsel/kampanya bayraklarıdır. Kalıntı (Stage 2/Surge) modeline HAM
+# haliyle verilirlerse, asimetrik kayıp fonksiyonu aynı sinyale tekrar ve
+# çok daha agresif tepki verir → "Çift Sayım" (bkz. PDF, %145 aşırı tahmin
+# vakası). SURGE_BINARY_TRIGGER_COLUMNS (yukarıda) hâlâ hangi SATIRLARIN
+# Kalıntı modeline gireceğine (mask) karar vermek için kullanılır — bu
+# listedeki sütunlar sadece Kalıntı modelinin FEATURE MATRİSİNDEN çıkarılır,
+# maskeleme mantığından değil. Kalıntı modeli bunun yerine sadece dinamik
+# sinyallerle (backlog_release_index, campaign_release_index, rolling/EWMA
+# istatistikler, day_of_week vb.) beslenir — PDF'in "sistemde biriken gerçek
+# fiziksel strese tepki verir, statik bir kampanya bayrağına değil" ilkesi.
+SURGE_STATIC_EXCLUDED_FEATURES: List[str] = [
+    "is_campaign_day",
+    "is_campaign_eve",
+    "is_post_campaign",
+    "is_holiday",
+    "is_holiday_eve",
+    "is_post_holiday",
+    "is_closed",
+    # campaign_lag_*/Campaign_Lag1_Day_Interaction (bkz. features.py::
+    # add_campaign_lag_interaction_features) is_campaign_day'in doğrudan
+    # türevidir — faz kaymasını Taban modelin öğrenmesi İÇİN üretildi,
+    # Kalıntı modeline verilirse aynı çift-sayım riskini taşır.
+    "campaign_lag_1",
+    "campaign_lag_2",
+    "Campaign_Lag1_Day_Interaction",
+]
+
+# Uyarlanabilir Örneklem Ağırlıklandırması (Adaptive Sample Weighting) — PDF
+# Bölüm "Uyarlanabilir Örneklem Ağırlıklandırması (Adaptive Sample Weighting)"
+# + "Dinamik Asimetrik Kayıp ve Gradyan Sönümleme". Pazar günü kampanya
+# tetiklediği ve Taban modelin ZATEN yüksek bir q50 ürettiği satırlarda,
+# Kalıntı modelinin gradyanını/Hessian'ını (calc_ders_range'in `weights`
+# argümanı üzerinden — bkz. AsymmetricLogCoshObjective) ve CatBoost'un split
+# arama ağırlığını AYNI ANDA sönümleyen tek bir vektör üretir. PDF bu iki
+# tekniği ayrı ayrı sunar (biri gradient-level γ_i, diğeri sample_weight);
+# matematiksel etkileri örtüştüğü için burada TEK bir ağırlık dizisinde
+# birleştirildi (gereksiz karmaşıklık önlendi, aynı amaca hizmet ediyorlar).
+SURGE_SUNDAY_WEEKDAY_VALUE: int = 6   # add_time_features: weekday 0=Pzt..6=Paz
 
 
 # ---------------------------------------------------------------------------
@@ -373,9 +463,16 @@ class DemandForecaster(BaseForecaster):
         (bkz. modül docstring'i — PDF Bölüm 1+3). Varsayılan: True.
     surge_log_cosh_tau : float
         Asimetrik Log-Cosh kaybının τ katsayısı (0 < τ < 1). Spot
-        kiralama maliyetinin atıl kapasiteye oranını yansıtır; τ=0.85
-        → eksik tahmin, aşırı tahminden ~5.7x daha ağır cezalandırılır.
-        Varsayılan: 0.85.
+        kiralama maliyetinin atıl kapasiteye oranını yansıtır; τ=0.95
+        → eksik tahmin, aşırı tahminden ~19x daha ağır cezalandırılır.
+        Varsayılan: 0.95.
+        ⚠️  Bu constructor parametresi geriye dönük uyumluluk / raporlama
+        (get_params, summary) için tutulur. _train_surge_residual_model()
+        artık FİİLEN bu değeri kullanmaz — hangi saati tahmin ettiğimize
+        göre (target_column içinde "1700" var mı) dinamik olarak
+        τ=0.95 (17:00, zirve yakalama) veya τ=0.85 (09:00, stabilite)
+        seçer. Sabit 0.95, 17:00'yi iyileştirirken 09:00 modelini
+        bozuyordu; bu ayrım o regresyonu gidermek için eklendi.
     surge_min_rows : int
         Surge modelinin eğitilebilmesi için train setinde gereken
         minimum tetikleyici satır sayısı. Altında kalırsa surge modeli
@@ -392,6 +489,32 @@ class DemandForecaster(BaseForecaster):
         Bu durum uncertainty.py'nin neredeyse her satıra "HIGH" etiketi
         basmasına yol açar. MultiQuantile modellerinde False bırakın.
         Varsayılan: False.
+    surge_relative_cap_alpha : float, optional
+        (bkz. yukarıdaki Faz 2 notu) correction'ı baseline hacmin bir
+        oranıyla sınırlar. None = kapalı. Varsayılan: None.
+    proxy_spo_enabled : bool
+        PDF Bölüm 1 (Karar-Farkındalıklı Öğrenme / Proxy SPO) — True ise,
+        Model 1'in (Taban ensemble) her fold'unda Pool(weight=...)
+        karar-pişmanlığı temelli bir örneklem ağırlığıyla eğitilir (bkz.
+        _compute_decision_regret_weights). False → weight=1.0 (eski
+        davranış, geriye dönük uyumlu). Varsayılan: True.
+    proxy_spo_capacity_quantile : float
+        Rota bazlı ampirik "kapasite" proxy'si için kullanılan persentil
+        (0 < q < 1). Fold'un train penceresindeki geçmiş hacimlerin bu
+        persentili, o rotanın kapasite limiti sayılır — üzerindeki günler
+        spot araç riski taşır. Varsayılan: 0.90.
+    proxy_spo_spot_cost_multiplier : float
+        Kapasiteyi AŞAN satırlarda, aşım miktarına (excess) uygulanan
+        çarpan. Spot araç kiralamanın atıl kapasiteye göre ne kadar
+        pahalı olduğunu yansıtır — yüksek tutulur. Varsayılan: 3.0.
+    proxy_spo_idle_cost_multiplier : float
+        Kapasitenin ALTINDA kalan satırlarda, açığa (deficit) uygulanan
+        çarpan. Atıl kapasitenin nispeten düşük maliyetini yansıtır —
+        spot_cost_multiplier'dan düşük tutulmalıdır. Varsayılan: 1.0.
+    proxy_spo_weight_clip : Tuple[float, float]
+        Ham pişmanlık skorları min-max normalize edildikten sonra
+        sıkıştırılacağı (lo, hi) aralığı — gradyan patlamalarını önler.
+        Varsayılan: (1.0, 5.0).
     logging_enabled : bool
         Detaylı log. Varsayılan: True
     random_state : int, optional
@@ -447,7 +570,26 @@ class DemandForecaster(BaseForecaster):
     # 1.0, 0.7, 0.5, 0.3 — regret VE fark%'ın sıfıra en yakın olduğu (üstüne
     # taşmayan) noktayı arayın, sadece en düşük regret'i değil (bkz. surge
     # kalibrasyonundaki asimetrik-metrik uyarısı — burada da aynı risk var).
+    # 🔻 REVERT (2026-07-17): 1.0 → 0.0. 06-21→06-27 doğrulamasında ham
+    # (1.0x) değer underprediction'ı fazlasıyla aştı (+13%..+35%
+    # overprediction) ve predict_sequential()'ın recursive/autoregressive
+    # akışında bias'ın hafta boyunca katlanmasına (compounding) yol açtı —
+    # production'da 15M desi'lik bir tahminin ~1.2 milyara şişmesine sebep
+    # oldu. Kapatılana kadar (0.0) bu deneysel bias devre dışı kalmalı;
+    # tekrar açmadan önce ayrı, temiz bir doğrulama penceresinde test edin.
     _WEEKDAY_BIAS_SCALE: float = 0.0
+
+    # ⚠️ DENEYSEL / TEST AMAÇLI — Pazar (17:00) için çarpımsal küçültme.
+    # _EMPIRICAL_WEEKDAY_BIAS_1700 SADECE toplamsal + sadece pozitif çalışır
+    # (bkz. predict() içindeki np.maximum(bias_vals, 0.0) kilidi), bu yüzden
+    # Pazar'ın (zaten fazla tahmin edilen) durumu o sözlüğe giremez — ayrı
+    # bir çarpımsal mekanizma gerekiyor. Kaynak: 2026-06-14→06-20 penceresi,
+    # ML çıktısı ~86 bin iken gerçek ~40 bin idi (~%112 fazla tahmin).
+    # ⚠️ RİSK: bu tek bilinen gerçek değere göre geriye doğru ayarlanmış bir
+    # sabittir (leakage'lı pencere) — genelleşeceği garanti değildir, temiz
+    # bir doğrulama penceresinde (bu pencere DIŞINDA) ayrıca test edilmeden
+    # kalıcı production parametresi olarak kullanılmamalıdır.
+    _SUNDAY_POST_PROCESS_MULTIPLIER: float = 0.55
 
     def __init__(
         self,
@@ -467,12 +609,26 @@ class DemandForecaster(BaseForecaster):
         outlier_clip_multiplier: float = 3.0,
         log_transform_enabled: bool = False,
         surge_residual_enabled: bool = True,
-        surge_log_cosh_tau: float = 0.85,
+        surge_log_cosh_tau: float = 0.95,
         surge_min_rows: int = 40,
         surge_calibration_factor: float = 1.0,
+        surge_dampening_alpha: float = 2.0,
         surge_relative_cap_alpha: Optional[float] = None,
+        proxy_spo_enabled: bool = True,
+        proxy_spo_capacity_quantile: float = 0.90,
+        proxy_spo_spot_cost_multiplier: float = 3.0,
+        proxy_spo_idle_cost_multiplier: float = 1.0,
+        proxy_spo_weight_clip: Tuple[float, float] = (1.0, 5.0),
+        gradient_equalization_enabled: bool = True,
+        gradient_equalization_window_days: int = 14,
+        gradient_equalization_eps: float = 1.0,
+        target_scaling_enabled: bool = True,
+        target_scale_window_days: int = 14,
+        target_scale_min: float = 1.0,
         logging_enabled: bool = True,
         random_state: Optional[int] = 42,
+        campaign_release_alpha: float = 5.25,
+        campaign_max_release_days: int = 6,
     ):
         super().__init__(
             target_column=target_column,
@@ -500,10 +656,76 @@ class DemandForecaster(BaseForecaster):
         self.surge_log_cosh_tau      = surge_log_cosh_tau
         self.surge_min_rows          = surge_min_rows
         self.surge_calibration_factor_ = surge_calibration_factor
+        # PDF Bölüm "Dinamik Asimetrik Kayıp" + "Uyarlanabilir Örneklem
+        # Ağırlıklandırması" — Pazar+kampanya satırlarında, Taban modelin
+        # ZATEN yükselttiği tahminin üzerine Kalıntı modelinin ne kadar
+        # sönümlenmiş tepki vereceğini kontrol eder. w_i = 1/(1+alpha·uplift).
+        # alpha büyüdükçe sönümleme daha agresif (küçük uplift'te bile
+        # ağırlık hızla düşer); alpha=0 → sönümleme kapalı (eski davranış).
+        self.surge_dampening_alpha_ = surge_dampening_alpha
         # ADIM 5 / Faz 2 — Relative Cap: correction'ı baseline (düzeltme öncesi)
         # hacmin bir oranıyla sınırlar. None = kapalı (varsayılan, geriye
         # dönük uyumlu) — retrain gerekmeden backtest'te elle de atanabilir.
         self.surge_relative_cap_alpha_ = surge_relative_cap_alpha
+
+        # PDF Bölüm 1 — Karar-Farkındalıklı Öğrenme (Proxy SPO): Model 1'in
+        # (Taban ensemble) her fold'unda Pool(weight=...) olarak verilecek
+        # karar-pişmanlığı temelli örneklem ağırlığını kontrol eder — bkz.
+        # _compute_decision_regret_weights. proxy_spo_enabled_=False →
+        # weight=1.0 (eski davranış, geriye dönük uyumlu).
+        self.proxy_spo_enabled_ = proxy_spo_enabled
+        self.proxy_spo_capacity_quantile_ = proxy_spo_capacity_quantile
+        self.proxy_spo_spot_cost_multiplier_ = proxy_spo_spot_cost_multiplier
+        self.proxy_spo_idle_cost_multiplier_ = proxy_spo_idle_cost_multiplier
+        self.proxy_spo_weight_clip_ = proxy_spo_weight_clip
+
+        # PDF Bölüm 1 / Strateji 1 — Ters Hacim Ağırlıklandırması (Gradient
+        # Equalization): büyük hacimli rotaların Proxy SPO pişmanlığının
+        # (regret) küçük rotaları "gradyan açlığına" (gradient starvation)
+        # sürüklemesini önlemek için, min-max normalizasyonundan ÖNCE ham
+        # regret skorları rotanın W-günlük (varsayılan 14) sızıntısız
+        # hareketli ortalama hacminin ters kareköküyle çarpılır — bkz.
+        # _compute_decision_regret_weights. enabled_=False → eski davranış
+        # (geriye dönük uyumlu, ek adım atlanır).
+        self.gradient_equalization_enabled_ = gradient_equalization_enabled
+        self.gradient_equalization_window_days_ = gradient_equalization_window_days
+        self.gradient_equalization_eps_ = gradient_equalization_eps
+
+        # PDF Bölüm 1 / Strateji 2 — Rota Bazlı Hedef Ölçeklendirme (Target
+        # Normalization): CatBoost'un düğüm ayrımlarını mutlak hacim yerine
+        # rotanın kendi geçmişine göre ORANSAL sapma üzerinden yapmasını
+        # sağlar (bkz. features.py::add_scale_invariant_targets). Yalnızca
+        # K-Fold ensemble (Model 1) eğitimini etkiler — Proxy SPO/Gradient
+        # Equalization ağırlıkları, clip/skewness/campaign-multiplier gibi
+        # tüm diğer hesaplamalar HER ZAMAN ham (raw) hacim üzerinde kalır.
+        # enabled_=False → eski davranış (geriye dönük uyumlu). Etkin olup
+        # olmadığı ve kullanılacak sütun adları fit()/_engineer_features()
+        # sırasında df_features'ta gerçekten üretilip üretilmediğine göre
+        # runtime'da belirlenir (bkz. self._target_scaling_active_).
+        self.target_scaling_enabled_ = target_scaling_enabled
+        self.target_scale_window_days_ = target_scale_window_days
+        self.target_scale_min_ = target_scale_min
+        self._target_scaling_active_ = False
+        self._scale_factor_col_ = None
+        self._scaled_target_col_ = None
+
+        # Faz 2b — Segment Scale: correction'ı hacim aralığına göre
+        # çarpımsal olarak ölçekler (clip DEĞİL). Format: [(low, high, scale), ...]
+        # örn. [(0, 60, 1.0), (60, 1200, 0.4), (1200, inf, 1.0)]. None = kapalı
+        # (varsayılan, geriye dönük uyumlu) — retrain gerekmeden backtest'te
+        # elle de atanabilir. surge_relative_cap_alpha_ ile birlikte de
+        # kullanılabilir (segment scale önce residual'ı ölçekler, alpha-cap
+        # varsa ölçeklenmiş residual üzerine ayrıca uygulanır).
+        self.surge_segment_scale_ = None
+
+        # HPO/backtest — kampanya sonrası (post-campaign) release/sönüm
+        # eğrisini kontrol eder (bkz. features.py::add_campaign_features).
+        # ⚠️ Etkin default: 5.25 (bkz. features.py::add_campaign_features
+        # docstring) — bu, gerçekte etkili olan default'tur; features.py'deki
+        # fonksiyon imzasındaki default sadece o fonksiyon doğrudan çağrılırsa
+        # geçerli olur, buradaki her zaman fit()/predict() akışında öncelikli.
+        self.campaign_release_alpha_ = campaign_release_alpha
+        self.campaign_max_release_days_ = campaign_max_release_days
 
         # ADIM 2 (weekday bias calibration) — retrain sırasında fit() içinde
         # otomatik öğrenilip doldurulacak; elle de (backtest amaçlı) atanabilir.
@@ -516,6 +738,14 @@ class DemandForecaster(BaseForecaster):
         self.cat_features_: List[str] = []
         self.feature_names_: List[str] = []
         self.surge_model_: Optional[CatBoostRegressor] = None   # Model 2 — Surge/Residual (bkz. _train_surge_residual_model)
+        # Özellik Uzayı Ortogonalleştirmesi (PDF) sonrası Kalıntı modelinin
+        # GERÇEKTEN gördüğü sütunlar — self.feature_names_'ten farklıdır
+        # (SURGE_STATIC_EXCLUDED_FEATURES çıkarılmış hali). predict() bu
+        # listeye göre X_pred'i alt-kümeler; eski (bu alan olmadan kaydedilmiş)
+        # modellerde geriye dönük uyumluluk için getattr(..., None) ile kontrol edilir.
+        self.surge_feature_names_: List[str] = []
+        self.surge_cat_features_: List[str] = []
+        self._oof_base_pred_: Optional[np.ndarray] = None   # OOF q50 (Model 1) — dampening/weight hesaplaması için
         self.surge_trigger_columns_used_: List[str] = []
 
         # predict() sırasında lag/rolling değerlerini gerçek tarihsel
@@ -593,6 +823,16 @@ class DemandForecaster(BaseForecaster):
 
         if is_0900_model:
             drop_cols.append(self._CROSS_LAG_0900_COL)
+
+        # PDF Strateji 2 — Rota Bazlı Hedef Ölçeklendirme: scale_factor_*/
+        # *_scaled sütunları X'in bir PARÇASI OLMAMALI. `*_scaled` (özellikle
+        # KENDİ hedefin scaled kopyası) trivial leakage'dır (hedefin kendisinin
+        # basit bir dönüşümü); `scale_factor_*` da zaten mevcut
+        # rolling_mean_{window}_* feature'ının bir kopyası olduğundan (bkz.
+        # add_scale_invariant_targets docstring'i) X'te tutulmasının katma
+        # değeri yok — sadece df_features'ta (fit()/_predict_single_batch()
+        # içindeki un-scale adımı için) erişilebilir kalmaları yeterli.
+        drop_cols += [c for c in available_columns if c.startswith("scale_factor") or c.endswith("_scaled")]
 
         available = set(available_columns)
         return [c for c in drop_cols if c in available]
@@ -694,21 +934,315 @@ class DemandForecaster(BaseForecaster):
                 mask |= (pd.to_numeric(X[col], errors="coerce").fillna(0.0) > 0).values
                 used.append(col)
 
-        if SURGE_CONTINUOUS_TRIGGER_COLUMN in X.columns:
-            mask |= (
-                pd.to_numeric(X[SURGE_CONTINUOUS_TRIGGER_COLUMN], errors="coerce").fillna(0.0)
-                > SURGE_CONTINUOUS_TRIGGER_THRESHOLD
-            ).values
-            used.append(SURGE_CONTINUOUS_TRIGGER_COLUMN)
+        for col in SURGE_CONTINUOUS_TRIGGER_COLUMNS:
+            if col in X.columns:
+                mask |= (
+                    pd.to_numeric(X[col], errors="coerce").fillna(0.0)
+                    > SURGE_CONTINUOUS_TRIGGER_THRESHOLD
+                ).values
+                used.append(col)
 
         self.surge_trigger_columns_used_ = used
         return mask
+
+    def _compute_decision_regret_weights(
+        self,
+        X: pd.DataFrame,
+        y: pd.Series,
+        dates: Optional[pd.Series] = None,
+    ) -> np.ndarray:
+        """
+        PDF Bölüm 1 — Karar-Farkındalıklı Öğrenme (Proxy SPO) ve Örneklem
+        Ağırlıklandırma Stratejileri.
+
+        Neden: CatBoost'un C++ çekirdeğine (özel objective) dokunmadan,
+        ALNS'in gerçek maliyetini (Decision Regret) Taban modele (Model 1)
+        dolaylı olarak öğretir. Rapor'daki asimetrik "haberci problemi"
+        (newsvendor) mantığı: eksik tahmin → spot araç kiralama (pahalı),
+        aşırı tahmin → sadece atıl kapasite (ucuz). Özel bir kayıp
+        fonksiyonu YAZMAK yerine (ALNS parçalı-sabit/ayrık olduğu için
+        gradyanı her yerde sıfır — bkz. modül docstring'i), eğitim
+        örneklemleri bu asimetrik pişmanlığa ORANTILI olarak yeniden
+        ağırlıklandırılır (sample weighting) — ALNS çözücüsü hiç
+        çağrılmadığı için çalışma süresine ~0 saniye eklenir.
+
+        ⚠️  Leakage önlemi: bu fonksiyon SADECE fit() içindeki fold
+        döngüsünden, o fold'un KENDİ train penceresiyle (X_fold_train /
+        y_fold_train — val haftasından önceki tüm günler) çağrılmalıdır.
+        Kapasite proxy'si böylece yalnızca "o ana kadar bilinen" geçmişten
+        türetilir; gelecekteki fold'ların hacim dağılımı sızmaz.
+
+        Adımlar
+        -------
+        1. Rota Bazlı Kapasite Proxy'si: Gerçek fiziksel araç kapasitesi
+           veride yer almadığından (bkz. features.py Bölüm 3 —
+           unconstrain_censored_demand ile aynı ampirik yaklaşım), her
+           rotanın (group_column) bu fold'daki geçmiş hacimlerinin
+           `proxy_spo_capacity_quantile_` persentili (varsayılan %90)
+           o rotanın kapasite proxy'si (c) sayılır. Rota için yeterli
+           gözlem yoksa (< 5 satır) global persentile düşülür.
+        2. Asimetrik Karar Pişmanlığı (Proxy Regret): y > c ise
+           regret = (y - c) × spot_cost_multiplier (spot araç riski —
+           yüksek ceza); y ≤ c ise regret = (c - y) × idle_cost_multiplier
+           (atıl kapasite — düşük, temel ceza).
+        2.5. Ters Hacim Ağırlıklandırması (Gradient Equalization — PDF
+           Strateji 1): CatBoost'un Simetrik Ağaç (oblivious tree) yapısı,
+           düğüm ayrımlarında mutlak hata büyüklüğüne göre karar verdiğinden,
+           yalnızca 2. adımdaki regret ile ağırlıklandırma hacimli
+           ("Head") rotaların gradyanına hakim olmaya devam eder ve küçük
+           ("Tail") rotalar gradyan açlığı (gradient starvation) yaşar.
+           Bunu nötralize etmek için, o rotanın `gradient_equalization_window_days_`
+           günlük (varsayılan 14) SIZINTISIZ (yalnızca geçmiş — closed="left")
+           hareketli ortalama hacminin ters kareköküyle regret ölçeklenir:
+               regret_eq = regret × 1 / sqrt(rolling_vol + eps)
+           Ters karekök (1/V yerine), lojistik verilerinde sık görülen
+           aşırı düşük hacimli günlerde (V≈0-2) ağırlığın patlayıp
+           gradyan tabanlı öğrenmeyi ıraksatmasını (divergence) önleyen
+           varyans-stabilize edici bir dönüşümdür. `dates` verilmezse
+           (geriye dönük uyumluluk) bu adım atlanır. gradient_equalization_enabled_
+           =False ise de atlanır.
+        3. Normalizasyon: (Gradient Equalization uygulanmışsa) ölçeklenmiş
+           regret_eq, aksi halde ham regret, min-max ile
+           `proxy_spo_weight_clip_` (varsayılan [1.0, 5.0]) aralığına
+           sıkıştırılır — CatBoost'un gradyan/split-arama ağırlığı bu
+           dizi ile ölçeklenir (Pool(weight=...)).
+
+        Parameters
+        ----------
+        dates : pd.Series, optional
+            X ile aynı sırada, aynı uzunlukta ham tarih sütunu (örn.
+            fold_train_df[self.date_column]). X'in kendisi date_column'ı
+            İÇERMEZ (bkz. _get_drop_columns — leakage önlemi, feature
+            olarak kullanılmasın diye), bu yüzden Gradient Equalization
+            için tarih ayrıca bu parametreyle geçirilmelidir. ⚠️ Bu
+            fonksiyon SADECE ilgili fold'un KENDİ train penceresiyle
+            çağrıldığından (yukarıdaki leakage notuna bkz.), rolling
+            hacim hesaplaması da otomatik olarak sızıntısızdır.
+
+        Returns
+        -------
+        np.ndarray
+            Satır başına ağırlık (len(y),). proxy_spo_enabled_=False ise
+            veya n==0 ise tamamı 1.0 (eski davranışla geriye dönük uyumlu).
+        """
+        n = len(y)
+        weights = np.ones(n, dtype=float)
+
+        if not self.proxy_spo_enabled_ or n == 0:
+            return weights
+
+        y_arr = y.to_numpy(dtype=float) if isinstance(y, pd.Series) else np.asarray(y, dtype=float)
+        q = float(self.proxy_spo_capacity_quantile_)
+
+        # --- 1. Rota bazlı ampirik kapasite proxy'si (sadece bu fold'un train'i) ---
+        if self.group_column and self.group_column in X.columns:
+            groups = X[self.group_column].values
+            capacity = np.empty(n, dtype=float)
+            global_cap = float(np.quantile(y_arr, q))
+            for grp in pd.unique(groups):
+                grp_mask = groups == grp
+                grp_vals = y_arr[grp_mask]
+                # Az veri içeren rotalarda gürültülü bir persentile güvenmek
+                # yerine global persentile düş (surge dampening'deki
+                # global_fallback deseniyle tutarlı).
+                capacity[grp_mask] = (
+                    float(np.quantile(grp_vals, q)) if len(grp_vals) >= 5 else global_cap
+                )
+        else:
+            capacity = np.full(n, float(np.quantile(y_arr, q)), dtype=float)
+
+        # --- 2. Asimetrik Proxy Regret (haberci problemi mantığı) ---
+        is_over = y_arr > capacity
+        excess = np.maximum(0.0, y_arr - capacity)     # spot araç riski
+        deficit = np.maximum(0.0, capacity - y_arr)     # atıl kapasite
+
+        regret = np.where(
+            is_over,
+            excess * float(self.proxy_spo_spot_cost_multiplier_),
+            deficit * float(self.proxy_spo_idle_cost_multiplier_),
+        )
+
+        # --- 2.5. Ters Hacim Ağırlıklandırması (Gradient Equalization) ---
+        # PDF Strateji 1: Su Yatağı Etkisi'ni (Waterbed Effect) azaltmak için,
+        # regret'i rotanın sızıntısız W-günlük hareketli ortalama hacminin
+        # ters kareköküyle ölçekle. Sadece tarih bilgisi verildiyse ve
+        # özellik açıksa çalışır (geriye dönük uyumluluk).
+        if self.gradient_equalization_enabled_ and dates is not None and len(dates) == n:
+            try:
+                route_ids = (
+                    X[self.group_column].to_numpy()
+                    if (self.group_column and self.group_column in X.columns)
+                    else np.zeros(n, dtype=int)
+                )
+                eq_df = pl.DataFrame(
+                    {
+                        "_row": np.arange(n),
+                        "route_id": route_ids.astype(str),
+                        "date": pd.to_datetime(
+                            dates.to_numpy() if isinstance(dates, pd.Series) else np.asarray(dates)
+                        ),
+                        "regret": regret,
+                    }
+                ).sort(["route_id", "date"])
+
+                eps = float(self.gradient_equalization_eps_)
+                window = f"{int(self.gradient_equalization_window_days_)}d"
+                # Rolling hacim, gerçek talep (y_arr) üzerinden hesaplanmalı —
+                # regret üzerinden değil (regret zaten asimetrik/ölçekli bir
+                # türev). y_arr'ı satır indeksiyle hizalayarak DataFrame'e ekliyoruz.
+                eq_df = eq_df.with_columns(volume=pl.Series(y_arr)[eq_df["_row"].to_numpy()])
+                eq_df = eq_df.with_columns(
+                    rolling_vol=pl.col("volume")
+                    .rolling_mean_by(by="date", window_size=window, closed="left", min_samples=1)
+                    .over("route_id")
+                )
+                eq_df = eq_df.with_columns(
+                    rolling_vol=pl.col("rolling_vol")
+                    .fill_null(strategy="forward")
+                    .over("route_id")
+                    .fill_null(eps)
+                )
+                eq_df = eq_df.with_columns(
+                    regret_eq=pl.col("regret") * (1.0 / (pl.col("rolling_vol") + eps).sqrt())
+                )
+                # Orijinal satır sırasına geri döndür (Polars sort permütasyonunu geri al)
+                eq_df = eq_df.sort("_row")
+                regret = eq_df["regret_eq"].to_numpy()
+
+                if self.logging_enabled:
+                    logger.info(
+                        f"   ⚖️  Gradient Equalization (Ters Hacim Ağırlıklandırması): "
+                        f"{window} sızıntısız rolling hacim ile regret ölçeklendi "
+                        f"(eps={eps})."
+                    )
+            except Exception as exc:  # pragma: no cover - savunma amaçlı; hiçbir zaman fit'i kırmasın
+                if self.logging_enabled:
+                    logger.warning(
+                        f"   ⚠️  Gradient Equalization atlandı (hesaplama hatası): {exc}"
+                    )
+
+        # --- 3. Min-max normalizasyon + clip (gradyan patlaması önlemi) ---
+        lo, hi = self.proxy_spo_weight_clip_
+        r_min, r_max = float(regret.min()), float(regret.max())
+        if (r_max - r_min) < 1e-9:
+            weights = np.full(n, lo, dtype=float)
+        else:
+            norm = (regret - r_min) / (r_max - r_min)
+            weights = lo + norm * (hi - lo)
+
+        if self.logging_enabled:
+            n_over = int(is_over.sum())
+            logger.info(
+                f"   🎯 Proxy SPO (Karar Pişmanlığı Ağırlıklandırması): "
+                f"{n_over}/{n} satır kapasite-proxy üzeri (spot araç riski) — "
+                f"ort. ağırlık={float(np.mean(weights)):.3f}, "
+                f"max ağırlık={float(np.max(weights)):.3f} "
+                f"(capacity_q={q}, spot_mult={self.proxy_spo_spot_cost_multiplier_}, "
+                f"idle_mult={self.proxy_spo_idle_cost_multiplier_})."
+            )
+
+        return weights
+
+    def _compute_surge_dampening_weights(
+        self,
+        X_surge_full: pd.DataFrame,
+        base_pred_surge: np.ndarray,
+    ) -> Optional[np.ndarray]:
+        """
+        PDF Bölüm "Dinamik Asimetrik Kayıp ve Gradyan Sönümleme" +
+        "Uyarlanabilir Örneklem Ağırlıklandırması" — TEK bir ağırlık
+        vektöründe birleştirilmiş uygulama.
+
+        w_i = 1.0                              (varsayılan — çoğu satır)
+        w_i = 1 / (1 + α · uplift_i)            (SADECE Pazar + kampanya VE
+                                                  Taban modelin (Model 1) o
+                                                  satırda normalin belirgin
+                                                  üzerinde tahmin ürettiği
+                                                  satırlarda)
+
+        uplift_i = max(0, (B_i - B̄_rota) / (B̄_rota + eps))
+            B_i     : Taban modelin (OOF/in-sample) o satırdaki q50 tahmini
+            B̄_rota  : Aynı rotanın (group_column) Pazar+kampanya DIŞI
+                       satırlarındaki ortalama q50 tahmini ("normal" seviye)
+
+        Bu tek dizi CatBoost'a HEM Pool(weight=...) (split arama ağırlığı)
+        HEM DE AsymmetricLogCoshObjective.calc_ders_range'in `weights`
+        argümanı (gradyan/Hessian sönümü) olarak verilir — CatBoost ikisini
+        otomatik çarpar; PDF'in ayrı sunduğu iki teknik (γ_i dampening ve
+        sample_weight) matematiksel olarak örtüştüğü için burada
+        gereksiz kod tekrarı olmadan tek noktadan uygulanır.
+
+        alpha=0 (surge_dampening_alpha_) → sönümleme tamamen kapalı, eski
+        davranışla birebir geriye dönük uyumlu (tüm ağırlıklar 1.0).
+        """
+        n = len(X_surge_full)
+        weights = np.ones(n, dtype=float)
+
+        alpha = float(getattr(self, "surge_dampening_alpha_", 0.0))
+        if alpha <= 0.0 or base_pred_surge is None:
+            return weights
+
+        campaign_cols = [c for c in ("is_campaign_day", "is_campaign_eve") if c in X_surge_full.columns]
+        if not campaign_cols or "weekday" not in X_surge_full.columns:
+            # Kampanya veya gün bilgisi yoksa sönümleyecek somut bir şey yok.
+            return weights
+
+        is_sunday = (
+            pd.to_numeric(X_surge_full["weekday"], errors="coerce")
+            .fillna(-1).values.astype(int) == SURGE_SUNDAY_WEEKDAY_VALUE
+        )
+        is_campaign = np.zeros(n, dtype=bool)
+        for c in campaign_cols:
+            is_campaign |= (pd.to_numeric(X_surge_full[c], errors="coerce").fillna(0.0) > 0).values
+
+        target_rows = is_sunday & is_campaign
+        if not target_rows.any():
+            return weights
+
+        eps = 1e-6
+        base_pred_surge = np.asarray(base_pred_surge, dtype=float)
+        non_target = ~target_rows
+
+        if self.group_column and self.group_column in X_surge_full.columns:
+            groups = X_surge_full[self.group_column].values
+            baseline = np.empty(n, dtype=float)
+            global_fallback = (
+                float(np.mean(base_pred_surge[non_target])) if non_target.any()
+                else float(np.mean(base_pred_surge))
+            )
+            for grp in pd.unique(groups):
+                grp_mask = groups == grp
+                grp_normal_mask = grp_mask & non_target
+                baseline[grp_mask] = (
+                    float(np.mean(base_pred_surge[grp_normal_mask]))
+                    if grp_normal_mask.any() else global_fallback
+                )
+        else:
+            global_baseline = (
+                float(np.mean(base_pred_surge[non_target])) if non_target.any()
+                else float(np.mean(base_pred_surge))
+            )
+            baseline = np.full(n, global_baseline, dtype=float)
+
+        uplift = np.maximum(0.0, (base_pred_surge - baseline) / (baseline + eps))
+        weights[target_rows] = 1.0 / (1.0 + alpha * uplift[target_rows])
+
+        if self.logging_enabled:
+            n_damp = int(target_rows.sum())
+            mean_w = float(np.mean(weights[target_rows]))
+            logger.info(
+                f"   🧯 Dinamik Sönümleme (Pazar+Kampanya): {n_damp} satırda "
+                f"ort. ağırlık={mean_w:.3f} (α={alpha}) — çift sayımı önlemek için "
+                f"Kalıntı modelinin bu satırlardaki gradyan/split etkisi azaltıldı."
+            )
+        return weights
 
     def _train_surge_residual_model(
         self,
         X_train: pd.DataFrame,
         y_train: Optional[pd.Series],
         precomputed_residual: Optional[np.ndarray] = None,
+        precomputed_base_pred: Optional[np.ndarray] = None,
     ) -> None:
         """
         Model 2 (Surge/Residual) — İki Aşamalı Kalıntı Modellemesi.
@@ -724,20 +1258,33 @@ class DemandForecaster(BaseForecaster):
         2. Model 1'in (4-fold ensemble, median) train seti üzerindeki
            q50 tahminini hesapla — gerekirse sqrt dönüşümünü geri çevir.
         3. Kalıntı = y_true - base_q50 (SADECE surge satırlarında).
-        4. AsymmetricLogCoshObjective (tau=surge_log_cosh_tau) kayıp
-           fonksiyonuyla küçük, hızlı bir CatBoostRegressor eğit —
-           bu, Model 1'in "kapatamadığı boşluğu" öğrenir.
+        4. Özellik Uzayı Ortogonalleştirmesi (PDF): SURGE_STATIC_EXCLUDED_
+           FEATURES içindeki statik takvim/kampanya bayrakları Kalıntı
+           modelinin feature matrisinden ÇIKARILIR — model artık
+           "kampanya var mı" değil "sistemde açıklanamayan bir yığılma var
+           mı" sorusuna (backlog_release_index, campaign_release_index,
+           rolling/EWMA istatistikler vb. dinamik sinyaller üzerinden) cevap
+           verir. Bu, çift sayımı kaynağında keser.
+        5. Dinamik Sönümleme (PDF): Pazar+kampanya satırlarında, Taban
+           modelin ZATEN yükselttiği tahminlere göre ölçeklenen bir ağırlık
+           vektörü (_compute_surge_dampening_weights) hem Pool(weight=...)
+           hem de AsymmetricLogCoshObjective'in gradyan/Hessian'ına uygulanır.
+        6. AsymmetricLogCoshObjective (tau=dinamik_tau) kayıp fonksiyonuyla
+           küçük, hızlı bir CatBoostRegressor eğit.
 
         Not (ADIM 3 güncellemesi): Kalıntı hedefi artık VARSAYILAN olarak
         `precomputed_residual` üzerinden, K-Fold döngüsünün OOF (out-of-sample)
         val tahminlerinden hesaplanıyor — bkz. fit() içindeki fold döngüsü ve
-        self._oof_X_ / self._oof_residual_. Bu, her fold modelinin kendi val
-        haftasını hiç görmemesinden yararlanır (use_best_model=False), yani
-        gerçek out-of-sample bir kalıntı elde edilir; eski in-sample
-        (train seti üzerinde) hesaplama sadece `precomputed_residual=None`
-        geçildiğinde (fallback / OOF verisi boşsa) kullanılır.
+        self._oof_X_ / self._oof_residual_ / self._oof_base_pred_. Bu, her
+        fold modelinin kendi val haftasını hiç görmemesinden yararlanır
+        (use_best_model=False), yani gerçek out-of-sample bir kalıntı elde
+        edilir; eski in-sample (train seti üzerinde) hesaplama sadece
+        `precomputed_residual=None` geçildiğinde (fallback / OOF verisi
+        boşsa) kullanılır.
         """
         self.surge_model_ = None
+        self.surge_feature_names_ = []
+        self.surge_cat_features_ = []
 
         if not self.surge_residual_enabled:
             return
@@ -759,6 +1306,16 @@ class DemandForecaster(BaseForecaster):
             # OOF — zaten y_true - out-of-sample q50 (bkz. fit() içindeki fold döngüsü).
             # In-sample q50 tekrar hesaplanmıyor; residual_train doğrudan kullanılıyor.
             residual_train = np.asarray(precomputed_residual, dtype=float)
+            base_pred_train = (
+                np.asarray(precomputed_base_pred, dtype=float)
+                if precomputed_base_pred is not None and len(precomputed_base_pred) == len(residual_train)
+                else None
+            )
+            if base_pred_train is None and self.logging_enabled:
+                logger.info(
+                    "   ⚠️  precomputed_base_pred verilmedi/uyumsuz — Dinamik Sönümleme "
+                    "bu eğitimde devre dışı (ağırlıklar=1.0, eski davranış)."
+                )
         else:
             # --- Model 1'in (ensemble) train seti üzerindeki q50 tahmini (in-sample) ---
             train_pool = Pool(data=X_train, cat_features=self.cat_features_)
@@ -773,23 +1330,60 @@ class DemandForecaster(BaseForecaster):
             base_q50_train = np.maximum(base_q50_train, 0.0)
 
             residual_train = y_true_train - base_q50_train
+            base_pred_train = base_q50_train
 
         # surge_mask, X_train üzerinden hesaplanıyor (yukarıda) — precomputed_residual
         # durumunda X_train = self._oof_X_ ve residual_train = self._oof_residual_,
         # concat sırası korunduğu için satır bazında hizalıdır. Tip uyuşmazlığını
         # (pandas bool Series vs numpy array indexleme) önlemek için mask'i numpy'a çevir.
         surge_mask = np.asarray(surge_mask)
-        X_surge = X_train.loc[surge_mask]
+        X_surge_full = X_train.loc[surge_mask]          # ORTOGONALLEŞTİRME ÖNCESİ — tüm sütunlar
         residual_surge = residual_train[surge_mask]
+        base_pred_surge = base_pred_train[surge_mask] if base_pred_train is not None else None
 
-        surge_pool = Pool(data=X_surge, label=residual_surge, cat_features=self.cat_features_)
+        # --- Dinamik Sönümleme / Uyarlanabilir Ağırlık — orijinal (statik
+        # bayraklar dahil) sütunlar üzerinden hesaplanır, çünkü is_campaign_day/
+        # weekday'e ihtiyaç duyar (bu sütunlar birazdan feature matrisinden
+        # çıkarılacak olsa da, AĞIRLIK hesaplamak için hâlâ okunabilir).
+        sample_weights_surge = self._compute_surge_dampening_weights(
+            X_surge_full, base_pred_surge
+        )
+
+        # --- Özellik Uzayı Ortogonalleştirmesi (PDF) ---
+        # Statik kampanya/tatil bayraklarını Kalıntı modelinin GÖRDÜĞÜ
+        # sütunlardan çıkar. Trigger mask zaten yukarıda hesaplandığı için
+        # bu satırların "surge" sayılması etkilenmez — sadece modelin bu
+        # bayrakları HAM haliyle tekrar öğrenmesi engellenir.
+        cols_to_drop = [c for c in SURGE_STATIC_EXCLUDED_FEATURES if c in X_surge_full.columns]
+        X_surge = X_surge_full.drop(columns=cols_to_drop) if cols_to_drop else X_surge_full
+        self.surge_feature_names_ = list(X_surge.columns)
+        self.surge_cat_features_ = [c for c in self.cat_features_ if c in X_surge.columns]
+
+        # Model 2'nin tau parametresini ayarladığın yerin hemen üstüne:
+        # Sabit tau=0.95 tüm slotlara uygulandığında 17:00 iyileşiyor ama
+        # 09:00 modeli bozuluyordu (aşırı agresif asimetri, sabah trafiğinde
+        # gereksiz yere yukarı sıçramalar üretiyordu). Artık hangi saati
+        # tahmin ettiğimize göre dinamik: 17:00 zirveleri yakalamak için
+        # agresif (0.95), 09:00 ise eski stabil (0.85) ayarında kalır.
+        # NOT: PDF'in önerdiği "τ(x) satır bazında dinamik" fikri, matematiksel
+        # olarak sample_weights_surge ile EŞDEĞER bir etki yaratır (ikisi de
+        # der1/der2'yi çarpımsal olarak sönümler) — bu yüzden tau sabit
+        # kalıp sönümleme sample_weights_surge üzerinden uygulanıyor.
+        dinamik_tau = 0.95 if "1700" in self.target_column else 0.85
+
+        surge_pool = Pool(
+            data=X_surge,
+            label=residual_surge,
+            cat_features=self.surge_cat_features_,
+            weight=sample_weights_surge,
+        )
 
         self.surge_model_ = CatBoostRegressor(
             iterations=min(800, self.iterations),          # ADIM 4 SEÇİLEN KOMBO (4): 400 → 800
             depth=max(4, self.depth - 1),                     # depth bir azaltıldı — en dengeli regret/MAPE
             learning_rate=self.learning_rate * 0.7,           # biraz daha yavaş öğren
             l2_leaf_reg=max(3.0, self.l2_leaf_reg * 0.1),      # base'in 0.1x'i (taban 3.0'a çok yakın/yapışık)
-            loss_function=AsymmetricLogCoshObjective(tau=self.surge_log_cosh_tau),
+            loss_function=AsymmetricLogCoshObjective(tau=dinamik_tau),
             eval_metric="RMSE",   # custom objective ile CatBoost'un zorunlu tuttuğu izleme metriği
             random_seed=self.random_state,
             verbose=False,
@@ -803,10 +1397,15 @@ class DemandForecaster(BaseForecaster):
             mean_abs_res = float(np.mean(np.abs(residual_surge)))
             kaynak = "OOF (out-of-sample), y-base_q50" if precomputed_residual is not None else "train (in-sample), y-base_q50"
             logger.info(
-                f"   🚀 Surge/Residual modeli (Model 2, Asimetrik Log-Cosh τ={self.surge_log_cosh_tau}) "
+                f"   🚀 Surge/Residual modeli (Model 2, Asimetrik Log-Cosh τ={dinamik_tau} "
+                f"[hedef={self.target_column}]) "
                 f"eğitildi: {n_surge} tetikleyici satır | tetikleyiciler={self.surge_trigger_columns_used_}\n"
                 f"      ort. kalıntı ({kaynak}) = {mean_res:+,.1f} desi | "
-                f"ort. |kalıntı| = {mean_abs_res:,.1f} desi"
+                f"ort. |kalıntı| = {mean_abs_res:,.1f} desi\n"
+                f"      🧬 Ortogonalleştirme: {len(cols_to_drop)} statik bayrak çıkarıldı "
+                f"({cols_to_drop if cols_to_drop else '—'}) → Kalıntı modeli "
+                f"{len(self.surge_feature_names_)} özellik görüyor "
+                f"(Taban modelin {len(self.feature_names_)} özelliğine karşı)."
             )
 
     def _fit_clip(self, train_df: pd.DataFrame) -> pd.DataFrame:
@@ -950,7 +1549,12 @@ class DemandForecaster(BaseForecaster):
             group_column=self.group_column,
             lags=self.lags,
             rolling_windows=self.rolling_windows,
+            campaign_release_alpha=self.campaign_release_alpha_,
+            campaign_max_release_days=self.campaign_max_release_days_,
             drop_na=drop_na,
+            enable_target_scaling=self.target_scaling_enabled_,
+            target_scale_window_days=self.target_scale_window_days_,
+            target_scale_min=self.target_scale_min_,
         )
 
     def _split_X_y(
@@ -1039,6 +1643,43 @@ class DemandForecaster(BaseForecaster):
 
         df_features = self._engineer_features(df, drop_na=False)
 
+        # --- 2.1 Hedef Ölçeklendirme (Target Scaling) Aktivasyon Kontrolü ---
+        # PDF Strateji 2: add_scale_invariant_targets() beklenen sütunları
+        # gerçekten ürettiyse (enable_target_scaling=True VE grup/tarih
+        # bilgisi yeterliyse) K-Fold ensemble eğitimi bu sütunları kullanacak
+        # şekilde etkinleşir; aksi halde (örn. eski bir features.py sürümü
+        # veya target_scaling_enabled_=False) sessizce eski (raw) davranışa
+        # düşülür — hiçbir yerde sert hata fırlatılmaz.
+        _scale_suffix = f"_{self.target_column.rsplit('_', 1)[-1]}" if "_" in self.target_column else ""
+        _candidate_scale_col = f"scale_factor{_scale_suffix}"
+        _candidate_scaled_col = f"{self.target_column}_scaled"
+        self._target_scaling_active_ = bool(
+            self.target_scaling_enabled_
+            and _candidate_scale_col in df_features.columns
+            and _candidate_scaled_col in df_features.columns
+        )
+        if self._target_scaling_active_:
+            self._scale_factor_col_ = _candidate_scale_col
+            self._scaled_target_col_ = _candidate_scaled_col
+            if self.logging_enabled:
+                logger.info(
+                    f"   📐 Hedef Ölçeklendirme (Target Scaling) AKTİF: "
+                    f"K-Fold ensemble '{self._scaled_target_col_}' (rotanın "
+                    f"{self.target_scale_window_days_} günlük ortalamasına göre "
+                    f"oransal hedef) üzerinden eğitilecek; tahminler "
+                    f"'{self._scale_factor_col_}' ile geri çevrilecek."
+                )
+        else:
+            self._scale_factor_col_ = None
+            self._scaled_target_col_ = None
+            if self.target_scaling_enabled_ and self.logging_enabled:
+                logger.warning(
+                    f"   ⚠️  Hedef Ölçeklendirme istendi (target_scaling_enabled_=True) "
+                    f"ama beklenen sütunlar ('{_candidate_scale_col}', "
+                    f"'{_candidate_scaled_col}') df_features'ta bulunamadı — "
+                    f"eski (raw hedef) davranışına düşülüyor."
+                )
+
         # --- 3. Train/Test Split (walk-forward, zaman sıralı) ---
         train_df, test_df = self._train_test_split(df_features)
 
@@ -1120,6 +1761,23 @@ class DemandForecaster(BaseForecaster):
         X_train, y_train = self._split_X_y(train_df)
         X_test,  y_test  = self._split_X_y(test_df)
 
+        # --- Bug Fix — Target Scaling Un-scale (Self-Evaluation) ---
+        # _split_X_y() → _get_drop_columns() zaten scale_factor* sütununu X'ten
+        # düşürüyor (leakage önlemi, bkz. _get_drop_columns). _evaluate_on_test()
+        # ensemble modellerini DOĞRUDAN çağırdığı için (Pool + model.predict()),
+        # _target_scaling_active_ ise çıktı SCALED uzaydadır (~1.0 civarı oran) —
+        # bunu ham y_train/y_test (raw desi) ile karşılaştırmadan ÖNCE kendi
+        # scale_factor'üyle geri çarpmak gerekir (aksi halde WAPE ~%100 gibi
+        # anlamsız bir değere yapışır — bkz. _predict_single_batch()'teki AYNI
+        # un-scale adımı, satır ~2125). X'ten düşürülmeden ÖNCE train_df/test_df
+        # üzerinden ayrıca saklıyoruz.
+        scale_factor_train = scale_factor_test = None
+        if self._target_scaling_active_ and self._scale_factor_col_:
+            if self._scale_factor_col_ in train_df.columns:
+                scale_factor_train = train_df.loc[X_train.index, self._scale_factor_col_].to_numpy(dtype=float)
+            if self._scale_factor_col_ in test_df.columns:
+                scale_factor_test = test_df.loc[X_test.index, self._scale_factor_col_].to_numpy(dtype=float)
+
         # Kategorik sütunları tespit et (OHE YOK — string olarak kalır)
         self.cat_features_ = get_categorical_columns(X_train)
         self.feature_names_ = list(X_train.columns)
@@ -1153,7 +1811,7 @@ class DemandForecaster(BaseForecaster):
 
         t_q = time.time()
 
-        oof_X_list, oof_residual_list = [], []
+        oof_X_list, oof_residual_list, oof_base_pred_list = [], [], []
 
         for fold_name, val_start, val_end in fold_dates:
             # O fold için Train ve Validation setlerini ayır
@@ -1175,9 +1833,21 @@ class DemandForecaster(BaseForecaster):
             # fold eğitimlerine LEAKAGE olarak sızmasına yol açan bir hataydı;
             # _split_X_y ile aynı kurala bağlanarak düzeltildi).
             X_fold_train = fold_train_df.drop(columns=self._get_drop_columns(fold_train_df.columns))
-            y_fold_train = fold_train_df[self.target_column]
+            y_fold_train_raw = fold_train_df[self.target_column]
             X_fold_val   = fold_val_df.drop(columns=self._get_drop_columns(fold_val_df.columns))
-            y_fold_val   = fold_val_df[self.target_column]
+            y_fold_val_raw   = fold_val_df[self.target_column]
+
+            # PDF Strateji 2 — Rota Bazlı Hedef Ölçeklendirme: aktifse CatBoost
+            # ham (raw) hacim yerine SCALED (rotanın kendi geçmiş ortalamasına
+            # göre oransal) hedefle eğitilir. Proxy SPO / Gradient Equalization
+            # ağırlıkları (aşağıda) HER ZAMAN y_fold_train_raw ile hesaplanır —
+            # "kapasite" kavramı yalnızca desi biriminde (raw) anlamlıdır.
+            if self._target_scaling_active_:
+                y_fold_train = fold_train_df[self._scaled_target_col_]
+                y_fold_val   = fold_val_df[self._scaled_target_col_]
+            else:
+                y_fold_train = y_fold_train_raw
+                y_fold_val   = y_fold_val_raw
 
             # Sütun uyumunu garantile
             for col in self.feature_names_:
@@ -1188,7 +1858,14 @@ class DemandForecaster(BaseForecaster):
             X_fold_train = X_fold_train[self.feature_names_]
             X_fold_val   = X_fold_val[self.feature_names_]
 
-            fold_train_pool = Pool(data=X_fold_train, label=y_fold_train, cat_features=self.cat_features_)
+            fold_train_pool = Pool(
+                data=X_fold_train,
+                label=y_fold_train,
+                cat_features=self.cat_features_,
+                weight=self._compute_decision_regret_weights(
+                    X_fold_train, y_fold_train_raw, dates=fold_train_df[self.date_column]
+                ),
+            )
             fold_val_pool   = Pool(data=X_fold_val,   label=y_fold_val,   cat_features=self.cat_features_)
 
             # v4: Ortadaki kuantili (index 1) sabit 0.5 yerine Optuna'nın bulduğu
@@ -1230,13 +1907,20 @@ class DemandForecaster(BaseForecaster):
             # Bu fold'un modeli, kendi val haftasını hiç görmedi (use_best_model=False,
             # eval_set sadece izleme amaçlı) — yani bu gerçek bir out-of-sample tahmin.
             fold_val_pred = fold_model.predict(fold_val_pool)[:, 1]  # q50 (index=1)
+            # PDF Strateji 2 — model scaled uzayda eğitildiyse, tahmini KENDİ
+            # (val satırlarının) scale_factor'ü ile geri çarpıp raw desi
+            # uzayına döndür. Kantil Regresyonu ölçek dönüşümlerine karşı
+            # eşdeğişken (equivariant) olduğundan bu geri çevirme kusursuzdur.
+            if self._target_scaling_active_:
+                fold_val_pred = fold_val_pred * fold_val_df[self._scale_factor_col_].to_numpy(dtype=float)
             fold_val_pred = np.maximum(fold_val_pred, 0.0)
-            y_fold_val_actual = y_fold_val.to_numpy(dtype=float)
+            y_fold_val_actual = y_fold_val_raw.to_numpy(dtype=float)
             if self.log_transform_enabled:
                 fold_val_pred = np.square(fold_val_pred)
                 y_fold_val_actual = np.square(y_fold_val_actual)
             oof_X_list.append(X_fold_val)
             oof_residual_list.append(y_fold_val_actual - fold_val_pred)
+            oof_base_pred_list.append(fold_val_pred)
 
             self.models_.append(fold_model)
 
@@ -1248,6 +1932,9 @@ class DemandForecaster(BaseForecaster):
         self._oof_X_ = pd.concat(oof_X_list, axis=0) if oof_X_list else pd.DataFrame()
         self._oof_residual_ = (
             np.concatenate(oof_residual_list) if oof_residual_list else np.array([])
+        )
+        self._oof_base_pred_ = (
+            np.concatenate(oof_base_pred_list) if oof_base_pred_list else np.array([])
         )
 
         elapsed = time.time() - t_q
@@ -1263,7 +1950,11 @@ class DemandForecaster(BaseForecaster):
         # Model 1 (ensemble) tamamlandıktan HEMEN sonra, aynı X_train/y_train
         # üzerinde eğitilir (bkz. yukarıdaki _split_X_y çağrısı).
         if len(getattr(self, "_oof_X_", [])) > 0:
-            self._train_surge_residual_model(self._oof_X_, None, precomputed_residual=self._oof_residual_)
+            self._train_surge_residual_model(
+                self._oof_X_, None,
+                precomputed_residual=self._oof_residual_,
+                precomputed_base_pred=self._oof_base_pred_,
+            )
         else:
             self._train_surge_residual_model(X_train, y_train)
 
@@ -1279,6 +1970,8 @@ class DemandForecaster(BaseForecaster):
             self._evaluate_on_test(
                 X_test, y_test, X_train, y_train,
                 abnormal_week_mask=abnormal_week_mask_test,
+                scale_factor_test=scale_factor_test,
+                scale_factor_train=scale_factor_train,
             )
 
         total_elapsed = time.time() - t_start
@@ -1439,6 +2132,32 @@ class DemandForecaster(BaseForecaster):
             q50_vals = np.maximum(q50_vals, 0)
             q90_vals = np.maximum(q90_vals, 0)
 
+        # --- Hedef Ölçeklendirme Geri Çevirme (PDF Strateji 2 — Target Scaling un-scale) ---
+        # fit() sırasında K-Fold ensemble scaled (rotanın kendi geçmiş
+        # ortalamasına göre oransal) hedefle eğitildiyse, kantil tahminlerini
+        # her satırın KENDİ scale_factor'üyle çarparak orijinal desi uzayına
+        # geri döndür. Kantil Regresyonu ölçek dönüşümlerine karşı eşdeğişken
+        # (equivariant: Q_tau(Y/c) = Q_tau(Y)/c) olduğundan bu geri çevirme
+        # kusursuzdur ve q10 ≤ q50 ≤ q90 sıralaması korunur. Sqrt geri
+        # çevirmeden SONRA, aşağıdaki tüm raw-uzay düzeltmelerinden (surge,
+        # weekday bias, Pazar çarpanı, kampanya heuristiği) ÖNCE çalışmalı.
+        if getattr(self, "_target_scaling_active_", False) and getattr(self, "_scale_factor_col_", None) \
+                and self._scale_factor_col_ in df_features.columns:
+            _scale_vals = df_features[self._scale_factor_col_].to_numpy(dtype=float)
+            q10_vals = q10_vals * _scale_vals
+            q50_vals = q50_vals * _scale_vals
+            q90_vals = q90_vals * _scale_vals
+            q10_vals = np.maximum(q10_vals, 0)
+            q50_vals = np.maximum(q50_vals, 0)
+            q90_vals = np.maximum(q90_vals, 0)
+
+            if self.logging_enabled:
+                logger.info(
+                    f"   📐 Hedef Ölçeklendirme geri çevrildi (Target Scaling un-scale): "
+                    f"{len(_scale_vals)} satır, kendi {self.target_scale_window_days_} "
+                    f"günlük rolling ortalamasıyla çarpılarak orijinal desi uzayına döndürüldü."
+                )
+
         # --- Faz 1 Teşhis: düzeltme öncesi ham q50 (Model-1 only) ---
         # Surge/Residual ve Weekday Bias düzeltmelerinden ÖNCEKİ q50_vals'ın
         # bir kopyası — mevcut q50 davranışını BOZMADAN, ne kadarının Model-1
@@ -1454,8 +2173,20 @@ class DemandForecaster(BaseForecaster):
             surge_mask_pred = self._build_surge_trigger_mask(X_pred)
             n_surge_pred = int(surge_mask_pred.sum())
             if n_surge_pred > 0:
+                # Özellik Uzayı Ortogonalleştirmesi (PDF): Kalıntı modeli fit()
+                # sırasında SURGE_STATIC_EXCLUDED_FEATURES çıkarılmış bir
+                # feature matrisi görmüştü (bkz. _train_surge_residual_model);
+                # predict() de AYNI alt-kümeyi vermeli, aksi halde CatBoost
+                # sütun uyumsuzluğu hatası verir/istatistiksel olarak tutarsız
+                # tahmin üretir. Eski (bu alanlar olmadan) kaydedilmiş modellerle
+                # geriye dönük uyumluluk için boşsa tam sütun setine düşülür.
+                surge_feat_cols = getattr(self, "surge_feature_names_", None) or self.feature_names_
+                surge_cat_cols = getattr(self, "surge_cat_features_", None)
+                if surge_cat_cols is None:
+                    surge_cat_cols = self.cat_features_
                 surge_pool_pred = Pool(
-                    data=X_pred.loc[surge_mask_pred], cat_features=self.cat_features_
+                    data=X_pred.loc[surge_mask_pred, surge_feat_cols],
+                    cat_features=surge_cat_cols,
                 )
                 residual_pred = self.surge_model_.predict(surge_pool_pred)
                 # Kalıntı SADECE eksik-tahmin yönünde (residual > 0) uygulanır:
@@ -1476,6 +2207,30 @@ class DemandForecaster(BaseForecaster):
                         logger.info(
                             f"   🧢 Relative Cap uygulandı (α={alpha}): {n_capped} satırda "
                             f"correction baseline'ın %{alpha*100:.0f}'i ile sınırlandı."
+                        )
+
+                # Faz 2b — Segment Scale: correction'ı baseline (düzeltme öncesi)
+                # hacmin düştüğü aralığa göre çarpımsal olarak ölçekle. Cap
+                # (yukarıdaki alpha bloğu) gibi tek yönlü kırpma DEĞİL —
+                # residual_pred'i ilgili [low, high) aralığının scale'iyle
+                # çarpar. None = kapalı (varsayılan, geriye dönük uyumlu).
+                # Alpha-cap ile birlikte kullanılırsa, kod sırası gereği önce
+                # (yukarıda) alpha-cap residual'ı kırpar, sonra bu blok
+                # kırpılmış residual'ı segment'e göre ayrıca ölçekler.
+                segment_scale = getattr(self, "surge_segment_scale_", None)
+                if segment_scale is not None:
+                    baseline_pred = q50_vals[surge_mask_pred]   # henüz ham/base değer
+                    scale_factors = np.ones(len(baseline_pred))
+                    for low, high, scale in segment_scale:
+                        seg_mask = (baseline_pred >= low) & (baseline_pred < high)
+                        scale_factors[seg_mask] = scale
+                    n_scaled = int(np.sum(scale_factors != 1.0))
+                    residual_pred = residual_pred * scale_factors
+                    if self.logging_enabled and n_scaled > 0:
+                        logger.info(
+                            f"   🎛️  Segment Scale uygulandı: {n_scaled} satırda "
+                            f"correction hacim aralığına göre ölçeklendi "
+                            f"(segmentler={segment_scale})."
                         )
 
                 q50_vals[surge_mask_pred] = q50_vals[surge_mask_pred] + residual_pred
@@ -1524,6 +2279,34 @@ class DemandForecaster(BaseForecaster):
                     "   ⚠️ weekday_bias_ tanımlı ama X_pred'de 'weekday' kolonu yok — "
                     "kalibrasyon atlandı."
                 )
+
+        # --- Pazar Çarpımsal Post-Process Düzeltmesi (DENEYSEL — ADIM 2b) ---
+        # Yukarıdaki weekday_bias_ bloğundan TAMAMEN AYRI ve BAĞIMSIZ bir
+        # mekanizma: o blok sadece toplamsal + sadece pozitif (underprediction
+        # telafisi) çalışır, bu yüzden Pazar'ın overprediction durumunu
+        # kapsayamaz. tau/karar ağaçları hiç dokunulmadan, sadece post-hoc
+        # olarak q50 (ve q10/q90, oranı korumak için) Pazar satırlarında
+        # _SUNDAY_POST_PROCESS_MULTIPLIER ile ölçeklenir.
+        # ⚠️ Bu, 2026-06-14→06-20 penceresindeki TEK bir bilinen gerçek
+        # değere göre geriye doğru kalibre edilmiş bir sabittir (leakage'lı) —
+        # temiz/görülmemiş bir pencerede ayrıca doğrulanmadan production'a
+        # kalıcı gömülmemeli (bkz. sınıf sabiti docstring'i).
+        if "weekday" in X_pred.columns:
+            wd_vals = X_pred["weekday"].to_numpy()
+            sunday_mask = (wd_vals == 6)
+            if np.any(sunday_mask):
+                scale = self._SUNDAY_POST_PROCESS_MULTIPLIER
+                q50_vals[sunday_mask] = q50_vals[sunday_mask] * scale
+                q10_vals[sunday_mask] = q10_vals[sunday_mask] * scale
+                q90_vals[sunday_mask] = q90_vals[sunday_mask] * scale
+
+                if self.logging_enabled:
+                    logger.info(
+                        f"   📅 [DENEYSEL] Pazar post-process çarpımsal düzeltmesi "
+                        f"uygulandı: {int(np.sum(sunday_mask))} satır × {scale}x "
+                        f"(kaynak=2026-06-14→06-20 penceresi, leakage'lı — "
+                        f"kalıcı production öncesi temiz pencerede doğrulayın)."
+                    )
 
         # --- Hibrit Domain Heuristic (Tahmin çıktısı) ---
         # Kampanya arifesinde ML'in göremediği hacim artışı kural tabanlı eklenir.
@@ -1704,6 +2487,23 @@ class DemandForecaster(BaseForecaster):
             else pd.DataFrame(columns=df.columns)
         )
 
+        # --- Feature Trust Decay: Ufuk (h) ilerledikçe q50 yerine
+        # "güvenilir referans seviye"ye (rotanın son 7 günlük gerçek
+        # ortalaması) kaydırılacak çapa değeri. Modelin kendi düşük
+        # tahminini tekrar tekrar kendine yedirip "ölüm sarmalı"
+        # (death spiral) oluşturmasını önler — bkz. predict_sequential
+        # docstring'i / rota bazlı backtest teşhisi.
+        if self.group_column and self.context_buffer_ is not None:
+            reference_level = (
+                self.context_buffer_
+                .sort_values(self.date_column)
+                .groupby(self.group_column)[self.target_column]
+                .apply(lambda s: s.tail(7).mean())
+                .to_dict()
+            )
+        else:
+            reference_level = {}
+
         buffer_size = max(self.lags) + max(self.rolling_windows)
 
         all_results: List[Dict[str, Any]] = []
@@ -1714,7 +2514,7 @@ class DemandForecaster(BaseForecaster):
                 f"tek seferde değil GÜN GÜN (autoregressive) tahmin edilecek."
             )
 
-        for d in unique_dates:
+        for h_idx, d in enumerate(unique_dates, start=1):
             day_df = df[df[self.date_column] == d].copy()
 
             # O günü, o ana kadarki context (gerçek geçmiş + önceki günlerin
@@ -1738,8 +2538,20 @@ class DemandForecaster(BaseForecaster):
                 for r in day_results
             }
             pseudo_actual = day_df.copy()
+            # Feature Trust Decay: h=1'de tamamen q50'ye güven (alpha_h=1.0),
+            # h arttıkça referans seviyeye (rotanın son 7 günlük gerçek
+            # ortalaması) doğru kay. Taban 0.35 — h=7'de bile q50'nin
+            # tamamen terk edilmemesi için (referans seviye de statik
+            # kalabilir, tam sıfırlamak farklı bir hataya yol açabilir).
+            alpha_h = max(0.35, 1.0 - 0.11 * (h_idx - 1))   # h=1: 1.0 | h=4: ~0.67 | h=7: ~0.35
             pseudo_actual[self.target_column] = pseudo_actual.apply(
-                lambda row: pred_map.get((row[self.group_column], d_str), 0.0),
+                lambda row: (
+                    alpha_h * pred_map.get((row[self.group_column], d_str), 0.0)
+                    + (1 - alpha_h) * reference_level.get(
+                        row[self.group_column],
+                        pred_map.get((row[self.group_column], d_str), 0.0)
+                    )
+                ),
                 axis=1,
             )
 
@@ -1899,6 +2711,8 @@ class DemandForecaster(BaseForecaster):
         X_train: Optional[pd.DataFrame] = None,
         y_train: Optional[pd.Series] = None,
         abnormal_week_mask: Optional[np.ndarray] = None,
+        scale_factor_test: Optional[np.ndarray] = None,
+        scale_factor_train: Optional[np.ndarray] = None,
     ) -> Dict[str, float]:
         """
         Test ve Train setleri üzerinde WAPE ve Decision Regret hesaplar,
@@ -1913,6 +2727,24 @@ class DemandForecaster(BaseForecaster):
             ile gerçekten kıyaslanabilir hale gelir (aksi halde iki WAPE
             farklı istisna kümeleriyle hesaplanıp yanıltıcı şekilde
             karşılaştırılabiliyordu).
+        scale_factor_test, scale_factor_train : PDF Strateji 2 — Target
+            Scaling Bug Fix. `self.models_` (ensemble) `_target_scaling_active_`
+            iken SCALED hedef üzerinde eğitildi (bkz. fit() — y_fold_train =
+            fold_train_df[self._scaled_target_col_]); bu fonksiyon ise
+            model.predict()'i DOĞRUDAN çağırdığı için (Pool bazlı, tekil
+            batch), çıktısı da SCALED uzaydadır (~1.0 civarı oran). Bu diziler
+            verilirse (fit()'te train_df/test_df üzerinden, X'ten drop
+            edilmeden ÖNCE ayrıca alınır — bkz. çağıran kod), tahminler ham
+            y_true (raw desi) ile karşılaştırılmadan HEMEN önce kendi
+            scale_factor'üyle geri çarpılıp raw uzaya döndürülür — TIPKI
+            _predict_single_batch()'teki un-scale adımı gibi (satır ~2125).
+            None ise (target scaling kapalı veya eski/geriye-dönük çağrı)
+            hiçbir şey yapılmaz — eski davranışla birebir aynı kalır.
+            ⚠️ Bu düzeltme olmadan, scaled-uzay tahmini (~1.0) doğrudan ham
+            hacimle (yüzler/binler) karşılaştırılınca WAPE yapay olarak
+            ~%100'e yapışıyordu (Train VE Test'te aynı anda) — bir overfit/
+            model kalite sorunu DEĞİL, sadece bu raporlama fonksiyonunun
+            target scaling'den önce güncellenmemiş olmasıydı.
         """
         # --- TEST SETİ DEĞERLENDİRMESİ ---
         test_pool = Pool(data=X_test, cat_features=self.cat_features_)
@@ -1932,6 +2764,19 @@ class DemandForecaster(BaseForecaster):
             q50_preds_test = np.square(q50_preds_test)
             q90_preds_test = np.square(q90_preds_test)
             y_true_test = np.square(y_true_test)
+
+        # --- Bug Fix — Target Scaling Un-scale (bkz. docstring) ---
+        # sqrt geri-çevirmeden SONRA, y_true_test ile karşılaştırmadan ÖNCE —
+        # _predict_single_batch()'teki sıralamayla birebir tutarlı.
+        if scale_factor_test is not None and len(scale_factor_test) == len(q50_preds_test):
+            q50_preds_test = q50_preds_test * scale_factor_test
+            q90_preds_test = q90_preds_test * scale_factor_test
+            if self.logging_enabled:
+                logger.info(
+                    "   📐 [_evaluate_on_test] Hedef Ölçeklendirme geri çevrildi "
+                    f"(Test seti, {len(scale_factor_test)} satır) — WAPE artık raw desi uzayında."
+                )
+
         q50_preds_test = np.maximum(q50_preds_test, 0)
         q90_preds_test = np.maximum(q90_preds_test, 0)
 
@@ -2055,6 +2900,16 @@ class DemandForecaster(BaseForecaster):
             if self.log_transform_enabled:
                 q50_preds_train = np.square(q50_preds_train)
                 y_true_train = np.square(y_true_train)
+
+            # --- Bug Fix — Target Scaling Un-scale (bkz. fonksiyon docstring'i) ---
+            if scale_factor_train is not None and len(scale_factor_train) == len(q50_preds_train):
+                q50_preds_train = q50_preds_train * scale_factor_train
+                if self.logging_enabled:
+                    logger.info(
+                        "   📐 [_evaluate_on_test] Hedef Ölçeklendirme geri çevrildi "
+                        f"(Train seti, {len(scale_factor_train)} satır) — WAPE artık raw desi uzayında."
+                    )
+
             q50_preds_train = np.maximum(q50_preds_train, 0)
 
             sum_true_train = np.sum(y_true_train)
@@ -2163,6 +3018,12 @@ class DemandForecaster(BaseForecaster):
             "surge_log_cosh_tau":      self.surge_log_cosh_tau,
             "surge_min_rows":          self.surge_min_rows,
             "surge_calibration_factor": getattr(self, "surge_calibration_factor_", 1.0),
+            "surge_dampening_alpha":    getattr(self, "surge_dampening_alpha_", 0.0),
+            "proxy_spo_enabled":            getattr(self, "proxy_spo_enabled_", True),
+            "proxy_spo_capacity_quantile":  getattr(self, "proxy_spo_capacity_quantile_", 0.90),
+            "proxy_spo_spot_cost_multiplier": getattr(self, "proxy_spo_spot_cost_multiplier_", 3.0),
+            "proxy_spo_idle_cost_multiplier": getattr(self, "proxy_spo_idle_cost_multiplier_", 1.0),
+            "proxy_spo_weight_clip":        getattr(self, "proxy_spo_weight_clip_", (1.0, 5.0)),
         })
         return base_params
 
@@ -2187,8 +3048,16 @@ class DemandForecaster(BaseForecaster):
             f"  Outlier Clip    : IQR × {self.outlier_clip_multiplier} ({'kapalı' if self.outlier_clip_multiplier == 0 else 'açık'})",
             f"  Log Dönüşümü    : {'⚠️  log1p (MultiQuantile ile önerilmez!)' if self.log_transform_enabled else '✅ kapalı (MultiQuantile için doğru)'}",
             f"  Kantiller       : q10 / q50 / q90",
-            f"  Surge/Residual  : {'✅ eğitildi (Model 2, τ=' + str(self.surge_log_cosh_tau) + ')' if getattr(self, 'surge_model_', None) is not None else ('⏳ atlandı/kapalı' if self.surge_residual_enabled else '⛔ kapalı (surge_residual_enabled=False)')}",
+            f"  Proxy SPO (Taban): {'✅ aktif — Pool(weight=karar_pişmanlığı)' if getattr(self, 'proxy_spo_enabled_', True) else '⛔ kapalı (weight=1.0)'} "
+            f"(cap_q={getattr(self, 'proxy_spo_capacity_quantile_', 0.90)}, "
+            f"spot_mult={getattr(self, 'proxy_spo_spot_cost_multiplier_', 3.0)}, "
+            f"clip={getattr(self, 'proxy_spo_weight_clip_', (1.0, 5.0))})",
+            f"  Surge/Residual  : {'✅ eğitildi (Model 2, τ=' + ('0.95' if '1700' in self.target_column else '0.85') + ' [dinamik, hedefe göre]' + ')' if getattr(self, 'surge_model_', None) is not None else ('⏳ atlandı/kapalı' if self.surge_residual_enabled else '⛔ kapalı (surge_residual_enabled=False)')}",
             f"  Surge Kalibrasyon: {getattr(self, 'surge_calibration_factor_', 1.0)}x" + (" (varsayılan, değiştirilmedi)" if getattr(self, 'surge_calibration_factor_', 1.0) == 1.0 else " ⚠️ manuel ayarlandı"),
+            f"  Surge Ortogonalleştirme: {len(getattr(self, 'surge_feature_names_', []))} özellik "
+            f"(Taban: {len(self.feature_names_)}) — statik kampanya/tatil bayrakları çıkarıldı",
+            f"  Surge Dinamik Sönümleme: α={getattr(self, 'surge_dampening_alpha_', 0.0)} "
+            f"({'✅ aktif' if getattr(self, 'surge_dampening_alpha_', 0.0) > 0 else '⛔ kapalı'})",
             f"  Weekday Bias    : {self.weekday_bias_ if getattr(self, 'weekday_bias_', None) else '⏳ kalibre edilmedi'}",
             f"  Çıktı Formatı   : In-memory JSON (disk I/O yok)",
         ]

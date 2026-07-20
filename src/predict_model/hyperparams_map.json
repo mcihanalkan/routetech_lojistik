@@ -51,11 +51,11 @@
         "optimization_time_minutes": 99.35,
         "optuna_seed": 42,
         "params": {
-            "iterations": 1100,
+            "iterations": 500,
             "alpha": 0.6727,
             "depth": 6,
             "learning_rate": 0.0472494524277697,
-            "l2_leaf_reg": 31.891859127259934,
+            "l2_leaf_reg": 15,
             "bagging_temperature": 0.42277999326270793
         }
     }
