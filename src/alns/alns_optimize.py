@@ -193,14 +193,18 @@ alns.add_repair_operator(cpsat_hat_repair, "cpsat_hat_repair")
 # Reddedilen berbat bir sonuç -> 0.5 puan
 # decay -> unutma katsayısı. Eski başarılara takılıp kalmamak için puanlar her iterasyonda %80 korunur.
 
-select = RouletteWheel(scores=[25, 5, 2, 0.5], decay=0.8, num_destroy=5, num_repair=3) 
-# num_iters tahmini: cpsat_hat_repair en fazla 5 sn, greedy cok daha hizli -
-# ortalama ~2 sn/iterasyon varsayimi (kaba, autofit sicaklik egrisini olceklemek icin yeterli).
-tahmini_iterasyon = max(20, int(ENV_MAX_TIME / 2))
-accept = SimulatedAnnealing.autofit(
-    init_obj=initial_obj, worse=0.06, accept_prob=0.5, num_iters=tahmini_iterasyon
-)
-stop = MaxRuntime(ENV_MAX_TIME)
+select = RouletteWheel(scores=[25, 5, 2, 0.5], decay=0.8, num_destroy=5, num_repair=3)
+
+# low_occupancy_removal, dusuk doluluklu (israf) araclari DOGRUDAN hedef alan tek
+# destroy operatoru - ama RouletteWheel butun destroy operatorlerine baslangicta
+# esit agirlik (1.0) veriyor, performansini kanitlamasi zaman aliyor. Doluluk
+# sorunu bizim asil darbogazimiz oldugu icin, bu operatore baslangicta 3 kat
+# daha yuksek agirlik vererek arama motorunun bunu daha erken/sik denemesini
+# sagliyoruz - zamanla RouletteWheel yine gercek performansina gore kendi
+# agirligini ayarlayacak, bu sadece erken bir "ipucu".
+_destroy_isimleri = [ad for ad, _ in alns.destroy_operators]
+_low_occ_idx = _destroy_isimleri.index("low_occupancy_removal")
+select._d_weights[_low_occ_idx] = 3.0
 
 # Her yeni en iyi cozum bulundugunda anlik olarak yazdir - onceki CP-SAT'in
 # ayrintili arama logunun ALNS'teki esdegeri (bkz. sohbet gecmisi: "eskiden her
@@ -218,8 +222,63 @@ def _yeni_en_iyi_bulundu(candidate_state, rng_):
 
 alns.on_best(_yeni_en_iyi_bulundu)# ALNS en iyi maliyeti bulunca bu callback fonksiyonu çağırsın diyoruz.
 
+# ============================================================================
+# 4b. KALIBRASYON: gercek iterasyon hizini olcup SA sicaklik takvimini buna gore ayarla
+# ============================================================================
+# ONCEKI YONTEM (sabit "ENV_MAX_TIME/2 sn, iterasyon ~2 sn surer" varsayimi) YANLIS
+# CIKTI: iterasyon suresi 0.2-15 sn arasinda COK degisken (bkz. sohbet gecmisi),
+# sabit bir tahmin gercek hizi tutturamiyor. Yanlis num_iters, SA sicakligini
+# gercekten olmasi gerekenden COK ERKEN (veya COK GEC) dondurup ya aramayi
+# vaktinden once hill-climbing'e kilitliyor (erken donarsa, geri kalan sure
+# boyunca hicbir iyilesme bulunamiyor) ya da hic sogutmuyor. Bunun yerine,
+# butcenin kucuk bir dilimini (en fazla 20 sn / %10) GERCEK operatorlerle
+# calisip gercek iterasyon hizini olcuyoruz - bu kalibrasyon iterasyonlari da
+# gercek arama ilerlemesi oldugu icin (best_state'ten devam ediliyor) bosa
+# gitmiyor, select'in (RouletteWheel) ogrendigi agirliklar da korunuyor.
+class _KalibrasyonDurdur:
+    """En az `min_iterasyon` tamamlanana KADAR devam eder - tek/iki ornek ile
+    (sans eseri yavas bir iterasyona denk gelip) yanlis hiz olcmemek icin.
+    Ama cok yavas iterasyonlar min_iterasyon'a ulasmayi geciktirirse, `max_sure`
+    saniyeyi asinca da (butceyi tuketmemek icin) her halukarda durur."""
+
+    def __init__(self, min_iterasyon: int, max_sure: float):
+        self.min_iterasyon = min_iterasyon
+        self.max_sure = max_sure
+        self.sayac = 0
+        self.baslangic = time.time()
+
+    def __call__(self, rng, best, curr) -> bool:
+        self.sayac += 1
+        gecen = time.time() - self.baslangic
+        return self.sayac > self.min_iterasyon or gecen >= self.max_sure
+
+
+kalibrasyon_durdur = _KalibrasyonDurdur(
+    min_iterasyon=8, max_sure=min(60.0, ENV_MAX_TIME * 0.15)
+)
+kalibrasyon_accept = SimulatedAnnealing.autofit(
+    init_obj=initial_obj, worse=0.06, accept_prob=0.5, num_iters=100
+)
+print(f"Kalibrasyon calistiriliyor (en az {kalibrasyon_durdur.min_iterasyon} iterasyon, gercek hizi olcmek icin)...")
+kalibrasyon_sonuc = alns.iterate(initial_state, select, kalibrasyon_accept, kalibrasyon_durdur)
+
+kalibrasyon_iter_sayisi = max(1, len(kalibrasyon_sonuc.statistics.objectives) - 1)
+kalibrasyon_suresi = kalibrasyon_sonuc.statistics.total_runtime
+gercek_iterasyon_hizi = kalibrasyon_suresi / kalibrasyon_iter_sayisi
+kalan_sure = max(1.0, ENV_MAX_TIME - kalibrasyon_suresi)
+tahmini_iterasyon = max(20, int(kalan_sure / max(gercek_iterasyon_hizi, 0.05)))
+print(
+    f"Kalibrasyon tamamlandi: {kalibrasyon_iter_sayisi} iterasyon / {kalibrasyon_suresi:.1f} sn "
+    f"-> ~{gercek_iterasyon_hizi:.2f} sn/iterasyon -> kalan {kalan_sure:.0f} sn icin tahmini {tahmini_iterasyon} iterasyon"
+)
+
+accept = SimulatedAnnealing.autofit(
+    init_obj=kalibrasyon_sonuc.best_state.objective(), worse=0.06, accept_prob=0.5, num_iters=tahmini_iterasyon
+)
+stop = MaxRuntime(kalan_sure)
+
 print(f"ALNS calistiriliyor (bütce: {ENV_MAX_TIME:.0f} sn)...")
-result = alns.iterate(initial_state, select, accept, stop)
+result = alns.iterate(kalibrasyon_sonuc.best_state, select, accept, stop)
 best: State = result.best_state
 print(f"ALNS tamamlandi. En iyi maliyet: {best.objective():,.0f} TL "
       f"(baslangica gore {'%.1f' % (100 * (1 - best.objective() / max(1, initial_obj)))}% iyilesme)")

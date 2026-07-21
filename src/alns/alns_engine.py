@@ -565,28 +565,41 @@ def try_insert_path(
                 if miktar > 0:
                     best = (miktar, arac_turu, True)
                     break
-        is_final_slot = (leg_gun, leg_slot) == data.zaman_sirali[-1]
         if best is None:
-            for arac_turu in _rank_spot_types_by_cost(data, (leg_src, leg_dst), desi):
+            # ONEMLI DUZELTME: _rank_spot_types_by_cost SADECE 'desi'ye (bu
+            # parcaya) bakiyor, bu bacakta HALIHAZIRDA acik/yari-dolu bir arac
+            # olup olmadigini HIC gormuyor (data alıyor, state degil) - bu
+            # yuzden bacakta %25 dolu bir Kamyon dururken bile sistem, bu
+            # kucuk parca icin sifirdan bir Kamyonet aciyordu (dusuk dolulugun
+            # asil nedeni buydu, bkz. sohbet gecmisi). Duzeltme: her aday arac
+            # turu icin GERCEK MARJINAL maliyeti (_commit_leg'deki AYNI formul)
+            # hesaplayip, mevcut yuke eklemenin birim-desi maliyetine gore
+            # sirala - boylece zaten acik olan bir aracin bos kapasitesine
+            # eklemek (marjinal maliyet ~0'a yakin), yeni bir arac acmaktan
+            # dogal olarak daha ucuz cikip tercih edilir.
+            adaylar = []
+            for arac_turu in data.arac_turleri:
                 miktar = state.max_addable_on_leg(leg_src, leg_dst, leg_gun, leg_slot, arac_turu, False)
                 if miktar <= 0:
                     continue
-                kap = data.arac_parametreleri[arac_turu]["kapasite_desi"]
+                p = data.arac_parametreleri[arac_turu]
+                kap = p["kapasite_desi"]
                 mevcut = state.leg_spot_desi.get((leg_src, leg_dst, leg_gun, leg_slot, arac_turu), 0.0)
                 onerilen = min(desi, miktar)
-                # Faz-1'deki %10 minimum doluluk kuralinin ALNS'teki esdegeri: bu
-                # bacakta HENUZ spot arac yoksa (yeni acilacak), en az %10 dolulugu
-                # saglamayan minik/verimsiz tek seferlik sevkiyati reddet - chunk
-                # relay/ertelenmis slota yonlenir. Bu kural olmadan CP-SAT'in zamana
-                # yayarak sagladigi konsolidasyon verimliligi hic yakalanamiyordu
-                # (bkz. plan/sohbet gecmisi - asil maliyet farkinin nedeni buydu).
-                
-                # Spot araçlar için %10 kısıt kuralı kaldırıldı (jüri KISITLAR.md
-                # madde 8: Faz-2'de bu kural yok, küçük sevkiyat reddedilmez)
-                # if mevcut <= 0 and not is_final_slot and onerilen < 0.10 * kap:
-                #     continue
+
+                eski_adet = spot_vehicle_count(mevcut, kap, MAX_SPOT)
+                yeni_adet = spot_vehicle_count(mevcut + onerilen, kap, MAX_SPOT)
+                birim = vehicle_leg_cost(data.route_lookup, (leg_src, leg_dst), arac_turu, p["spot_hourly"], p["spot_km"])
+                eski_maliyet = eski_adet * birim + ellecleme_maliyet_hesapla(mevcut, p["spot_hourly"])
+                yeni_maliyet = yeni_adet * birim + ellecleme_maliyet_hesapla(mevcut + onerilen, p["spot_hourly"])
+                marjinal_maliyet = yeni_maliyet - eski_maliyet
+
+                adaylar.append((marjinal_maliyet / onerilen, onerilen, arac_turu))
+
+            if adaylar:
+                adaylar.sort(key=lambda x: x[0])
+                _, onerilen, arac_turu = adaylar[0]
                 best = (onerilen, arac_turu, False)
-                break
         if best is None:
             return None
         leg_plans.append((leg_src, leg_dst, leg_gun, leg_slot, *best))
@@ -803,9 +816,10 @@ def random_removal(state: State, rng: rnd.Generator, **kwargs) -> State:
     state = state.copy()
     if not state.assignments:
         return state
-    # KUCULTULDU (0.10 -> 0.04): repair basina dusen is yuku kucultulerek ayni
-    # sure icinde COK DAHA FAZLA (kucuk) iterasyon sigdirilabiliyor - bkz.
-    # sohbet gecmisi: 60 sn'de sadece ~15 iterasyon tamamlanabiliyordu.
+    # DENEME GERI ALINDI: zamanla buyuyen yikim orani denendi ama olcumde
+    # sonucu KOTULESTIRDI (21.5M -> 22.5M, ayni 450 sn butcede) - buyuyen
+    # yikim, repair'in isini agirlastirip erken/kritik fazda iterasyon
+    # sayisini dusurdu (bkz. sohbet gecmisi). Sabit kucuk orana donuldu.
     n = max(1, int(0.04 * len(state.assignments)))
     idx = rng.choice(len(state.assignments), size=min(n, len(state.assignments)), replace=False)
     for i in sorted(idx, reverse=True):
@@ -861,8 +875,8 @@ def low_occupancy_removal(state, rng, **kwargs):
         return state
 
     # 4. ALNS Kuralı: Her şeyi aynı anda sökme! "Blast Radius" (Etki Alanı) belirle.
-    # KUCULTULDU (0.20 -> 0.08): repair yukunu azaltip iterasyon hizini artirmak
-    # icin (bkz. random_removal'daki not).
+    # KUCULTULDU (0.20 -> 0.08): zamanla buyuyen versiyon denendi, kotulestirdi
+    # (bkz. random_removal'daki not) - sabit orana donuldu.
     max_removal_count = int(len(state.assignments) * 0.08) + 1
     num_to_remove = min(len(candidates_to_remove), max_removal_count)
 
@@ -895,7 +909,8 @@ def shaw_related_removal(state, rng, **kwargs):
 
     # ALNS'nin her iterasyonda çok fazla veya çok az bozmasını engellemek için
     # toplam atamaların %3'ü ile %8'i arasında bir kısmını sökeceğiz.
-    # KUCULTULDU (0.10-0.20 -> 0.03-0.08): bkz. random_removal'daki not.
+    # KUCULTULDU (0.10-0.20 -> 0.03-0.08): zamanla buyuyen versiyon denendi,
+    # kotulestirdi (bkz. random_removal'daki not) - sabit orana donuldu.
     min_remove = max(1, int(len(state.assignments) * 0.03))
     max_remove = max(2, int(len(state.assignments) * 0.08))
     num_to_remove = rng.integers(min_remove, max_remove + 1)
@@ -969,7 +984,8 @@ def worst_removal(state: State, rng: rnd.Generator, **kwargs) -> State:
     state = state.copy()
     if not state.assignments:
         return state
-    # KUCULTULDU (0.10 -> 0.04): bkz. random_removal'daki not.
+    # KUCULTULDU (0.10 -> 0.04): zamanla buyuyen versiyon denendi, kotulestirdi
+    # (bkz. random_removal'daki not) - sabit orana donuldu.
     n = max(1, int(0.04 * len(state.assignments)))
     ranked = sorted(state.assignments, key=lambda a: -(a.sla_cost + a.vehicle_cost))
     for a in ranked[:n]:
