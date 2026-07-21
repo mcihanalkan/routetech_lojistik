@@ -716,17 +716,17 @@ def dummy_initial_builder(state, rng, **kwargs):
     yasal boşluk arar.
     """
     state = state.copy()
-    items = list(state.unassigned)
+    unassigned_items = list(state.unassigned)
     state.unassigned = []
     
     # 1. Kargoları büyükten küçüğe sırala (Greedy/Açgözlü yerleştirme mantığı)
     # Büyük desileri (Örn: 5000 desi) önce yerleştirmek her zaman daha güvenlidir, 
     # küçük desiler aralara rahatça sızabilir.
-    items.sort(key=lambda x: x[3], reverse=True)
+    unassigned_items.sort(key=lambda x: x[3], reverse=True)
     
     zamanlar = state.data.zaman_sirali  # Bütün (gun, slot) ikililerinin kronolojik listesi
     
-    for item in items:
+    for item in unassigned_items:
         hat, orj_gun, orj_slot, orj_desi, talep_id = item
         kalan_desi = orj_desi
         
@@ -1016,26 +1016,33 @@ def tm_overload_removal(state: State, rng: rnd.Generator, **kwargs) -> State:
 
 
 def regret_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
-    """
-    Regret-2 (Pişmanlık Odaklı) Onarıcı Operatör.
-    Talepleri sadece en ucuz yerleşime göre değil, "Bu kargoyu kendi orijinal vaktinde 
-    yerleştirmezsem, bir sonraki slotta (ikinci en iyi) yerleştirmenin bana faturası 
-    ne olur?" mantığıyla (Regret) sıralar.
-    Pişmanlık (Regret) skoru en yüksek olan kargolar ilk önce yerleştirilir.
-    """
     state = state.copy()
     items = list(state.unassigned)
     state.unassigned = []
     zamanlar = state.data.zaman_sirali
 
-    # 1. Aşama: Tüm kargolar için Pişmanlık (Regret) Skorunu Hesapla
-    regret_scores = []
-    # `state` bu döngü boyunca hiç değişmiyor (sadece deneme_1/deneme_2 kopyaları
-    # mutasyona uğruyor) - yani objective()'i döngü içinde item basina 2 kez
-    # yeniden hesaplamak yerine (objective() O(1) DEGIL, tum assignments +
-    # TM x gun ciftlerini tarar) bir kere hesaplayip yeniden kullaniyoruz.
-    base_obj = state.objective()
+    # --- HAFİF DELTA HESABI İÇİN YARDIMCI ---
+    def _delta_objective(orijinal_state, deneme_state, yeni_assignments, yerlesen_desi):
+        """Deneme state'inin objective farkını, tam objective() çağırmadan hesapla."""
+        delta = 0.0
+        
+        # Araç maliyeti farkı
+        delta += deneme_state._arac_maliyeti_toplam - orijinal_state._arac_maliyeti_toplam
+        
+        # Yeni eklenen SLA maliyetleri
+        for a in yeni_assignments:
+            delta += a.sla_cost
+        
+        # Unassigned'dan kurtulan desi (30 günlük cezayı artık ödemiyoruz)
+        if yerlesen_desi > 1e-6:
+            from src.alns.time_model import sla_cezasi_tl
+            delta -= sla_cezasi_tl(yerlesen_desi, 24 * 30)
+        
+        return delta
 
+    # 1. Aşama: Regret skorlarını hesapla
+    regret_scores = []
+    
     for item in items:
         hat, orj_gun, orj_slot, orj_desi, talep_id = item
 
@@ -1046,58 +1053,58 @@ def regret_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
                 baslangic_idx = z_idx
                 break
 
-        # --- Opsiyon 1: Orijinal (En iyi) vaktinde yerleştirme maliyeti ---
+        # --- Opsiyon 1: Orijinal vaktinde yerleştirme ---
+        onceki_assign_sayisi = len(state.assignments)
         deneme_1 = state.copy()
-        kalan_1 = _insert_chunk(deneme_1, hat, zamanlar[baslangic_idx][0], zamanlar[baslangic_idx][1], orj_desi, rng, talep_id)
+        kalan_1 = _insert_chunk(deneme_1, hat, zamanlar[baslangic_idx][0], 
+                                zamanlar[baslangic_idx][1], orj_desi, rng, talep_id)
         yerlesen_1 = orj_desi - kalan_1
+        yeni_assignments_1 = deneme_1.assignments[onceki_assign_sayisi:]
+        
         if yerlesen_1 > 1e-6:
-            maliyet_1 = (deneme_1.objective() - base_obj) / yerlesen_1
+            maliyet_1 = _delta_objective(state, deneme_1, yeni_assignments_1, yerlesen_1) / yerlesen_1
         else:
-            maliyet_1 = float('inf') # Orijinal vakte hiç sığmıyor
+            maliyet_1 = float('inf')
 
-        # --- Opsiyon 2: Bir sonraki slotta (İkinci en iyi) yerleştirme maliyeti ---
+        # --- Opsiyon 2: Bir sonraki slotta yerleştirme ---
         maliyet_2 = float('inf')
         if baslangic_idx + 1 < len(zamanlar):
+            onceki_assign_sayisi = len(state.assignments)
             deneme_2 = state.copy()
-            kalan_2 = _insert_chunk(deneme_2, hat, zamanlar[baslangic_idx + 1][0], zamanlar[baslangic_idx + 1][1], orj_desi, rng, talep_id)
+            kalan_2 = _insert_chunk(deneme_2, hat, zamanlar[baslangic_idx + 1][0], 
+                                    zamanlar[baslangic_idx + 1][1], orj_desi, rng, talep_id)
             yerlesen_2 = orj_desi - kalan_2
-            if yerlesen_2 > 1e-6:
-                maliyet_2 = (deneme_2.objective() - base_obj) / yerlesen_2
-
-        # --- Regret (Pişmanlık) Hesabı ---
-        if maliyet_1 == float('inf'):
-            # İlk slota zaten sığmıyor, sistem her türlü erteleyecek, önceliği düşük.
-            regret = -1.0 
-        elif maliyet_2 == float('inf'):
-            # İlk slota sığıyor ama ikinciye SIĞMIYOR! Bunu ŞU AN yerleştirmezsek yanarız!
-            regret = 1e9 
-        else:
-            # İkinci seçeneğin maliyeti ile ilk seçeneğin maliyeti arasındaki fark
-            regret = maliyet_2 - maliyet_1
+            yeni_assignments_2 = deneme_2.assignments[onceki_assign_sayisi:]
             
-        # Büyük kargoları geride bırakmamak için Regret skorunu desi ile ağırlıklandırıyoruz
+            if yerlesen_2 > 1e-6:
+                maliyet_2 = _delta_objective(state, deneme_2, yeni_assignments_2, yerlesen_2) / yerlesen_2
+
+        # --- Regret hesabı ---
+        if maliyet_1 == float('inf'):
+            regret = -1.0
+        elif maliyet_2 == float('inf'):
+            regret = 1e9
+        else:
+            regret = maliyet_2 - maliyet_1
+
         agirlikli_regret = regret * orj_desi if regret > 0 else regret
         regret_scores.append((agirlikli_regret, item, baslangic_idx))
-        
-    # 2. Aşama: En çok pişman olacağımız (skoru en yüksek) kargodan başlayarak sırala
+
+    # 2. ve 3. Aşama: Sırala ve yerleştir (değişiklik yok)
     regret_scores.sort(key=lambda x: x[0], reverse=True)
     
-    # 3. Aşama: Sıralanmış kargoları gerçek state üzerine (gerçekten) yerleştir
     for score, item, baslangic_idx in regret_scores:
         hat, orj_gun, orj_slot, orj_desi, talep_id = item
         kalan_desi = orj_desi
         
         for idx in range(baslangic_idx, len(zamanlar)):
             aktif_gun, aktif_slot = zamanlar[idx]
-            
             kalan_desi = _insert_chunk(
                 state, hat, aktif_gun, aktif_slot, kalan_desi, rng, talep_id
             )
-            
             if kalan_desi <= 1e-6:
                 break
                 
-        # Zamanın sonuna kadar sığmadıysa mecburen havuzda kalır
         if kalan_desi > 1e-6:
             state.unassigned.append((hat, orj_gun, orj_slot, kalan_desi, talep_id))
             
@@ -1161,18 +1168,18 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
     if not state.unassigned:
         return state
 
-    hat_counts: dict = {}
+    hat_counts: dict = {} # Unassigned içindeki hatların sayıları. Örn: İst-Ankara hattı 3 kere var.
     for (hat, *_rest) in state.unassigned: # _rest listesinin unassigned tuple'ındaki kullanmayacağımız şeyleri attık. 
         hat_counts[hat] = hat_counts.get(hat, 0) + 1
-    target_hat = max(hat_counts, key=hat_counts.get)
+    target_hat = max(hat_counts, key=hat_counts.get) # En çok unassigned'ı olan hattı al.
 
-    hat_items = [it for it in state.unassigned if it[0] == target_hat]
-    other_items = [it for it in state.unassigned if it[0] != target_hat]
+    hat_items = [it for it in state.unassigned if it[0] == target_hat] # target hattın itemleri
+    other_items = [it for it in state.unassigned if it[0] != target_hat] # target hatta ait olmayan itemler
     state.unassigned = other_items
 
     data = state.data
     src, dst = target_hat
-    talep = {}
+    talep = {} # (gun,slot) zamanında ne kadar desi talebi var? sorusunu cevaplar
     talep_queue_by_gs = {}
 
     for (_, gun, slot, desi, tid) in hat_items:
@@ -1206,14 +1213,14 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
     zaman_sirali = data.zaman_sirali
     max_talep = max(1, int(round(sum(talep.values()))))
 
-    kiralik_x, spot_y, ert, bir = {}, {}, {}, {}
+    kiralik_x, spot_y, ertelenen, biriken = {}, {}, {}, {}
     for (g, s) in zaman_sirali:
         for a in data.arac_turleri:
             stok = data.kiralik_stok_gunluk.get((target_hat, a), 0) if s == KIRALIK_DISPATCH_SLOT else 0
             kiralik_x[(g, s, a)] = model.NewIntVar(0, stok, f"kx_{g}_{s}_{a}")
             spot_y[(g, s, a)] = model.NewIntVar(0, MAX_SPOT, f"sy_{g}_{s}_{a}")
-        ert[(g, s)] = model.NewIntVar(0, max_talep, f"ert_{g}_{s}")
-        bir[(g, s)] = model.NewIntVar(0, max_talep, f"bir_{g}_{s}")
+        ertelenen[(g, s)] = model.NewIntVar(0, max_talep, f"ert_{g}_{s}")
+        biriken[(g, s)] = model.NewIntVar(0, max_talep, f"bir_{g}_{s}")
 
     # Paylasimli elleceleme kapasitesi: (TM, gun) basina TUM slotlarin toplam
     # katkisi, o an diger hatlarin kullandigi miktar dusuldukten sonra kalan
@@ -1222,15 +1229,15 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
     # ayni gunun iki slotu ayni kapasiteyi paylasir).
 
     yuk_terimleri_by_slot = {}
-    handling_terimleri_by_tm_gun: dict = {}
+    handling_terimleri_by_tm_gun: dict = {} # "Bu TM'de bu günde bu kadar ellecleme yapılıyor" diyoruz.
     yuk_dict = {} # YENİ EKLENEN SÖZLÜK
     for idx, (g, s) in enumerate(zaman_sirali):
-        bugun = int(round(talep.get((g, s), 0.0)))
+        demand_of_today = int(round(talep.get((g, s), 0.0)))
         if idx == 0:
-            model.Add(bir[(g, s)] == bugun)
+            model.Add(biriken[(g, s)] == demand_of_today)
         else:
             g0, s0 = zaman_sirali[idx - 1]
-            model.Add(bir[(g, s)] == ert[(g0, s0)] + bugun)
+            model.Add(biriken[(g, s)] == ertelenen[(g0, s0)] + demand_of_today)
 
         yuk_terimleri = []
         for a in data.arac_turleri:
@@ -1241,9 +1248,9 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
             yuk_terimleri.append(yuk)
             varis_g = arrival_day(data.route_lookup, data.gunler, target_hat, g, s, a) or g
             handling_terimleri_by_tm_gun.setdefault((src, g), []).append(yuk)
-            handling_terimleri_by_tm_gun.setdefault((dst, varis_g), []).append(yuk)
+            handling_terimleri_by_tm_gun.setdefault((dst, varis_g), []).append(yuk) 
         yuk_terimleri_by_slot[(g, s)] = yuk_terimleri
-        model.Add(bir[(g, s)] == cp_model.LinearExpr.Sum(yuk_terimleri) + ert[(g, s)])
+        model.Add(biriken[(g, s)] == cp_model.LinearExpr.Sum(yuk_terimleri) + ertelenen[(g, s)])
 
     # Diger hatlarin MEVCUT kullanimi sabit kabul edilip kalan pay bu hatta
     # (tum slotlarin TOPLAMI uzerinden, gun bazinda) kisitlaniyor.
@@ -1254,7 +1261,7 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
         model.Add(cp_model.LinearExpr.Sum(terimler) <= int(kalan_kapasite))
 
     idx_son = len(zaman_sirali) - 1
-    model.Add(ert[zaman_sirali[idx_son]] == 0)
+    model.Add(ertelenen[zaman_sirali[idx_son]] == 0)
 
     maliyet = []
     for a in data.arac_turleri:
@@ -1263,7 +1270,7 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
         spot_birim_maliyet = vehicle_leg_cost(data.route_lookup, target_hat, a, p["spot_hourly"], p["spot_km"])
         
         # CP-SAT sadece tamsayı kabul ettiği için katsayıyı yuvarlıyoruz
-        ellecleme_katsayisi = int(round((0.01 / 60) * p["spot_hourly"])) # desi başına elleçleme maliyeti 
+        ellecleme_katsayisi = int(round((0.01 / 60) * p["spot_hourly"])) # desi başına elleçleme maliyeti. Burada bu değeri tam sayıya yuvarlıyoruz. Bu direkt olarak maliyeti etkiler mi?
         
         for (g, s) in zaman_sirali:
             # 1. Spot aracın yola çıkma (seyir) maliyeti
@@ -1279,7 +1286,7 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
         saat_farki = (24 if g2 != g else 0) + slot_to_hour(s2) - slot_to_hour(s)
         katsayi = int(round(sla_cezasi_tl(1.0, float(saat_farki))))
         if katsayi > 0:
-            maliyet.append(ert[(g, s)] * katsayi)
+            maliyet.append(ertelenen[(g, s)] * katsayi)
     model.Minimize(cp_model.LinearExpr.Sum(maliyet))
 
     solver = cp_model.CpSolver()
@@ -1300,7 +1307,7 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
     # unassigned'a geri konur.
     for (g, s) in zaman_sirali:
         active_talep_queue.extend(talep_queue_by_gs.get((g, s), []))
-        slotta_tasinan_yuk = max(0.0, float(solver.Value(bir[(g, s)]) - solver.Value(ert[(g, s)])))
+        slotta_tasinan_yuk = max(0.0, float(solver.Value(biriken[(g, s)]) - solver.Value(ertelenen[(g, s)])))
         remaining_slot_load = slotta_tasinan_yuk
 
         for a in data.arac_turleri:
