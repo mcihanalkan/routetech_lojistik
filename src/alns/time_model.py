@@ -27,7 +27,6 @@ DISPATCH_SLOTS = [
 DEMAND_ARRIVAL_TIMES = [
     "09:00", "17:00"
 ]
-KIRALIK_DISPATCH_SLOT = DEMAND_ARRIVAL_TIMES[0]
 
 RouteLookup = dict[tuple[str, str], dict]
 
@@ -99,6 +98,9 @@ def slot_datetime(gun: str, slot: str) -> datetime:
     )
 
 
+_arrival_day_cache: dict = {}
+
+
 def arrival_day(
     route_lookup: RouteLookup,
     valid_days: set[str] | list[str],
@@ -108,14 +110,31 @@ def arrival_day(
     arac_turu: str,
 ) -> str | None:
     """Kalkış (gun, slot) + seyir süresine göre varışın düştüğü takvim günü (analitik).
-    `valid_days` dışına düşerse None (o sefer, modellenen ufkun dışında kalır)."""
+    `valid_days` dışına düşerse None (o sefer, modellenen ufkun dışında kalır).
+
+    PERFORMANS: sonuç sadece problem verisine (route_lookup, valid_days, hat,
+    gun, slot, arac_turu) bağlı - state'e/desiye hiç bağlı değil, bu yüzden
+    ALNS'in tüm çalışması boyunca aynı girdiler için hep aynı sonucu verir.
+    Çok sık çağrıldığı için (bkz. sohbet geçmişi, profil ile doğrulandı)
+    sonuçlar önbelleğe alınıyor."""
+    cache_key = (id(route_lookup), id(valid_days), hat, gun, slot, arac_turu)
+    if cache_key in _arrival_day_cache:
+        return _arrival_day_cache[cache_key]
+
     entry = route_lookup.get(hat)
     if entry is None:
-        return None
-    toplam_saat = slot_to_hour(slot) + entry[arac_turu]
-    gun_offset = int(toplam_saat // 24)
-    varis_gun = (date.fromisoformat(gun) + timedelta(days=gun_offset)).isoformat()
-    return varis_gun if varis_gun in valid_days else None
+        sonuc = None
+    else:
+        toplam_saat = slot_to_hour(slot) + entry[arac_turu]
+        gun_offset = int(toplam_saat // 24)
+        varis_gun = (date.fromisoformat(gun) + timedelta(days=gun_offset)).isoformat()
+        sonuc = varis_gun if varis_gun in valid_days else None
+
+    _arrival_day_cache[cache_key] = sonuc
+    return sonuc
+
+
+_next_dispatch_slot_cache: dict = {}
 
 
 def next_dispatch_slot(
@@ -129,15 +148,26 @@ def next_dispatch_slot(
     kıyasla çok kısa olduğundan (bkz. ellecleme_suresi_dakika), varış anından hemen
     sonraki dispatch penceresi güvenli bir yaklaşım olarak kullanılır — varışla aynı
     slotta asla kalkış yapılmaz (elleçlemeye zaman tanımak için).
-    `valid_days` ufkunun dışına düşerse None."""
+    `valid_days` ufkunun dışına düşerse None.
+
+    PERFORMANS: sonuç sadece problem verisine bağlı (state'e bağlı değil) -
+    diğer önbelleklenen fonksiyonlarla aynı sebepten cache'leniyor."""
+    cache_key = (id(valid_days), gun, slot, seyir_saat)
+    if cache_key in _next_dispatch_slot_cache:
+        return _next_dispatch_slot_cache[cache_key]
+
     toplam_saat = slot_to_hour(slot) + seyir_saat
-    gun_offset, saat_of_day = divmod(toplam_saat, 24) 
+    gun_offset, saat_of_day = divmod(toplam_saat, 24)
+    sonuc = None
     for aday_slot in DEMAND_ARRIVAL_TIMES:
         if slot_to_hour(aday_slot) > saat_of_day:
             aday_gun = (date.fromisoformat(gun) + timedelta(days=int(gun_offset))).isoformat()
-            return (aday_gun, aday_slot) if aday_gun in valid_days else None
-    # Günün tüm slotları geride kaldı -> ertesi günün ilk slotu
-    aday_gun = (date.fromisoformat(gun) + timedelta(days=int(gun_offset) + 1)).isoformat()
-    return (aday_gun, DEMAND_ARRIVAL_TIMES[0]) if aday_gun in valid_days else None
+            sonuc = (aday_gun, aday_slot) if aday_gun in valid_days else None
+            break
+    else:
+        # Günün tüm slotları geride kaldı -> ertesi günün ilk slotu
+        aday_gun = (date.fromisoformat(gun) + timedelta(days=int(gun_offset) + 1)).isoformat()
+        sonuc = (aday_gun, DEMAND_ARRIVAL_TIMES[0]) if aday_gun in valid_days else None
 
-
+    _next_dispatch_slot_cache[cache_key] = sonuc
+    return sonuc
