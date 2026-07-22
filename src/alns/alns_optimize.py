@@ -44,9 +44,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.alns.cost_model import spot_vehicle_count, vehicle_leg_cost, ellecleme_maliyet_hesapla  # noqa: E402
 from src.alns.alns_engine import (  # noqa: E402
+    MIN_SPOT_DOLULUK_ORANI,
     ProblemData,
     State,
+    dogrula_min_spot_doluluk,
     dummy_initial_builder,
+    enforce_min_spot_occupancy,
     cpsat_hat_repair,
     greedy_repair,
     leg_zaman_cizelgesi,
@@ -282,6 +285,29 @@ result = alns.iterate(kalibrasyon_sonuc.best_state, select, accept, stop)
 best: State = result.best_state
 print(f"ALNS tamamlandi. En iyi maliyet: {best.objective():,.0f} TL "
       f"(baslangica gore {'%.1f' % (100 * (1 - best.objective() / max(1, initial_obj)))}% iyilesme)")
+
+# Minimum spot doluluk kuralinin KESIN (hard, parasal olmayan) uygulanmasi -
+# bkz. alns_engine.enforce_min_spot_occupancy docstring. Bu, objective()'i
+# DEGISTIRMEZ (parasal ceza yok) - sadece esigi karsilamayan spot sevkiyatlari
+# bir sonraki uygun slota zorla erteler (README'deki is kuralinin ta kendisi).
+print(f"Minimum spot doluluk kurali (%{MIN_SPOT_DOLULUK_ORANI*100:.0f}) uygulaniyor...")
+_unassigned_oncesi_satir = len(best.unassigned)
+_unassigned_oncesi_desi = sum(x[3] for x in best.unassigned)
+print(f"  (uygulama ONCESI mevcut unassigned: {_unassigned_oncesi_satir} satir / {_unassigned_oncesi_desi:,.0f} desi - bu ALNS'in kendi sonucu, doluluk kuraliyla ilgisiz)")
+_dogrulama_oncesi = dogrula_min_spot_doluluk(best)
+best = enforce_min_spot_occupancy(best, rng)
+_dogrulama_sonrasi = dogrula_min_spot_doluluk(best)
+print(
+    f"Doluluk kurali uygulandi: {len(_dogrulama_oncesi)} ihlal -> {len(_dogrulama_sonrasi)} ihlal. "
+    f"Uygulama sonrasi maliyet: {best.objective():,.0f} TL"
+)
+if _dogrulama_sonrasi:
+    print("UYARI: asagidaki gruplar hala esigin altinda (teorik olarak olmamali):")
+    for v in _dogrulama_sonrasi[:20]:
+        print(f"  {v['src']}->{v['dst']} {v['gun']} {v['slot']} {v['arac_turu']}: "
+              f"{v['desi']:.0f}/{v['adet']*v['kapasite']:.0f} desi (%{v['doluluk']*100:.1f})")
+else:
+    print(f"DOGRULAMA GECTI: son (gun,slot) haric hicbir spot arac grubu %{MIN_SPOT_DOLULUK_ORANI*100:.0f} altinda degil.")
 
 def _talep_id_goruntule():
     """Nihai cozumdeki her Assignment'in hangi ID ile gorunecegini hesaplar.
@@ -704,7 +730,7 @@ unassigned_desi_toplam = sum(x[3] for x in best.unassigned)
 unassigned_satir_sayisi = len(best.unassigned)
 if unassigned_satir_sayisi == 0:
     unassigned_cezasi = 0.0
-    genel_toplam = (kiralik_gercek_toplam + spot_toplam_maliyet + sla_ceza_toplam 
+    genel_toplam = (kiralik_gercek_toplam + spot_toplam_maliyet + sla_ceza_toplam
                     + ellecleme_ceza_toplam + tir_ceza_toplam)
 else:
     unassigned_cezasi = genel_toplam - (

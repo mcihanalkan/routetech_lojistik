@@ -53,6 +53,36 @@ MAX_RELAY_CANDIDATES = 4       # hat basina en fazla 1-aktarmali (2 bacak) aday 
 MAX_2HOP_CANDIDATES = 3        # hat basina en fazla 2-aktarmali (3 bacak) aday sayisi
 KIRALIK_DISPATCH_SLOT = DEMAND_ARRIVAL_TIMES[0]
 
+# Spot arac icin minimum kalkis doluluk orani (CP-SAT'taki (src/optimization.py)
+# "%10 doluluk kurali" ile ayni mantik). Burada ALNS'te KESIN (hard, parasal
+# olmayan) bir kisit olarak uygulanir - bkz. enforce_min_spot_occupancy().
+MIN_SPOT_DOLULUK_ORANI = 0.10
+
+# CP-SAT sadece EN SON slotu tamamen muaf tutuyor (tek "ucurum"). ALNS'te bunu
+# AYNEN kopyalamak, tum ay biriken talebi TEK bir son slota sikistiriyor -
+# gercek elleçleme/tir kapasitesini asip demandin "yerlestirilemeyen talep"
+# olarak KAYBOLMASINA yol aciyordu (bkz. sohbet gecmisi: 265 satir / 12.366
+# desi / 3.56M TL sanal ceza bulgusu). Bunun yerine son
+# MIN_SPOT_DOLULUK_TAPER_GUN_SAYISI gun boyunca esik, tam orandan (taper
+# penceresine girerken) 0'a (en son slotta) DOGRUSAL olarak azalir - boylece
+# arama, birikmis talebi son birkac gune YAYARAK bosaltabilir, tek bir slota
+# tikanmak zorunda kalmaz.
+MIN_SPOT_DOLULUK_TAPER_GUN_SAYISI = 2
+
+
+def _min_doluluk_esigi(idx: int, toplam_slot: int) -> float:
+    """zaman_sirali[idx] icin uygulanacak minimum doluluk esigini dondurur.
+    Son MIN_SPOT_DOLULUK_TAPER_GUN_SAYISI gun disinda MIN_SPOT_DOLULUK_ORANI
+    (sabit); taper penceresi icinde, en son slota (esik=0) dogru DOGRUSAL
+    olarak azalir - bkz. MIN_SPOT_DOLULUK_TAPER_GUN_SAYISI tanimindaki not."""
+    taper_slot_sayisi = MIN_SPOT_DOLULUK_TAPER_GUN_SAYISI * len(DEMAND_ARRIVAL_TIMES)
+    if taper_slot_sayisi <= 0:
+        return MIN_SPOT_DOLULUK_ORANI
+    kalan_slot = toplam_slot - 1 - idx  # en son slotta 0
+    if kalan_slot >= taper_slot_sayisi:
+        return MIN_SPOT_DOLULUK_ORANI
+    return MIN_SPOT_DOLULUK_ORANI * (kalan_slot / taper_slot_sayisi)
+
 
 # ============================================================================
 # Problem verisi (salt-okunur, State'ler arasında paylaşılır)
@@ -1098,6 +1128,177 @@ def _remove_assignment(state: State, a: Assignment) -> None:
         if varis_g:
             state.handling_usage[(leg.dst, varis_g)] = state.handling_usage.get((leg.dst, varis_g), 0.0) - a.desi
     state.unassigned.append((a.demand_hat, a.demand_gun, a.demand_slot, a.desi, a.talep_id))
+
+
+# ============================================================================
+# Minimum spot doluluk kurali — KESIN (hard, parasal olmayan) uygulama
+# ============================================================================
+# CP-SAT motorundaki (src/optimization.py) "%10 doluluk" kurali orada SERT bir
+# kisit (spot_y * kap <= tasinan_yuk * 10). ALNS parca-parca (chunk-by-chunk)
+# insa ettigi icin ayni seyi objective() uzerinden PARASAL bir ceza ile
+# yapmaya calismak (once denenen yontem) yanlis cikti: onlarca/yuzlerce
+# (hat,gun,slot,tur) grubu ayni anda esigin altinda kalabiliyor, bunlarin
+# TOPLAMI objective()'i milyonlarca TL sisiriyordu - bu YARISMANIN gercek
+# maliyet semasinda olmayan sahte bir kalem. Onun yerine README'nin zaten
+# tarif ettigi is kuralini AYNEN uyguluyoruz: "Doluluk oranini karsilamayan
+# yukler o gun tasimaya alinmaz ve bir sonraki gune ertelenir" - yani PARA
+# CEZASI degil, KESIN bir ERTELEME. Son (gun,slot) - CP-SAT'taki gibi - muaf.
+def dogrula_min_spot_doluluk(state: "State") -> list:
+    """Nihai state'te (kademeli/taper edilmis) minimum doluluk esigini ihlal
+    eden TUM spot arac gruplarini dondurur - bkz. _min_doluluk_esigi (esik,
+    son MIN_SPOT_DOLULUK_TAPER_GUN_SAYISI gun boyunca 0'a kadar azalir). Bos
+    liste = kural %100 saglaniyor - bkz. enforce_min_spot_occupancy()."""
+    zamanlar = state.data.zaman_sirali
+    zaman_index = {gs: i for i, gs in enumerate(zamanlar)}
+    ihlaller = []
+    for (src, dst, gun, slot, arac_turu), desi in state.leg_spot_desi.items():
+        if desi <= 1e-9:
+            continue
+        idx = zaman_index.get((gun, slot))
+        if idx is None:
+            continue
+        esik = _min_doluluk_esigi(idx, len(zamanlar))
+        if esik <= 1e-9:
+            continue
+        kap = state.data.arac_parametreleri[arac_turu]["kapasite_desi"]
+        adet = spot_vehicle_count(desi, kap, MAX_SPOT)
+        if adet <= 0:
+            continue
+        doluluk = desi / (adet * kap)
+        if doluluk < esik - 1e-9:
+            ihlaller.append({
+                "src": src, "dst": dst, "gun": gun, "slot": slot, "arac_turu": arac_turu,
+                "desi": desi, "adet": adet, "kapasite": kap, "doluluk": doluluk, "esik": esik,
+            })
+    return ihlaller
+
+
+def _insert_chunk_from(state, hat, baslangic_idx, desi, rng, talep_id, gercek_gun, gercek_slot):
+    """_insert_chunk ile ayni mantik, TEK farkla: arama baslangici (baslangic_idx)
+    ile SLA icin kullanilan GERCEK talep olusum ani (gercek_gun/gercek_slot)
+    BIRBIRINDEN BAGIMSIZ. _insert_chunk'ta bu ikisi ayni (gun,slot) parametresine
+    baglidir - bu yuzden bir kargoyu zorla ILERI bir slottan aratmak, o slotta
+    yerlesirse SLA'yi YANLIŞLIKLA "sanki orada olusmus gibi" (yani gecikme YOKMUS
+    gibi) hesaplardi. enforce_min_spot_occupancy() bu fonksiyonu kullanir ki
+    zorunlu erteleme GERCEK SLA cezasina dogru yansisin."""
+    zamanlar = state.data.zaman_sirali
+    kalan = desi
+
+    for aktif_gun, aktif_slot in zamanlar[baslangic_idx:]:
+        if kalan <= 1e-6:
+            break
+
+        secenekler = list(insertion_options(state.data, hat, aktif_gun, aktif_slot))
+        while kalan > 1e-6:
+            en_iyi_secenek = None
+            en_iyi_desi = 0
+            en_iyi_birim_maliyet = float('inf')
+            en_iyi_eval = None
+
+            for secenek in secenekler:
+                eval_sonuc = evaluate_path(
+                    state, hat, aktif_gun, aktif_slot, kalan, secenek, talep_id,
+                    demand_gun=gercek_gun, demand_slot=gercek_slot,
+                )
+                if eval_sonuc is None or eval_sonuc['desi'] <= 1e-9:
+                    continue
+                birim_maliyet = eval_sonuc['maliyet'] / eval_sonuc['desi']
+                if eval_sonuc['desi'] > en_iyi_desi or \
+                   (abs(eval_sonuc['desi'] - en_iyi_desi) < 1e-9 and birim_maliyet < en_iyi_birim_maliyet):
+                    en_iyi_desi = eval_sonuc['desi']
+                    en_iyi_birim_maliyet = birim_maliyet
+                    en_iyi_secenek = secenek
+                    en_iyi_eval = eval_sonuc
+
+            if en_iyi_secenek is None:
+                break
+
+            commit_path(state, hat, en_iyi_eval, talep_id, demand_gun=gercek_gun, demand_slot=gercek_slot)
+            kalan -= en_iyi_desi
+
+    return kalan
+
+
+def enforce_min_spot_occupancy(state: "State", rng) -> "State":
+    """Minimum doluluk esigini (bkz. _min_doluluk_esigi - son
+    MIN_SPOT_DOLULUK_TAPER_GUN_SAYISI gun boyunca kademeli olarak 0'a iner)
+    KESIN (hard) olarak uygular - hicbir parasal ceza icermez, objective()'e
+    hicbir katki yapmaz.
+
+    Esigin altinda kalan spot arac gruplarini bulur, o gruplari kullanan
+    atamalari soker ve ihlal edilen (gun,slot)'tan KESINLIKLE SONRAKI bir
+    slottan itibaren yeniden dener. "Kesinlikle sonraki slottan itibaren"
+    onemli: ayni slotta yeniden denenirse arama hala en ucuz secenek oldugu
+    icin AYNI ihlali tekrar uretebilir (sonsuz donguye girer) - ileri zorlamak,
+    talebin HER turda en az bir slot ilerlemesini garanti eder, bu da en fazla
+    len(zaman_sirali) turda KESIN yakinsamayi saglar (en kotu durumda talep,
+    esigin 0'a indigi SON slota kadar itilir - README: "karsilanmayan yuk bir
+    sonraki gune ertelenir" kuralinin ta kendisi, ama artik TEK bir slota
+    degil, son birkac gune YAYILARAK)."""
+    zamanlar = state.data.zaman_sirali
+    zaman_index = {gs: i for i, gs in enumerate(zamanlar)}
+    tur_limiti = len(zamanlar)
+
+    for _ in range(tur_limiti):
+        ihlaller = dogrula_min_spot_doluluk(state)
+        if not ihlaller:
+            break
+        ihlal_keyleri = {(v["src"], v["dst"], v["gun"], v["slot"], v["arac_turu"]) for v in ihlaller}
+
+        etkilenen = [
+            a for a in state.assignments
+            if any(
+                (leg.src, leg.dst, leg.gun, leg.slot, leg.arac_turu) in ihlal_keyleri and not leg.is_kiralik
+                for leg in a.legs
+            )
+        ]
+        if not etkilenen:
+            break  # ihlal var ama eslesen atama yok (olmamali) - guvenlik agi
+
+        for a in etkilenen:
+            state.assignments.remove(a)
+            _remove_assignment(state, a)
+        # _remove_assignment() sokulen HER atamayi kendisi state.unassigned'a
+        # geri ekler (normal sozlesmesi budur - repair operatorlerinin havuzdan
+        # cekmesini bekler). Burada reinsert'i KENDIMIZ (asagida) yaptigimiz
+        # icin, o otomatik eklenen (hayalet) girdileri temizliyoruz - yoksa
+        # ayni talep hem gercek yeni atama olarak hem de unassigned'da
+        # COKLANMIS olarak kalir (bkz. sohbet gecmisi: "100 desi 350 oldu" bulgusu).
+        del state.unassigned[-len(etkilenen):]
+
+        for a in etkilenen:
+            zorunlu_idx = 1 + max(
+                zaman_index[(leg.gun, leg.slot)]
+                for leg in a.legs
+                if (leg.src, leg.dst, leg.gun, leg.slot, leg.arac_turu) in ihlal_keyleri and not leg.is_kiralik
+            )
+            zorunlu_idx = min(zorunlu_idx, len(zamanlar) - 1)
+            kalan = _insert_chunk_from(
+                state, a.demand_hat, zorunlu_idx, a.desi, rng, a.talep_id,
+                a.demand_gun, a.demand_slot,
+            )
+            if kalan > 1e-6:
+                # Zorunlu ILERI arama basarisiz oldu - kalan miktar icin GERCEK
+                # kapasite (elleçleme/tir/kiralik stok) tukenmis demektir, bu
+                # doluluk kuralindan BAGIMSIZ bir kisit. Bu durumda esigi
+                # karsilamasa bile FIZIKSEL OLARAK SIGAN herhangi bir yere
+                # yerlestirmek (standart _insert_chunk ile, orijinal olusum
+                # anindan itibaren TUM slotlari tekrar dener), tamamen
+                # yerlestirilememekten (devasa 30-gunluk SLA cezasi, bkz.
+                # objective()) HER ZAMAN daha iyidir - bkz. sohbet gecmisi:
+                # "155 satir / 1.43M TL yerlestirilemeyen talep" bulgusu.
+                kalan = _insert_chunk(state, a.demand_hat, a.demand_gun, a.demand_slot, kalan, rng, a.talep_id)
+            if kalan > 1e-6:
+                state.unassigned.append((a.demand_hat, a.demand_gun, a.demand_slot, kalan, a.talep_id))
+
+    kalan_ihlaller = dogrula_min_spot_doluluk(state)
+    if kalan_ihlaller:
+        print(
+            f"UYARI: {len(kalan_ihlaller)} spot arac grubu {tur_limiti} zorunlu turdan sonra "
+            f"HALA MIN_SPOT_DOLULUK_ORANI (%{MIN_SPOT_DOLULUK_ORANI*100:.0f}) altinda - "
+            "bkz. dogrula_min_spot_doluluk()."
+        )
+    return state
 
 
 def random_removal(state: State, rng: rnd.Generator, **kwargs) -> State:
