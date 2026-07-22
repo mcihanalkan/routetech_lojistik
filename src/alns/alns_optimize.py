@@ -545,7 +545,7 @@ def _bacak_arac_sayisi(leg) -> int:
 
 
 
-
+sla_penalties = [] # talepID -> ceza
 csv_records = []
 for a in best.assignments:
     nihai_kaynak, nihai_varis = a.demand_hat
@@ -568,6 +568,9 @@ for a in best.assignments:
             varis_gun = varis_dt.strftime("%Y-%m-%d")
             varis_saat = varis_dt.strftime("%H:%M")
 
+            sla_cezasi = round(a.sla_cost * (pay_desi / a.desi), 2)
+            if sla_cezasi > 0:
+                sla_penalties.append((a.talep_id, sla_cezasi))
             csv_records.append({
                 "Tarih": gercek_gun, "Slot": gercek_slot, "Arac_Tipi": arac_tipi, "Arac_Turu": leg.arac_turu,
                 "Arac_ID": arac_id_kodu[(key, arac_index)],
@@ -581,7 +584,7 @@ for a in best.assignments:
                 "Bu_Talebin_Desisi": round(pay_desi, 2),
                 "Bacak_Toplam_Desi": round(bucket_toplam_desi[key], 2),
                 "Maliyet_TL": round(arac_maliyeti[(key, arac_index)] * (pay_desi / arac_toplam_yuk[(key, arac_index)]), 2),
-                "SLA_Cezasi_TL": round(a.sla_cost * (pay_desi / a.desi), 2),
+                "SLA_Cezasi_TL": sla_cezasi,
                 "Toplam_Maliyet_TL": round(
                     arac_maliyeti[(key, arac_index)] * (pay_desi / arac_toplam_yuk[(key, arac_index)])
                     + a.sla_cost * (pay_desi / a.desi), 2
@@ -609,7 +612,9 @@ for a in best.assignments:
                 gercek_slot = gercek_dt.strftime("%H:%M")
                 varis_gun = varis_dt.strftime("%Y-%m-%d")
                 varis_saat = varis_dt.strftime("%H:%M")
-
+                sla_cezasi = (round(a.sla_cost * (pay_desi / a.desi), 2) if i == len(a.legs) - 1 else 0)
+                if sla_cezasi > 0:
+                    sla_penalties.append((a.talep_id, sla_cezasi))
                 csv_records.append({
                     "Tarih": gercek_gun, "Slot": gercek_slot, "Arac_Tipi": arac_tipi, "Arac_Turu": leg.arac_turu, # BURASI GÜNCELLENDİ
                     "Arac_ID": arac_id_kodu[(key, arac_index)],
@@ -628,7 +633,7 @@ for a in best.assignments:
                     # payi kendi satirinda gosteriliyor. SLA cezasi ise teslimat anina
                     # bagli bir kavram oldugu icin hala SADECE son bacakta yaziliyor.
                     "Maliyet_TL": round(arac_maliyeti[(key, arac_index)] * (pay_desi / arac_toplam_yuk[(key, arac_index)]), 2),
-                    "SLA_Cezasi_TL": (round(a.sla_cost * (pay_desi / a.desi), 2) if i == len(a.legs) - 1 else 0),
+                    "SLA_Cezasi_TL": sla_cezasi,
                     "Toplam_Maliyet_TL": round(
                         arac_maliyeti[(key, arac_index)] * (pay_desi / arac_toplam_yuk[(key, arac_index)])
                         + (a.sla_cost * (pay_desi / a.desi) if i == len(a.legs) - 1 else 0), 2
@@ -737,6 +742,11 @@ else:
         kiralik_gercek_toplam + spot_toplam_maliyet + sla_ceza_toplam
         + ellecleme_ceza_toplam + tir_ceza_toplam
     )
+
+
+sla_dusen_talep_sayisi = len(sla_penalties)
+
+
 ozet = f"""
 {'=' * 80}
 OZET ISTATISTIKLER (Faz 2 - ALNS, saat bazli, konsolidasyon destekli)
@@ -746,6 +756,7 @@ OZET ISTATISTIKLER (Faz 2 - ALNS, saat bazli, konsolidasyon destekli)
       -> Ellecleme (Marjinal) : {kiralik_ellecleme_toplam:>15,.0f} TL
   Spot Arac Maliyeti          : {spot_toplam_maliyet:>15,.0f} TL
   SLA Gecikme Cezasi          : {sla_ceza_toplam:>15,.0f} TL
+      -> SLA'a ya düşen talep sayısı: {sla_dusen_talep_sayisi} 
 {'-' * 80}
   OPERASYONEL MALIYET         : {(kiralik_gercek_toplam + spot_toplam_maliyet + sla_ceza_toplam):>15,.0f} TL
 {'-' * 80}
