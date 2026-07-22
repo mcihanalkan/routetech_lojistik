@@ -721,10 +721,11 @@ def _insert_chunk(state, hat, gun, slot, desi, rng, talep_id):
             if en_iyi_secenek is None:
                 break
 
+            sla_cost = en_iyi_eval.get("sla_cost")
             # Kazananı commit et
             commit_path(state, hat, en_iyi_eval, talep_id,
                         demand_gun=gun if (aktif_gun != gun or aktif_slot != slot) else gun,
-                        demand_slot=slot if (aktif_gun != gun or aktif_slot != slot) else slot)
+                        demand_slot=slot if (aktif_gun != gun or aktif_slot != slot) else slot, sla_cost=sla_cost)
             kalan -= en_iyi_desi
 
     return kalan
@@ -970,7 +971,7 @@ def evaluate_path(state, hat, gun, slot, desi, path, talep_id="",
         'vehicle_cost': toplam_vehicle_cost,
     }
 
-def commit_path(state, hat, eval_result, talep_id, demand_gun, demand_slot):
+def commit_path(state, hat, eval_result, talep_id, demand_gun, demand_slot, sla_cost):
     """evaluate_path tarafından seçilen yolun gerçek state üzerinde kalıcı olarak
     uygulanmasını sağlar.
 
@@ -1008,13 +1009,6 @@ def commit_path(state, hat, eval_result, talep_id, demand_gun, demand_slot):
         vehicle_cost += cost
         legs.append(Leg(leg_src, leg_dst, leg_gun, leg_slot, arac_turu, is_kiralik))
 
-    # SLA maliyetini tekrar hesapla (ya da evaluate'den al)
-    tamamlanma = _completion_datetime(data, legs, tasinabilir)
-    talep_tamamlanma = slot_datetime(demand_gun, demand_slot)
-    hedef_gun = data.route_lookup[(src, dst)]["target_delivery_days"]
-    deadline = sla_deadline(talep_tamamlanma, hedef_gun)
-    saat_gecikme = gecikme_saat(tamamlanma, deadline)
-    sla_cost = sla_cezasi_tl(tasinabilir, saat_gecikme)
 
     assignment = Assignment(
         demand_hat=hat, demand_gun=demand_gun, demand_slot=demand_slot,
@@ -1213,7 +1207,9 @@ def _insert_chunk_from(state, hat, baslangic_idx, desi, rng, talep_id, gercek_gu
             if en_iyi_secenek is None:
                 break
 
-            commit_path(state, hat, en_iyi_eval, talep_id, demand_gun=gercek_gun, demand_slot=gercek_slot)
+            sla_cost = en_iyi_eval.get("sla_cost")
+
+            commit_path(state, hat, en_iyi_eval, talep_id, demand_gun=gercek_gun, demand_slot=gercek_slot,sla_cost=sla_cost)
             kalan -= en_iyi_desi
 
     return kalan
