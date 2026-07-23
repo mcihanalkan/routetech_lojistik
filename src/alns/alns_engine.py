@@ -118,18 +118,27 @@ def _build_relay_candidates(route_lookup: RouteLookup, hatlar, merkezler) -> dic
     ve 2-aktarmalı (src->r1->r2->dst) — ikisi de mesafeye göre en ucuz birkaç
     adayla sınırlı (arama uzayının patlamasını önlemek için). Her aday, path
     tuple'ı olarak saklanır: (r,) ya da (r1, r2)."""
+    def is_valid_relay(d_src_dst,d_src_x,d_x_dst):
+        # Optimizasyon amaçlı bir TM'nin ara TM olarak relay candidate seçilmesi için şu formül kullanılacak:
+        result = d_src_x + d_x_dst <= d_src_dst * 1.35 # 1.35 degeri çok tahmini. Bu değer değiştirilebilir.
+        return result
     candidates: dict = {}
     for hat in hatlar:
         src, dst = hat
         tek_aktarma = []
+        leg_src_dst = route_lookup.get((src,dst))
         for relay in merkezler:
             if relay in (src, dst):
                 continue
-            leg1 = route_lookup.get((src, relay))
-            leg2 = route_lookup.get((relay, dst))
-            if leg1 is None or leg2 is None: # İki bacağın da olması gerekir.
-                continue
-            tek_aktarma.append((leg1["distance_km"] + leg2["distance_km"], relay))
+            leg_src_r = route_lookup.get((src, relay))
+            leg_r_dst = route_lookup.get((relay, dst))
+            
+            d_src_r = leg_src_r["distance_km"]
+            d_r_dst = leg_r_dst["distance_km"]
+            d_src_dst = leg_src_dst["distance_km"]
+            if leg_src_r is not None and leg_r_dst is not None and is_valid_relay(d_src_dst=d_src_dst, d_src_x=d_src_r, d_x_dst=d_r_dst):
+                tek_aktarma.append((d_src_r + d_r_dst, relay))
+            
 
         #   def isimsiz_fonksiyon(t):
         #       return t[0]
@@ -137,7 +146,7 @@ def _build_relay_candidates(route_lookup: RouteLookup, hatlar, merkezler) -> dic
         # ikisi aynı işi yapar.
 
         tek_aktarma.sort(key=lambda t: t[0])
-        en_iyi_tek = [r for _, r in tek_aktarma[:MAX_RELAY_CANDIDATES]]
+        en_iyi_tek = [r for _, r in tek_aktarma[:MAX_RELAY_CANDIDATES]] # En iyi 4 ugrama adayi
 
         # 2-aktarma adayları yalnızca en iyi tek-aktarma relay'lerinin komşuları
         # arasından aranır (tüm TM çiftlerini taramak yerine) - arama uzayını
@@ -1095,9 +1104,10 @@ def _remove_assignment(state: State, a: Assignment) -> None:
             eski_desi = state.leg_kiralik_desi.get(key, 0.0)
             yeni_desi = max(0.0, eski_desi - a.desi)
             state.leg_kiralik_desi[key] = yeni_desi
-            eski_ellecleme = ellecleme_maliyet_hesapla(eski_desi, p["rental_hourly"])
-            yeni_ellecleme = ellecleme_maliyet_hesapla(yeni_desi, p["rental_hourly"])
-            state._arac_maliyeti_toplam += (yeni_ellecleme - eski_ellecleme)
+            old_cost = ellecleme_maliyet_hesapla(eski_desi, p["rental_hourly"])
+            new_cost = ellecleme_maliyet_hesapla(yeni_desi, p["rental_hourly"])
+            delta_handling = new_cost - old_cost # Buradaki değer negatif çıkar. çünkü yeni elleçleme maliyetimiz, desi azaldığından dolayı eskisinden az
+            state._arac_maliyeti_toplam += delta_handling # Araç maliyeti negatif deger ile toplandığı için azalır.
         else:
             eski = state.leg_spot_desi.get(key, 0.0)
             kap = p["kapasite_desi"]
@@ -1107,9 +1117,10 @@ def _remove_assignment(state: State, a: Assignment) -> None:
             state.leg_spot_desi[key] = yeni
 
             birim = vehicle_leg_cost(state.data.route_lookup, (leg.src, leg.dst), leg.arac_turu, p["spot_hourly"], p["spot_km"])
-            eski_maliyet = eski_adet * birim + ellecleme_maliyet_hesapla(eski, p["spot_hourly"])
-            yeni_maliyet = yeni_adet * birim + ellecleme_maliyet_hesapla(yeni, p["spot_hourly"])
-            state._arac_maliyeti_toplam += (yeni_maliyet - eski_maliyet)
+            old_cost = eski_adet * birim + ellecleme_maliyet_hesapla(eski, p["spot_hourly"])
+            new_cost = yeni_adet * birim + ellecleme_maliyet_hesapla(yeni, p["spot_hourly"])
+            delta_cost = new_cost-old_cost
+            state._arac_maliyeti_toplam += delta_cost
 
             if leg.arac_turu == state.data.tir_arac_turu:
                 delta = yeni_adet - eski_adet
@@ -1502,7 +1513,7 @@ def tm_overload_removal(state: State, rng: rnd.Generator, **kwargs) -> State:
 
 def regret_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
     state = state.copy()
-    items = list(state.unassigned)
+    unassigned_items = list(state.unassigned)
     state.unassigned = []
     zamanlar = state.data.zaman_sirali
 
@@ -1520,7 +1531,6 @@ def regret_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
         
         # Unassigned'dan kurtulan desi (30 günlük cezayı artık ödemiyoruz)
         if yerlesen_desi > 1e-6:
-            from src.alns.time_model import sla_cezasi_tl
             delta -= sla_cezasi_tl(yerlesen_desi, 24 * 30)
         
         return delta
@@ -1528,7 +1538,7 @@ def regret_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
     # 1. Aşama: Regret skorlarını hesapla
     regret_scores = []
     
-    for item in items:
+    for item in unassigned_items:
         hat, orj_gun, orj_slot, orj_desi, talep_id = item
 
         # Kargonun zaman çizelgesindeki başlangıç noktasını bul
@@ -1541,8 +1551,9 @@ def regret_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
         # --- Opsiyon 1: Orijinal vaktinde yerleştirme ---
         onceki_assign_sayisi = len(state.assignments)
         deneme_1 = state.copy()
-        kalan_1 = _insert_chunk(deneme_1, hat, zamanlar[baslangic_idx][0], 
-                                zamanlar[baslangic_idx][1], orj_desi, rng, talep_id)
+        gun = zamanlar[baslangic_idx][0]
+        slot = zamanlar[baslangic_idx][1]
+        kalan_1 = _insert_chunk(deneme_1, hat, gun, slot, orj_desi, rng, talep_id)
         yerlesen_1 = orj_desi - kalan_1
         yeni_assignments_1 = deneme_1.assignments[onceki_assign_sayisi:]
         
