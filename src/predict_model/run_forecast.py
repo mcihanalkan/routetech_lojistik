@@ -937,7 +937,13 @@ def run(save_json: bool = True) -> "pd.DataFrame":
 
     talep_tahmini_df["Tarih"] = pd.to_datetime(talep_tahmini_df["date"]).dt.strftime("%d.%m.%Y")
     talep_tahmini_df["Talep Tamamlama Saati"] = talep_tahmini_df["demand_start_time"].apply(_slot_to_time)
-    talep_tahmini_df["Tahmin Edilen Desi"] = talep_tahmini_df["q50"].astype(float)
+    # ÖNEMLİ DÜZELTME: Jüriye giden "Tahmin Edilen Desi" ham medyan (q50) değil,
+    # belirsizlik payı eklenmiş "recommended_demand" (= q50 + safety_buffer)
+    # olmalı. q50 yalnızca merkezi eğilimi verir; safety_buffer, q90-q50
+    # farkının bir kısmını ekleyerek olası talep sapmasına karşı pay bırakır.
+    # (bkz. uncertainty.py — to_ortools_dataframe/combine_slot_bands zaten
+    # bu sütunu üretiyor, önceden burada kullanılmıyordu.)
+    talep_tahmini_df["Tahmin Edilen Desi"] = talep_tahmini_df["recommended_demand"].astype(float)
 
     # Şablonla BİREBİR aynı sütun sırası
     talep_tahmini_df = talep_tahmini_df[[
@@ -945,7 +951,7 @@ def run(save_json: bool = True) -> "pd.DataFrame":
         "Çıkış Transfer Merkezi", "Varış Transfer Merkezi", "Tahmin Edilen Desi",
     ]]
 
-    # --- Toplam Talep Tahmini (desi) — tüm rota/tarih/saat dilimi toplamı ---
+    # Sadece konsol logu için toplam (dosyaya YAZILMIYOR):
     total_desi_tahmini = float(talep_tahmini_df["Tahmin Edilen Desi"].sum())
 
     OUTPUT_TALEP_XLSX = str(excel_dir / "Talep-tahmini.xlsx")
@@ -954,18 +960,14 @@ def run(save_json: bool = True) -> "pd.DataFrame":
     # Hücre formatlarını da şablonla birebir eşleştir:
     #   C sütunu (Talep Tamamlama Saati) -> 'h:mm'
     #   F sütunu (Tahmin Edilen Desi)    -> '0.000'
+    # NOT: Dosyada TEK sayfa var, sadece şablonun istediği 6 sütun (A-F) —
+    # ne özet sayfası ne de toplam satırı ekleniyor.
     from openpyxl import load_workbook
     _wb_out = load_workbook(OUTPUT_TALEP_XLSX)
     _ws_out = _wb_out.active
     for _row in _ws_out.iter_rows(min_row=2, max_row=_ws_out.max_row):
         _row[2].number_format = "h:mm"   # C: Talep Tamamlama Saati
         _row[5].number_format = "0.000"  # F: Tahmin Edilen Desi
-
-    # --- Toplam satırı: veri satırlarından bir boşluk sonra, E/F sütunlarına ---
-    _total_row_idx = _ws_out.max_row + 2
-    _ws_out.cell(row=_total_row_idx, column=5, value="TOPLAM TALEP TAHMİNİ (desi)")
-    _total_cell = _ws_out.cell(row=_total_row_idx, column=6, value=total_desi_tahmini)
-    _total_cell.number_format = "0.000"
 
     _wb_out.save(OUTPUT_TALEP_XLSX)
 
