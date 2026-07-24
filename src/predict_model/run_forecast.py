@@ -486,6 +486,9 @@ def _fit_or_load_forecaster(
         # debug_backtest.py ile 09:00/17:00 FAZLA rota sayılarını ve
         # decision_regret'i doğrulayın.
         route_bias_cap_low = 0.55,
+        # backlog_alpha/backlog_max_release_days: sınıf varsayılanı (1.4/4,
+        # main ile aynı — bkz. forecasters.py::__init__ açıklaması) her iki
+        # hedef için de kullanılıyor; burada override edilmiyor.
     )
     forecaster.fit(full_df)
 

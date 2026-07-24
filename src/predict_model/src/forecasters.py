@@ -789,6 +789,18 @@ class DemandForecaster(BaseForecaster):
         random_state: Optional[int] = 42,
         campaign_release_alpha: float = 5.25,
         campaign_max_release_days: int = 6,
+        # bkz. features.py::build_feature_matrix — Öneri A'nın 09:00 tahmininde
+        # (SHAP teşhisi) backlog_alpha=5.25/max_release_days=6, backlog_release_
+        # index'in haftanın neredeyse tamamına yayılan bir gürültü/sıçrama
+        # yaratıp MAPE'yi %14'ten %29.5'e çıkardığı bulundu (main'in eski
+        # değeri 1.4/4 idi). Uçtan uca pipeline testinde (ALNS) 17:00'ın da
+        # aynı değerlerle (1.4/4) tutarlı şekilde yeniden eğitilmesi, 17:00'ın
+        # kendi MAPE'sinde bir miktar gerileme pahasına (%11.9→%17.7) toplam
+        # operasyonel maliyeti/SLA'yı düşürdüğü için her iki hedef için de
+        # main'in eski değerlerine (1.4/4) dönüldü. Parametre yine de dışarıdan
+        # (slot-bazlı override) geçirilebilir durumda bırakıldı.
+        backlog_alpha: float = 1.4,
+        backlog_max_release_days: int = 4,
         # bkz. features.py::unconstrain_censored_demand — HPO/backtest'te
         # A/B testi veya kalibrasyon amacıyla dışarıdan set edilebilir.
         # require_weekday_persistence=False + inflation_factor=1.0 → eski
@@ -943,6 +955,8 @@ class DemandForecaster(BaseForecaster):
         # geçerli olur, buradaki her zaman fit()/predict() akışında öncelikli.
         self.campaign_release_alpha_ = campaign_release_alpha
         self.campaign_max_release_days_ = campaign_max_release_days
+        self.backlog_alpha_ = backlog_alpha
+        self.backlog_max_release_days_ = backlog_max_release_days
 
         # bkz. features.py::unconstrain_censored_demand — sansürlü talep
         # (sahte-tavan) düzeltmesi hiperparametreleri. debug_backtest.py
@@ -2462,6 +2476,14 @@ class DemandForecaster(BaseForecaster):
             rolling_windows=self.rolling_windows,
             campaign_release_alpha=self.campaign_release_alpha_,
             campaign_max_release_days=self.campaign_max_release_days_,
+            # getattr ile geriye dönük uyumluluk: joblib.load() __init__()'i
+            # tekrar ÇALIŞTIRMAZ, bu yüzden bu attribute'lardan ÖNCE eğitilmiş
+            # (pickle'lanmış) eski modellerde backlog_alpha_/backlog_max_
+            # release_days_ hiç yok — AttributeError yerine sınıf varsayılanına
+            # (eski/mevcut davranış, 5.25/6) düşer (bkz. surge_calibration_
+            # factor_ gibi diğer attribute'lardaki AYNI desen).
+            backlog_alpha=getattr(self, "backlog_alpha_", 5.25),
+            backlog_max_release_days=getattr(self, "backlog_max_release_days_", 6),
             drop_na=drop_na,
             enable_target_scaling=self.target_scaling_enabled_,
             target_scale_window_days=self.target_scale_window_days_,
