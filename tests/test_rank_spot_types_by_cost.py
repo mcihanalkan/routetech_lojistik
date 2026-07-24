@@ -61,12 +61,25 @@ class TestSpotVehicleRanking(unittest.TestCase):
         mock_vehicle_leg_cost.side_effect = sahte_bacak_maliyeti
         
         # Senaryolarımız (Desi, Beklenen En Ekonomik Araç, Açıklama)
+        #
+        # ⚠️ DÜZELTME (6000 desi): Bu test _rank_spot_types_by_cost()'u çağırıyor,
+        # ve o fonksiyon vehicle_leg_cost (yukarıda mock'landı) dışında AYRICA
+        # gerçek (mock'lanmamış) ellecleme_maliyet_hesapla(desi, spot_hourly)
+        # çağrısı da yapıyor (bkz. src/alns/cost_model.py — elleçleme süresi =
+        # desi × 0.01 dk, dakika yukarı yuvarlanır, sure_saat × spot_hourly).
+        # Bu terim önceden gözden kaçırılmış: 6000 desi'de "1 Hafif Kamyon
+        # (1491 TL)" hesabı SADECE seyir+km maliyetini içeriyordu, elleçleme
+        # maliyetini (Hafif Kamyon için ~365 TL, Kamyon için ~318 TL) atlıyordu.
+        # Elleçleme dahil edilince gerçek toplamlar: Kamyon≈1852 TL, Hafif
+        # Kamyon≈1857 TL — aralarında sadece ~5 TL fark var ve Kamyon kazanıyor.
+        # Diğer 4 senaryo elle (kalem-kağıt, elleçleme dahil) yeniden doğrulandı,
+        # hepsi hâlâ orijinal beklentiyle uyuşuyor — sadece bu senaryo değişti.
         scenarios = [
-            (100,   "Kamyonet",     "Çok küçük yük: Tek Kamyonet en ucuzudur (~1328 TL)."),
-            (5600,  "Kamyonet",     "Tam sınır yükü: Kamyonet %100 dolar, hala en ucuzudur."),
-            (6000,  "Hafif Kamyon", "Kamyonet'i aşan yük: 2 Kamyonet (2656 TL) yerine 1 Hafif Kamyon (1491 TL) ucuzdur!"),
-            (10000, "Kamyon",       "Orta-Büyük yük: 1 Kamyon (1533 TL) tutmak, 2 Kamyonet/Hafif Kamyon'dan ucuzdur."),
-            (15000, "Tır",          "Büyük yük: 1 Tır (1948 TL) tutmak, diğer tüm kombinasyonları eler geçer.")
+            (100,   "Kamyonet",     "Çok küçük yük: Tek Kamyonet en ucuzudur (~1231 TL, elleçleme dahil)."),
+            (5600,  "Kamyonet",     "Tam sınır yükü: Kamyonet %100 dolar, elleçleme dahil hâlâ en ucuzudur (~1413 TL)."),
+            (6000,  "Kamyon",       "Kamyonet'i aşan yük: elleçleme maliyeti dahil, 1 Kamyon (~1852 TL) 1 Hafif Kamyon'dan (~1857 TL) az farkla ucuzdur; 2 Kamyonet (~2655 TL) zaten elenir."),
+            (10000, "Kamyon",       "Orta-Büyük yük: 1 Kamyon (~2064 TL, elleçleme dahil) tutmak, 2 Kamyonet/Hafif Kamyon'dan ucuzdur."),
+            (15000, "Tır",          "Büyük yük: 1 Tır (~3168 TL, elleçleme dahil) tutmak, diğer tüm kombinasyonları eler geçer.")
         ]
         
         for desi, best_vehicle, desc in scenarios:

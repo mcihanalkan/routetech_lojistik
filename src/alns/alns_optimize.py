@@ -145,9 +145,9 @@ for row in df_forecast.itertuples():
     talep_id_map[key] = row.talep_id
 
 demands = [
-    (hat, gun, slot, round(desi), talep_id_map[(hat, gun, slot)])
+    (hat, gun, slot, desi, talep_id_map[(hat, gun, slot)])
     for (hat, gun, slot), desi in talep_verisi.items()
-    if round(desi) > 0
+    if desi > 1e-9
 ]
 
 print(f"ALNS: {len(demands):,} talep parcasi, {len(gunler)} gun, {len(merkezler)} TM.")

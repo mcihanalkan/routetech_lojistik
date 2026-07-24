@@ -55,6 +55,30 @@ _PROJECT_ROOT  = _HERE.parent.parent                      # routetech_lojistik/
 DATA_PATH       = str(_PROJECT_ROOT / "data" / "raw" / "teknofest26_gelismis.xlsx")
 MODEL_FILE_PATH_0900 = str(_PROJECT_ROOT / "src" / "predict_model" / "trained_demand_model_0900.joblib")
 MODEL_FILE_PATH_1700 = str(_PROJECT_ROOT / "src" / "predict_model" / "trained_demand_model_1700.joblib")
+
+# ⚠️ ÖNEMLİ — features.py/forecasters.py'de yapılan değişiklikler (örn.
+# unconstrain_censored_demand weekday-persistence / gerçek-kapasite gate'i)
+# _fit_or_load_forecaster() aşağıdaki satırda ZATEN eğitilmiş bir .joblib
+# BULURSA sessizce O ESKİ modeli yükler ve fit() HİÇ ÇAĞRILMAZ — yani
+# features.py'yi güncelleyip sadece `python run_forecast.py` çalıştırmak,
+# trained_demand_model_0900.joblib / _1700.joblib DOSYALARI ZATEN VARSA
+# modelin ÖĞRENİLMİŞ AĞIRLIKLARINI YENİLEMEZ (eski mantıkla eğitilmiş
+# model kullanılmaya devam eder). Yeni feature mantığının GERÇEKTEN model
+# ağırlıklarına işlemesi (retrain) için ya bu iki .joblib dosyasını elle
+# silin, ya da `python run_forecast.py --retrain` çalıştırın (aşağıdaki
+# FORCE_RETRAIN bayrağı bunun için eklendi).
+FORCE_RETRAIN = "--retrain" in sys.argv
+
+# ⚠️ Gerçek kapasite gate'i (bkz. features.py::unconstrain_censored_demand
+# Mantık 3.5) — VERİLİRSE hem eğitim (fit, aşağıda) HEM DE sonraki her
+# load_model()+predict() çağrısında (bu script dahil, debug_backtest.py
+# dahil) otomatik olarak kullanılır, çünkü capacity_df bir INSTANCE
+# attribute'u olarak .joblib'e GÖMÜLÜR. Dosya yoksa (varsayılan durum) bu
+# adım sessizce atlanır, sadece istatistiksel proxy (persistence gate)
+# kullanılır — hiçbir davranış değişmez.
+CENSOR_CAPACITY_FILE = str(_PROJECT_ROOT / "data" / "raw" / "Ellecleme-kapasite.xlsx")
+CENSOR_SOURCE_TM_COLUMN = "kaynak_tm"
+
 # NOT: Veri 2026-01-01 → 2026-06-28 aralığını kapsıyor (179 gün).
 # Gerçek tahmin penceresi — veri sonrası ilk 7 gün (PDF'in "gelecek 7 günlük
 # tahmin" mantığına uyar). PREDICT_START artık verinin dışında kaldığı için
@@ -317,6 +341,34 @@ def build_predict_grid(full_df: pd.DataFrame) -> pd.DataFrame:
 # 2. Tahmin + ALNS Payload
 # ---------------------------------------------------------------------------
 
+def _load_censor_capacity_df() -> "pd.DataFrame | None":
+    """
+    bkz. features.py::unconstrain_censored_demand Mantık 3.5. Dosya yoksa
+    (varsayılan durum — kullanıcı henüz Ellecleme-kapasite.xlsx'i
+    data/raw/ altına koymadıysa) None döner ve gerçek kapasite gate'i
+    sessizce devre dışı kalır; hiçbir davranış değişmez.
+    """
+    p = Path(CENSOR_CAPACITY_FILE)
+    if not p.exists():
+        logger.info(
+            f"ℹ️  Gerçek kapasite dosyası bulunamadı ({p}) — "
+            "unconstrain_censored_demand sadece istatistiksel proxy "
+            "(weekday-persistence) ile çalışacak."
+        )
+        return None
+    cap_df = pd.read_excel(str(p))
+    logger.info(
+        f"✅ Gerçek kapasite verisi yüklendi: {p.name} "
+        f"({len(cap_df)} TM, sütunlar: {list(cap_df.columns)})"
+    )
+    return cap_df
+
+
+# Modül seviyesinde BİR KEZ okunur — hem 09:00 hem 17:00 modeli AYNI
+# DataFrame referansını kullanır.
+_CENSOR_CAPACITY_DF = _load_censor_capacity_df()
+
+
 def _fit_or_load_forecaster(
     full_df: pd.DataFrame,
     target_column: str,
@@ -330,11 +382,33 @@ def _fit_or_load_forecaster(
     çağrılmaz — eski davranışla birebir aynı korunuyor). Yoksa n_real_rows
     bu slota özgü hesaplanır ve kendi lag seti seçilir (iki model farklı
     veri yoğunluğuna sahip olabileceğinden farklı lag setleriyle kurulabilir).
+
+    ⚠️ FORCE_RETRAIN=True (yani `python run_forecast.py --retrain`) VERİLDİYSE
+    mevcut .joblib olsa BİLE yüklenmez, sıfırdan eğitilir — features.py'de
+    yapılan değişikliklerin (unconstrain_censored_demand vb.) modelin
+    ÖĞRENİLMİŞ AĞIRLIKLARINA da yansıması İÇİN GEREKLİDİR (sadece dosyayı
+    güncelleyip script'i tekrar çalıştırmak YETMEZ, model.joblib zaten
+    varsa fit() hiç çağrılmaz).
     """
-    if model_path.exists():
+    if model_path.exists() and not FORCE_RETRAIN:
         logger.info(f"📦 [{label}] Hazır eğitilmiş model bulundu! Yükleniyor: {model_path.name}")
         try:
             forecaster = DemandForecaster.load_model(str(model_path))
+            # ⚠️ Model RETRAIN edilmiyor (yukarıdaki yorum), ama gerçek
+            # kapasite gate'i (varsa) yine de burada, bellek-içi nesneye
+            # enjekte ediliyor — bu, predict()/predict_sequential() içindeki
+            # _engineer_features() çağrısını (feature'lar HER ZAMAN taze
+            # hesaplanır) etkiler ve retrain GEREKTİRMEZ. Modelin kendi
+            # ÖĞRENİLMİŞ ağırlıkları hâlâ eski unconstrain mantığıyla
+            # eğitilmiş kalır — tam kalibrasyon için --retrain şart.
+            if _CENSOR_CAPACITY_DF is not None:
+                forecaster.censor_capacity_df_ = _CENSOR_CAPACITY_DF
+                forecaster.censor_source_tm_column_ = CENSOR_SOURCE_TM_COLUMN
+                logger.info(
+                    f"ℹ️  [{label}] Gerçek kapasite gate'i mevcut modele "
+                    "(retrain OLMADAN) enjekte edildi — sadece predict-zamanı "
+                    "feature hesaplamasını etkiler."
+                )
             # Hızlı bir doğrulama: yüklenen modelin feature importance'a
             # erişimi çalışıyor mu kontrol et (predict() ile uyumsuz/bozuk
             # bir .joblib varsa burada patlar). Bu satır, run()'ın ana
@@ -358,6 +432,11 @@ def _fit_or_load_forecaster(
                 model_path.unlink()
             except OSError:
                 pass
+    elif model_path.exists() and FORCE_RETRAIN:
+        logger.info(
+            f"🔁 [{label}] --retrain verildi — mevcut model dosyası "
+            f"({model_path.name}) YOK SAYILIP sıfırdan eğitim yapılacak."
+        )
 
     logger.info(f"⚠️ [{label}] Hazır model dosyası bulunamadı. Model sıfırdan eğitiliyor...")
 
@@ -386,6 +465,30 @@ def _fit_or_load_forecaster(
                                            # days_since_campaign_end ham kolonları zaten X'te olduğu için
                                            # CatBoost'a redundant geliyor) → sınıf varsayılanında bırakıldı.
         campaign_max_release_days = 7,    # sweep sonucu kazanan (bkz. özet, decision_regret=1155.96)
+        # bkz. features.py::unconstrain_censored_demand Mantık 3.5 — dosya
+        # yoksa None, gate sessizce kapalı kalır (censor_require_weekday_
+        # persistence=True varsayılanı zaten sınıf default'unda aktif).
+        censor_capacity_df         = _CENSOR_CAPACITY_DF,
+        censor_source_tm_column    = CENSOR_SOURCE_TM_COLUMN if _CENSOR_CAPACITY_DF is not None else None,
+        # --- YENİ (88/28 rota FAZLA teşhisi — Kök Neden B) ---
+        # route_bias_cap_low: Adım 2 (Rota Bazlı OOF Bias Düzeltmesi)'nin
+        # aşağı yönlü (overprediction) düzeltmesini ne kadar sınırlayacağı.
+        # Eski sabit değer 0.7 idi (en fazla %30 aşağı düzeltme) — ama
+        # Şanlıurfa→Yalova (+240%), Kocaeli→Bilecik (+153%) gibi ŞİDDETLİ
+        # sistematik FAZLA tahmin eden küçük rotalarda bu tavan yetersiz
+        # kalıyordu. 0.55'e çekildi (en fazla %45 aşağı). Üst taraf
+        # (cap_high=1.8, eksik tahmin telafisi) BİLEREK dokunulmadı —
+        # decision_regret eksik tahmini ~9x cezalandırıyor, asimetri
+        # korunmalı. ⚠️ RETRAIN GEREKİR (fit() sırasında öğrenilip
+        # route_bias_correction_ sözlüğüne gömülüyor) — bu değişikliği
+        # görmek için trained_demand_model_0900/1700.joblib dosyalarını
+        # silin ki bu çalıştırma sıfırdan eğitim yapsın. Sonrasında
+        # debug_backtest.py ile 09:00/17:00 FAZLA rota sayılarını ve
+        # decision_regret'i doğrulayın.
+        route_bias_cap_low = 0.55,
+        # backlog_alpha/backlog_max_release_days: sınıf varsayılanı (1.4/4,
+        # main ile aynı — bkz. forecasters.py::__init__ açıklaması) her iki
+        # hedef için de kullanılıyor; burada override edilmiyor.
     )
     forecaster.fit(full_df)
 
@@ -420,6 +523,71 @@ def run(save_json: bool = True) -> "pd.DataFrame":
     forecaster_1700 = _fit_or_load_forecaster(
         full_df, TARGET_COL_1700, TARGET_COL_0900, Path(MODEL_FILE_PATH_1700), "17:00"
     )
+
+    # --- YENİ (Öneri A) — Rota×Gün-Türü OOF Bias Düzeltmesi'ni AÇ ---
+    # ⚠️ RETRAIN GEREKİR: bu mekanizma _learn_route_bucket_bias_correction()
+    # ile fit() SIRASINDA öğrenilir (route_bucket_bias_correction_ dict'i).
+    # Eğer forecaster_0900/1700 yukarıda .joblib'den YÜKLENDİYSE (eski,
+    # bu değişiklikten ÖNCE eğitilmiş model dosyası) bu attribute mevcut
+    # olmayacak — getattr(...,None) ile güvenli şekilde no-op'a düşer
+    # (eski flat route_bias_correction_ varsa o da yoksa 1.0). Öneri A'yı
+    # gerçekten test etmek için trained_demand_model_0900.joblib /
+    # trained_demand_model_1700.joblib dosyalarını silin/taşıyın ki bu
+    # çalıştırma sıfırdan eğitim yapsın.
+    forecaster_0900.route_bias_correction_enabled_ = True
+    forecaster_1700.route_bias_correction_enabled_ = True
+
+    # --- YENİ (175 rota overpredict düzeltmesi) — Surge/Residual (Model 2)
+    # Relative Cap: correction'ı baseline (düzeltme öncesi) hacmin %20'siyle
+    # sınırla. ⚠️ RETRAIN GEREKMEZ: sadece predict() sırasında okunur (bkz.
+    # forecasters.py DemandForecaster.predict(), surge_relative_cap_alpha_
+    # bloğu).
+    #
+    # SEÇİM GEREKÇESİ — debug_backtest.py ile denenen TÜM yöntemlerin
+    # Sistematik FAZLA (overprediction) özeti (düşük=iyi):
+    #
+    #   Yöntem                              | 09:00 FAZLA | 17:00 FAZLA
+    #   ------------------------------------ | ----------- | -----------
+    #   Baseline (düzeltmesiz)               |     75      |     175
+    #   α=0.20 (SADECE relative cap)         |     47      |      91   ← en düşük
+    #   eşik=0.35 (SADECE predict-threshold) |     72      |     160
+    #   eşik=0.35 + α=0.35 (kombine)         |     56      |     133
+    #
+    # Coder, aşağıdaki iki satırda SADECE α=0.20 (relative cap) parametresini
+    # entegre etmeyi tercih etti — çünkü tüm denemeler arasında sistematik
+    # fazla tahmin sayısını hem 09:00 hem 17:00 için EN DÜŞÜK seviyeye
+    # (sırasıyla 47 ve 91) indiren tek yöntem budur. Tek başına eşik=0.35
+    # ve eşik+α kombinasyonu denenmiş, ama ikisi de α=0.20'nin tek başına
+    # ulaştığı FAZLA seviyesinin gerisinde kalmış (dolayısıyla predict-time
+    # threshold override — surge_predict_continuous_threshold_ — bilinçli
+    # olarak set EDİLMEDİ, varsayılan/kapalı bırakıldı).
+    #
+    # Yan etkiler (α=0.20 ile, debug_backtest.py --surge-cap-alpha çıktısı):
+    #   17:00: medyan WAPE 0.334→0.248
+    #          (Decision Regret q50: 3519.98→3776.56, ~%7 artış — kabul edildi)
+    #   09:00: medyan WAPE 0.812→0.668
+    #          (Decision Regret q50: 1134.66→1206.08, ~%6 artış — kabul edildi)
+    # segment_scale ayrıca denendi ama 09:00'da faydasız çıktı (regret'i
+    # ayrıca kötüleştirdi, FAZLA'da alpha-yalnız'a kıyasla küçük ek kazanç)
+    # → kaldırıldı, sadece cap-alpha kullanılıyor.
+    # NOT: Bu regret artışının gerçek TL maliyetine (spot araç/SLA) etkisi
+    # optimize.py/ALNS çıktısıyla ayrıca doğrulanmalı.
+    forecaster_0900.surge_relative_cap_alpha_ = 0.20
+    forecaster_1700.surge_relative_cap_alpha_ = 0.20
+
+    # --- YENİ (88/28 rota FAZLA teşhisi — Kök Neden A) ---
+    # S_vol = 2/(1+exp(-k·V/v_crit)) - 1 ≡ tanh(k·V/(2·v_crit)) — bu formülün
+    # %50 bastırma noktası v_crit DEĞİL, v_crit·ln(3)/k'dir. Eski k=3.0 ile
+    # v_crit=150 → gerçek yarı-bastırma noktası ≈150×0.366≈55 desi (docstring
+    # 150 desi'yi varsayıyordu). Sonuç: 100 desi'lik bir rotada kalıntının
+    # %76'sı, 50 desi'lik bir rotada %46'sı hâlâ geçiyordu — "duvar" değil
+    # "filtre" davranışı. k=ln(3)≈1.0986 ile v_crit=150 GERÇEKTEN %50 noktası
+    # olur (100 desi→S_vol≈0.35, 50 desi→S_vol≈0.18). ⚠️ RETRAIN GEREKMEZ
+    # (sadece predict() sırasında okunur, tıpkı surge_relative_cap_alpha_
+    # gibi). v_crit=150 (Tır/Kamyonet kırılım noktası) BİLEREK korunuyor —
+    # sadece k, formülün kendi matematiğiyle tutarlı hale getiriliyor.
+    forecaster_0900.surge_volume_damping_k_ = 1.0986
+    forecaster_1700.surge_volume_damping_k_ = 1.0986
 
     # --- Feature Importance (her model kendi feature önceliğini gösterir —
     #     örn. 17:00 modeli muhtemelen toplam_desi_0900'e yüksek önem verecek) ---
@@ -473,6 +641,7 @@ def run(save_json: bool = True) -> "pd.DataFrame":
         (predict_grid[DATE_COL] <= pd.Timestamp(PREDICT_END))
     )
     predict_grid_0900_horizon = predict_grid.loc[horizon_mask_0900].copy()
+    forecaster_0900.debug_watch_routes_ = ["Yalova → İstanbul", "İstanbul → Yalova", "Kocaeli → İstanbul"]
     preds_0900: List[Dict[str, Any]] = forecaster_0900.predict_sequential(predict_grid_0900_horizon)
 
     # --- TEŞHİS 3: lag_1 çöküşü gerçek q50'den mi geliyor, yoksa pred_map
@@ -550,6 +719,7 @@ def run(save_json: bool = True) -> "pd.DataFrame":
     )
 
     predict_grid_1700_horizon = predict_grid_1700.loc[mask_horizon].copy()
+    forecaster_1700.debug_watch_routes_ = ["Yalova → İstanbul", "İstanbul → Yalova", "Kocaeli → İstanbul"]
     preds_1700: List[Dict[str, Any]] = forecaster_1700.predict_sequential(predict_grid_1700_horizon)
 
     # --- TEŞHİS 3 (17:00 karşılığı): aynı lag_1/pred_map kontrolü ---
@@ -767,7 +937,13 @@ def run(save_json: bool = True) -> "pd.DataFrame":
 
     talep_tahmini_df["Tarih"] = pd.to_datetime(talep_tahmini_df["date"]).dt.strftime("%d.%m.%Y")
     talep_tahmini_df["Talep Tamamlama Saati"] = talep_tahmini_df["demand_start_time"].apply(_slot_to_time)
-    talep_tahmini_df["Tahmin Edilen Desi"] = talep_tahmini_df["q50"].astype(float)
+    # ÖNEMLİ DÜZELTME: Jüriye giden "Tahmin Edilen Desi" ham medyan (q50) değil,
+    # belirsizlik payı eklenmiş "recommended_demand" (= q50 + safety_buffer)
+    # olmalı. q50 yalnızca merkezi eğilimi verir; safety_buffer, q90-q50
+    # farkının bir kısmını ekleyerek olası talep sapmasına karşı pay bırakır.
+    # (bkz. uncertainty.py — to_ortools_dataframe/combine_slot_bands zaten
+    # bu sütunu üretiyor, önceden burada kullanılmıyordu.)
+    talep_tahmini_df["Tahmin Edilen Desi"] = talep_tahmini_df["recommended_demand"].astype(float)
 
     # Şablonla BİREBİR aynı sütun sırası
     talep_tahmini_df = talep_tahmini_df[[
@@ -775,7 +951,7 @@ def run(save_json: bool = True) -> "pd.DataFrame":
         "Çıkış Transfer Merkezi", "Varış Transfer Merkezi", "Tahmin Edilen Desi",
     ]]
 
-    # --- Toplam Talep Tahmini (desi) — tüm rota/tarih/saat dilimi toplamı ---
+    # Sadece konsol logu için toplam (dosyaya YAZILMIYOR):
     total_desi_tahmini = float(talep_tahmini_df["Tahmin Edilen Desi"].sum())
 
     OUTPUT_TALEP_XLSX = str(excel_dir / "Talep-tahmini.xlsx")
@@ -784,18 +960,14 @@ def run(save_json: bool = True) -> "pd.DataFrame":
     # Hücre formatlarını da şablonla birebir eşleştir:
     #   C sütunu (Talep Tamamlama Saati) -> 'h:mm'
     #   F sütunu (Tahmin Edilen Desi)    -> '0.000'
+    # NOT: Dosyada TEK sayfa var, sadece şablonun istediği 6 sütun (A-F) —
+    # ne özet sayfası ne de toplam satırı ekleniyor.
     from openpyxl import load_workbook
     _wb_out = load_workbook(OUTPUT_TALEP_XLSX)
     _ws_out = _wb_out.active
     for _row in _ws_out.iter_rows(min_row=2, max_row=_ws_out.max_row):
         _row[2].number_format = "h:mm"   # C: Talep Tamamlama Saati
         _row[5].number_format = "0.000"  # F: Tahmin Edilen Desi
-
-    # --- Toplam satırı: veri satırlarından bir boşluk sonra, E/F sütunlarına ---
-    _total_row_idx = _ws_out.max_row + 2
-    _ws_out.cell(row=_total_row_idx, column=5, value="TOPLAM TALEP TAHMİNİ (desi)")
-    _total_cell = _ws_out.cell(row=_total_row_idx, column=6, value=total_desi_tahmini)
-    _total_cell.number_format = "0.000"
 
     _wb_out.save(OUTPUT_TALEP_XLSX)
 
