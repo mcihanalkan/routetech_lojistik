@@ -701,7 +701,21 @@ def add_holiday_features(
     date_column: str,
     group_column: Optional[str] = None,
     lead_days: int = HOLIDAY_LEAD_DAYS,
-    backlog_alpha: float = 1.4,
+    # ⚠️ 1.4 → 5.25: campaign_release_alpha ile aynı kanıt-temelli düzeltme
+    # (bkz. build_feature_matrix'teki backlog_alpha parametresi docstring'i).
+    backlog_alpha: float = 5.25,
+    # ⚠️ EŞLEŞTİRME DÜZELTMESİ: campaign_release_alpha=5.25,
+    # campaign_max_release_days=6 İKİSİ BİRLİKTE değiştirilmişti (kanıt:
+    # v17 yorumu). backlog_alpha'yı tek başına 1.4→5.25 yapmak, pencereyi
+    # UZATMADI — max_release_days=4 sabit kalınca AYNI 4 günlük pencere
+    # çok daha YOĞUN hale geldi (d=1: 0.49→0.83, d=4: 0.057→0.47) —
+    # backtest'te 17:00 Pazar'ın (06-21) fark'ı +24.8%'den +141.4%'e
+    # kötüleşti (model 1-4. günlerdeki çok daha güçlü sinyalle yeniden
+    # eğitilince paylaşılan ağaç yapısı Pazar'ın kendi tahminine de
+    # dolaylı sızdı — backlog_release_index Pazar'ın kendisinde hâlâ 0,
+    # ama global model davranışı değişti). Kampanya tarafındaki KANITLANMIŞ
+    # çifti (alpha=5.25 + max_release_days=6) burada da birebir eşliyoruz.
+    backlog_max_release_days: int = 6,
 ) -> pl.DataFrame:
     """
     Türkiye resmi tatil ve dini bayram bayraklarını ekler.
@@ -741,7 +755,7 @@ def add_holiday_features(
                     bazında (.over()) yapılır; None ise tek seri kabul
                     edilir (rotalar arası sızıntı riski oluşmaz).
     lead_days     : Tatil arifesi kaç gün önceden başlasın (varsayılan: 2)
-    backlog_alpha : Birikim erime hız sabiti (varsayılan: 1.4)
+    backlog_alpha : Birikim erime hız sabiti (varsayılan: 5.25 — bkz. yukarıdaki KÖK NEDEN DÜZELTMESİ notu)
 
     Returns
     -------
@@ -794,7 +808,7 @@ def add_holiday_features(
         resumption_col="days_since_resumption",
         release_col="backlog_release_index",
         weight_col=None,
-        max_release_days=4,
+        max_release_days=backlog_max_release_days,
         tmp_prefix="_closed",
     )
 
@@ -1036,10 +1050,19 @@ def unconstrain_censored_demand(
     df: pl.DataFrame,
     target_columns: Union[str, List[str]],
     group_column: Optional[str],
+    date_column: Optional[str] = None,
     window: int = 14,
     min_volume_threshold: float = 50.0,
     cap_ratio: float = 0.98,
     inflation_factor: float = 1.05,
+    require_weekday_persistence: bool = True,
+    persistence_occurrences: int = 3,
+    persistence_min_hits: int = 2,
+    capacity_df: Optional[Union[pd.DataFrame, pl.DataFrame]] = None,
+    source_tm_column: Optional[str] = None,
+    capacity_tm_column: str = "transfer_merkezi",
+    capacity_value_column: str = "ellecleme_kapasite",
+    real_capacity_ratio: float = 0.90,
 ) -> pl.DataFrame:
     """
     Sahte tavanları (kapasiteye takılıp eksik yazılmış kargoları) düzeltir.
@@ -1065,29 +1088,108 @@ def unconstrain_censored_demand(
 
     Mantık
     ------
-    1. Yerel Tavan   : Rota/grup bazında (`over(group_column)`) son
-                       `window` günün (bugün dahil) hareketli maksimumu
-                       (`rolling_max`) hesaplanır.
-    2. Sansür Tespiti: Bir günün hacmi hem gürültü eşiğinin üzerindeyse
-                       (`> min_volume_threshold`, mikro dalgalanmaları
-                       dışlamak için) HEM DE o günün yerel tavanının
-                       `cap_ratio` (örn. %98) katına eşit veya
-                       üzerindeyse, bu gün kapasiteye çarpıp
-                       sansürlenmiş kabul edilir.
-    3. Düzeltme      : Sansürlü olarak işaretlenen günlerin hedef
-                       değeri `inflation_factor` (örn. 1.05) ile
-                       çarpılarak sahte tavan kaldırılır (%5 şişirme).
+    1. Yerel Tavan     : Rota/grup bazında (`over(group_column)`) son
+                         `window` günün (bugün dahil DEĞİL — `shift(1)`)
+                         hareketli maksimumu (`rolling_max`) hesaplanır.
+    2. Aday Tespiti    : Bir günün hacmi hem gürültü eşiğinin üzerindeyse
+                         (`> min_volume_threshold`, mikro dalgalanmaları
+                         dışlamak için) HEM DE o günün yerel tavanının
+                         `cap_ratio` (örn. %98) katına eşit veya
+                         üzerindeyse, bu gün "aday" (kapasiteye çarpmış
+                         OLABİLİR) olarak işaretlenir.
+    3. Hafta-Günü Kalıcılık Filtresi (`require_weekday_persistence`)
+                       : SADECE tek seferlik yerel bir rekor (örn. güçlü
+                         haftalık mevsimselliğin doğal bir Pazartesi
+                         zirvesi) gerçek kapasite sansürüyle
+                         KARIŞTIRILMASIN diye eklendi. Bir gün SADECE
+                         "aday" olması yetmez; AYNI HAFTA GÜNÜNÜN
+                         (örn. son 3 Pazartesi) son `persistence_occurrences`
+                         tekrarından en az `persistence_min_hits` tanesi
+                         de "aday" olarak işaretlenmiş olmalı. Böylece
+                         gerçek kapasite sansürü (tekrarlayan/kalıcı bir
+                         darboğaz) ile normal haftalık desendeki tek
+                         seferlik bir zirve birbirinden ayrılır.
+                         `require_weekday_persistence=False` → eski
+                         (v1) davranışa döner (geriye dönük uyumlu, hızlı
+                         A/B testi için kullanışlı).
+    3.5 Gerçek Kapasite Doğrulaması (`capacity_df`) — TERCİH EDİLEN, EN
+                       GÜÇLÜ sinyal, VERİLİRSE istatistiksel proxy'nin
+                       (Adım 2/3) YERİNE geçer: `source_tm_column`
+                       (örn. "kaynak_tm") üzerinden, o rotanın kaynak
+                       transfer merkezinin AYNI GÜN tüm rotalar toplamında
+                       (target_columns'ın hepsi birlikte — sabah+akşam)
+                       gerçekleşen toplam hacmi, `capacity_df`'teki o TM'nin
+                       kayıtlı elleçleme kapasitesine (`capacity_value_column`)
+                       bölünür. Bu oran `real_capacity_ratio`'yu (örn. %90)
+                       geçiyorsa, o gün o TM için GERÇEKTEN kapasiteye
+                       dayanmış sayılır — ve o TM'den çıkan HERHANGİ bir
+                       rota, kendi adaylık şartını (Adım 2) sağlıyorsa
+                       nihai olarak sansürlü kabul edilir. Kapasite kısıtı
+                       PAYLAŞILAN bir terminal kaynağıdır (tek bir rotaya
+                       değil, o TM'den çıkan TÜM rotalara birden uygulanır)
+                       — bu yüzden karşılaştırma TM×gün toplamı üzerinden
+                       yapılır, tek bir rotanın kendi hacmi üzerinden değil.
+                       `capacity_df`'te o TM için kayıt YOKSA (veya
+                       `source_tm_column` hiç verilmediyse/df'te yoksa), o
+                       satır için otomatik olarak Adım 3'e (hafta-günü
+                       kalıcılık, varsa) DÜŞÜLÜR — sert bir hata/atlama
+                       olmaz, sadece daha zayıf istatistiksel sinyale
+                       güvenilir.
+    4. Düzeltme        : Nihai olarak sansürlü kabul edilen günlerin hedef
+                         değeri `inflation_factor` (örn. 1.05) ile
+                         çarpılarak sahte tavan kaldırılır (%5 şişirme).
 
     Parameters
     ----------
-    df                    : Polars DataFrame (tarihe göre sıralı olmalı)
-    target_columns        : Düzeltilecek hedef sütun(lar) — str veya
-                             List[str] (örn. ["toplam_desi_0900", "toplam_desi_1700"])
-    group_column          : Rota/grup sütunu (örn. "rota", "TM_ID"); None ise tek seri
-    window                : Yerel tavanın hesaplanacağı gün penceresi
-    min_volume_threshold  : Mikro gürültüyü dışlamak için alt hacim eşiği
-    cap_ratio             : Tavana "değme" oranı (0.98 → %98)
-    inflation_factor      : Sansürlü günlere uygulanacak şişirme çarpanı
+    df                          : Polars DataFrame (tarihe göre sıralı olmalı)
+    target_columns              : Düzeltilecek hedef sütun(lar) — str veya
+                                   List[str] (örn. ["toplam_desi_0900", "toplam_desi_1700"])
+    group_column                : Rota/grup sütunu (örn. "rota", "TM_ID"); None ise tek seri
+    date_column                 : Tarih sütunu — `require_weekday_persistence=True`
+                                   VEYA `capacity_df` verildiğinde gereklidir
+                                   (hem hafta günü hem TM×gün toplamı bundan
+                                   türetilir). None/eksikse ilgili filtre(ler)
+                                   otomatik olarak atlanır (uyarı loglanır).
+    window                      : Yerel tavanın hesaplanacağı gün penceresi
+    min_volume_threshold        : Mikro gürültüyü dışlamak için alt hacim eşiği
+    cap_ratio                   : Tavana "değme" oranı (0.98 → %98)
+    inflation_factor            : Sansürlü günlere uygulanacak şişirme çarpanı
+    require_weekday_persistence : True ise (varsayılan) yalnızca AYNI hafta
+                                   gününde tekrarlayan tavan-değmeleri
+                                   sansür kabul edilir (bkz. Mantık 3).
+                                   False → eski (v1) tek-seferlik davranış.
+                                   `capacity_df` verilen TM'ler için bu
+                                   ayar SADECE fallback/yedek olarak kullanılır.
+    persistence_occurrences     : Kalıcılık kontrolünde geriye bakılacak
+                                   aynı-hafta-günü tekrar sayısı (örn. 3 →
+                                   son 3 Pazartesi/Salı/...).
+    persistence_min_hits        : `persistence_occurrences` tekrar içinde
+                                   en az kaç tanesinin "aday" olması
+                                   gerektiği (örn. 2/3).
+    capacity_df                 : (Opsiyonel) Her transfer merkezinin GERÇEK
+                                   günlük elleçleme kapasitesini (desi) veren
+                                   tablo — pandas VEYA polars DataFrame,
+                                   iki sütun: `capacity_tm_column` (TM adı) ve
+                                   `capacity_value_column` (desi kapasite).
+                                   Verilmezse (varsayılan None) bu adım tamamen
+                                   atlanır, sadece istatistiksel proxy (Adım
+                                   2/3) kullanılır.
+                                   Örnek: Ellecleme-kapasite.xlsx'ten okunan
+                                   {transfer_merkezi, ellecleme_kapasite} tablosu.
+    source_tm_column             : `df` içinde, her satırın KAYNAK (çıkış)
+                                   transfer merkezini veren sütun (örn.
+                                   "kaynak_tm" — run_forecast.py::KAYNAK_COL).
+                                   `capacity_df` verilip bu None/eksikse
+                                   kapasite doğrulaması atlanır (uyarı).
+    capacity_tm_column           : `capacity_df` içindeki TM adı sütunu.
+    capacity_value_column        : `capacity_df` içindeki desi kapasite sütunu.
+    real_capacity_ratio          : TM×gün toplam gerçekleşen hacim / TM'nin
+                                   kayıtlı kapasitesi bu oranı (örn. 0.90 →
+                                   %90) geçerse o gün o TM için kapasiteye
+                                   GERÇEKTEN dayanmış sayılır. 1.0'a çok
+                                   yakın tutmak (ör. 0.98) daha katı/az
+                                   yanlış-pozitif, düşürmek (ör. 0.80) daha
+                                   gevşek/daha fazla yakalama demektir.
 
     Returns
     -------
@@ -1098,6 +1200,103 @@ def unconstrain_censored_demand(
         (denetlenebilirlik için).
     """
     target_cols: List[str] = [target_columns] if isinstance(target_columns, str) else list(target_columns)
+
+    use_persistence_gate = require_weekday_persistence
+    weekday_tmp_col = "_uw_weekday_tmp"
+
+    # Hem hafta-günü kalıcılık filtresi HEM de gerçek kapasite doğrulaması
+    # date_column'a ihtiyaç duyar — tek seferlik ortak kontrol.
+    have_date = bool(date_column) and date_column in df.columns
+
+    if use_persistence_gate and not have_date:
+        logger.warning(
+            "⚠️  require_weekday_persistence=True ama geçerli bir "
+            f"'date_column' verilmedi/bulunamadı ({date_column!r}) — "
+            "hafta-günü kalıcılık filtresi ATLANIYOR, eski (v1) "
+            "tek-seferlik tespit mantığına düşülüyor."
+        )
+        use_persistence_gate = False
+    elif use_persistence_gate:
+        df = df.with_columns(
+            pl.col(date_column).dt.weekday().alias(weekday_tmp_col)
+        )
+
+    # --- Gerçek Kapasite Doğrulaması (bkz. Mantık 3.5) ----------------------
+    use_capacity_gate = capacity_df is not None
+    tm_day_total_col = "_uw_tm_day_total"
+    cap_value_col = "_uw_cap_value"
+    has_cap_col = "_uw_has_cap_data"
+    real_cap_hit_col = "_uw_real_cap_hit"
+
+    if use_capacity_gate:
+        if not source_tm_column or source_tm_column not in df.columns:
+            logger.warning(
+                "⚠️  capacity_df verildi ama geçerli bir 'source_tm_column' "
+                f"verilmedi/df'te bulunamadı ({source_tm_column!r}) — gerçek "
+                "kapasite doğrulaması ATLANIYOR, sadece istatistiksel proxy "
+                "(hafta-günü kalıcılık / tek-seferlik) kullanılacak."
+            )
+            use_capacity_gate = False
+        elif not have_date:
+            logger.warning(
+                "⚠️  capacity_df verildi ama geçerli bir 'date_column' "
+                f"verilmedi/bulunamadı ({date_column!r}) — TM×gün toplamı "
+                "hesaplanamıyor, gerçek kapasite doğrulaması ATLANIYOR."
+            )
+            use_capacity_gate = False
+
+    if use_capacity_gate:
+        cap_pl = capacity_df if isinstance(capacity_df, pl.DataFrame) else _to_polars(capacity_df)
+        missing_cap_cols = [
+            c for c in (capacity_tm_column, capacity_value_column) if c not in cap_pl.columns
+        ]
+        if missing_cap_cols:
+            logger.warning(
+                f"⚠️  capacity_df içinde beklenen sütun(lar) bulunamadı: "
+                f"{missing_cap_cols} — gerçek kapasite doğrulaması ATLANIYOR."
+            )
+            use_capacity_gate = False
+        else:
+            existing_target_cols_for_cap = [tc for tc in target_cols if tc in df.columns]
+            # TM×gün toplamı: SADECE bu tcol değil, target_columns'ın HEPSİ
+            # birden (örn. 09:00 + 17:00) — elleçleme kapasitesi terminalin
+            # o GÜNKÜ TOPLAM yüküne uygulanır, tek bir slota değil.
+            combined_volume_expr = pl.sum_horizontal(
+                [pl.col(tc) for tc in existing_target_cols_for_cap]
+            )
+            df = df.with_columns(
+                combined_volume_expr.sum().over([source_tm_column, date_column]).alias(tm_day_total_col)
+            )
+
+            cap_small = (
+                cap_pl.select([capacity_tm_column, capacity_value_column])
+                .unique(subset=[capacity_tm_column])
+                .rename({
+                    capacity_tm_column: "_uw_cap_tm_key",
+                    capacity_value_column: cap_value_col,
+                })
+            )
+            df = df.join(cap_small, left_on=source_tm_column, right_on="_uw_cap_tm_key", how="left")
+            df = df.with_columns([
+                pl.col(cap_value_col).is_not_null().alias(has_cap_col),
+            ])
+            df = df.with_columns(
+                (
+                    pl.col(has_cap_col)
+                    & (pl.col(tm_day_total_col) >= real_capacity_ratio * pl.col(cap_value_col))
+                ).alias(real_cap_hit_col)
+            )
+
+            n_tm_missing = int(
+                df.select(pl.col(source_tm_column).filter(~pl.col(has_cap_col)).n_unique()).item()
+            )
+            if n_tm_missing > 0:
+                logger.warning(
+                    f"⚠️  capacity_df'te eşleşmeyen {n_tm_missing} kaynak TM var — "
+                    "bu TM'lerden çıkan rotalar için gerçek kapasite doğrulaması "
+                    "atlanıp istatistiksel proxy'ye (hafta-günü kalıcılık / "
+                    "tek-seferlik) düşülecek."
+                )
 
     for tcol in target_cols:
         if tcol not in df.columns:
@@ -1122,10 +1321,58 @@ def unconstrain_censored_demand(
         local_cap_col = f"_local_cap_{window}{suffix}"
         df = df.with_columns(rolling_max_expr.alias(local_cap_col))
 
-        is_censored = (
+        is_candidate = (
             (pl.col(tcol) > min_volume_threshold)
             & (pl.col(tcol) >= cap_ratio * pl.col(local_cap_col))
         )
+
+        cols_to_drop = [local_cap_col]
+
+        if use_persistence_gate:
+            # Aday bayrağını geçici bir sütuna materyalize et — persistence
+            # penceresi bu sütun üzerinden, AYNI hafta günü grubunda
+            # (group_column + weekday) hesaplanacak.
+            candidate_col = f"_uw_candidate{suffix}"
+            df = df.with_columns(is_candidate.cast(pl.Int8).alias(candidate_col))
+
+            persistence_keys = (
+                [group_column, weekday_tmp_col]
+                if group_column and group_column in df.columns
+                else [weekday_tmp_col]
+            )
+
+            # add_same_weekday_rolling_features ile AYNI desen: shift(1)
+            # zincirin başında, .over() ise TÜM zincirin (shift dahil)
+            # üzerine EN SONDA sarılır — bugünü kendi penceresinden çıkarır
+            # ve aynı zamanda grup/hafta-günü partisyonlaması sağlar.
+            prior_hits_col = f"_uw_prior_hits{suffix}"
+            prior_hits_expr = (
+                pl.col(candidate_col)
+                .shift(1)
+                .rolling_sum(window_size=persistence_occurrences, min_samples=1)
+                .over(persistence_keys)
+                .fill_null(0)
+            )
+            df = df.with_columns(prior_hits_expr.alias(prior_hits_col))
+
+            statistical_is_censored = (pl.col(candidate_col) == 1) & (
+                pl.col(prior_hits_col) >= persistence_min_hits
+            )
+            cols_to_drop += [candidate_col, prior_hits_col]
+        else:
+            statistical_is_censored = is_candidate
+
+        if use_capacity_gate:
+            # Gerçek kapasite verisi olan TM'ler için NİHAİ karar: aday +
+            # TM×gün gerçekten kapasiteye dayanmış mı (bkz. Mantık 3.5).
+            # Kapasite verisi OLMAYAN TM'ler için istatistiksel proxy'ye
+            # (persistence açıksa kalıcılık, değilse tek-seferlik) düşülür
+            # — sert atlama/hata yok, sadece daha zayıf sinyale güvenilir.
+            is_censored = pl.when(pl.col(has_cap_col)).then(
+                is_candidate & pl.col(real_cap_hit_col)
+            ).otherwise(statistical_is_censored)
+        else:
+            is_censored = statistical_is_censored
 
         flag_col = f"is_demand_censored{suffix}"
         df = df.with_columns([
@@ -1137,14 +1384,35 @@ def unconstrain_censored_demand(
         ])
 
         n_censored = int(df.select(pl.col(flag_col).sum()).item())
-        df = df.drop(local_cap_col)
+        if use_capacity_gate:
+            n_censored_via_capacity = int(
+                df.select(
+                    (pl.col(flag_col).cast(pl.Boolean) & pl.col(has_cap_col)).sum()
+                ).item()
+            )
+        else:
+            n_censored_via_capacity = 0
+        df = df.drop(cols_to_drop)
 
         logger.info(
             f"✅ Sansürlenmiş talep düzeltmesi (unconstraining) uygulandı: "
             f"{n_censored} gün sahte tavana takılmış olarak işaretlendi ve "
             f"×{inflation_factor} ile şişirildi (target='{tcol}', "
-            f"window={window}, cap_ratio={cap_ratio})."
+            f"window={window}, cap_ratio={cap_ratio}, "
+            f"weekday_persistence={'açık (' + str(persistence_min_hits) + '/' + str(persistence_occurrences) + ')' if use_persistence_gate else 'kapalı'}, "
+            f"gerçek_kapasite_gate={'açık (real_capacity_ratio=' + str(real_capacity_ratio) + ', ' + str(n_censored_via_capacity) + ' gün gerçek kapasite verisiyle doğrulandı)' if use_capacity_gate else 'kapalı'})."
         )
+
+    drop_global_cols = []
+    if use_persistence_gate and weekday_tmp_col in df.columns:
+        drop_global_cols.append(weekday_tmp_col)
+    if use_capacity_gate:
+        drop_global_cols += [
+            c for c in (tm_day_total_col, cap_value_col, has_cap_col, real_cap_hit_col)
+            if c in df.columns
+        ]
+    if drop_global_cols:
+        df = df.drop(drop_global_cols)
 
     return df
 
@@ -1321,6 +1589,126 @@ def add_rolling_features(
 
     df = df.with_columns(roll_exprs)
     logger.debug(f"✅ Rolling özellikler eklendi (Polars): {produced_names}")
+    return df
+
+
+# ---------------------------------------------------------------------------
+# 3.1 Gün-Spesifik (Same-Weekday) Rolling Ortalama — YENİ (Öneri B)
+# ---------------------------------------------------------------------------
+# Kaynak: "Teknofest Lojistik Rota Optimizasyonunda Talep Patlamalarının ve
+# Hata Yayılımının İleri Düzey Modellenmesi" raporu — "Pazar Günü Anomalisi
+# İçin İnovatif Özellik ve Müdahale Stratejileri" bölümü.
+#
+# Neden gerekli: rolling_mean_7/14 (yukarıdaki add_rolling_features), o
+# rotanın SON 7/14 GÜNÜNÜN tamamına bakar — haftanın diğer 6 günü (özellikle
+# hafta içi yüksek hacim) Pazar/az-hacimli günlerin tahminine "atalet"
+# (inertia) olarak sızar (bkz. forecasters.py modül docstring'i, SHAP
+# teşhisi: rolling_mean_14 dominant negatif sürücü). lag_7/lag_14 (aynı
+# haftanın günü) TEK bir gözlemdir, gürültüye açıktır.
+#
+# Bu fonksiyon farkı: o rotanın AYNI HAFTA GÜNÜNÜN SADECE SON N TEKRARININ
+# (örn. son 4 Pazar) ortalamasını üretir — haftanın diğer günlerini hiç
+# görmez. Ağaç artık "bu Pazar, geçmiş 4 Pazar'a göre nasıl?" sorusunu
+# doğrudan bir feature'dan okuyabilir; "genel 14 günlük ortalamanın
+# kuyruğu" olarak Pazar'ı yanlış konumlandırmaz.
+#
+# ⚠️ Leakage Güvencesi: add_rolling_features ile BİREBİR AYNI shift(1) +
+# rolling_mean(min_samples=1) deseni — sadece .over() grup anahtarına
+# "weekday" eklenmiş hali. Bugünü hariç tutar, sadece geçmişe bakar.
+#
+# ⚠️ Bilinçli mimari tercih: mevcut `scale_factor` (add_scale_invariant_
+# targets, Adım 6.1) paydasına DOKUNULMAZ — bu fonksiyon SADECE yeni bir
+# GİRDİ özelliği (input feature) ekler, hedef ölçeklendirme veya K-Fold/
+# clip zincirine hiçbir şekilde müdahale etmez (bkz. forecasters.py'deki
+# kırılgan df_features/train_df propagation geçmişi — bu fonksiyon o
+# zincirin tamamen dışındadır, düşük riskli/saf ek sütun).
+
+DEFAULT_SAME_WEEKDAY_WINDOW: int = 4
+
+
+def add_same_weekday_rolling_features(
+    df: pl.DataFrame,
+    target_columns: Union[str, List[str]],
+    group_column: Optional[str],
+    weekday_column: str = "weekday",
+    n_occurrences: int = DEFAULT_SAME_WEEKDAY_WINDOW,
+) -> pl.DataFrame:
+    """
+    Rotanın AYNI HAFTA GÜNÜNÜN son N tekrarının (örn. son 4 Pazar)
+    sızıntısız hareketli ortalaması ve standart sapması.
+
+    Wide format (09:00 / 17:00) desteği
+    -------------------------------------
+    target_columns birden fazla sütun içeriyorsa, her sütun için AYRI AYRI
+    üretilir ve sütun adına slot soneki eklenir:
+      rolling_mean_same_weekday_4_0900, rolling_std_same_weekday_4_0900, ...
+      rolling_mean_same_weekday_4_1700, rolling_std_same_weekday_4_1700, ...
+    Tek hedef sütun verilirse sonek yok (eski/legacy tek-serili akışla
+    tutarlı): rolling_mean_same_weekday_4, rolling_std_same_weekday_4.
+
+    Parameters
+    ----------
+    df             : Polars DataFrame (date'e göre sıralı olmalı)
+    target_columns : Hedef sütun adı (str) veya sütun listesi (List[str])
+    group_column   : Grup (rota) sütunu; None ise sadece weekday'e göre gruplanır
+    weekday_column : Hafta günü sütunu (0=Pazartesi..6=Pazar varsayımıyla,
+                     bkz. build_feature_matrix'teki weekday hesaplaması).
+                     Bu fonksiyon çağrılmadan ÖNCE df'de mevcut olmalıdır.
+    n_occurrences  : Kaç geçmiş "aynı gün" tekrarına bakılacağı (varsayılan 4
+                     → örn. son 4 Pazar).
+
+    Returns
+    -------
+    pl.DataFrame
+        Girdi df + her hedef için `rolling_mean_same_weekday_{n}{suffix}` ve
+        `rolling_std_same_weekday_{n}{suffix}` sütunları eklenmiş hali.
+    """
+    if weekday_column not in df.columns:
+        logger.warning(
+            f"   ⚠️ add_same_weekday_rolling_features atlandı: "
+            f"'{weekday_column}' sütunu bulunamadı (önce weekday hesaplanmalı)."
+        )
+        return df
+
+    target_cols: List[str] = [target_columns] if isinstance(target_columns, str) else list(target_columns)
+    group_keys: List[str] = (
+        [group_column, weekday_column] if group_column and group_column in df.columns
+        else [weekday_column]
+    )
+
+    exprs = []
+    produced_names: List[str] = []
+    for tcol in target_cols:
+        suffix = _feature_suffix(tcol, target_cols)
+        # ⚠️ add_rolling_features ile BİREBİR AYNI desen: shift(1) BURADA
+        # gruplanmaz — .over(group_keys) zincirin EN SONUNA (rolling_mean/
+        # std'nin üzerine) uygulanır; Polars, .over() ile sarılan tüm
+        # ifadeyi (shift dahil) o grup partisyonu içinde değerlendirir.
+        # shift(1)'e ayrıca .over() eklemek YANLIŞTIR (çifte gruplama /
+        # tutarsız partisyonlama riski) — bilerek YAPILMADI.
+        shifted = pl.col(tcol).shift(1)
+
+        mean_alias = f"rolling_mean_same_weekday_{n_occurrences}{suffix}"
+        std_alias = f"rolling_std_same_weekday_{n_occurrences}{suffix}"
+
+        mean_expr = (
+            shifted
+            .rolling_mean(window_size=n_occurrences, min_samples=1)
+            .over(group_keys)
+            .alias(mean_alias)
+        )
+        std_expr = (
+            shifted
+            .rolling_std(window_size=n_occurrences, min_samples=1)
+            .fill_null(0.0)
+            .over(group_keys)
+            .alias(std_alias)
+        )
+        exprs += [mean_expr, std_expr]
+        produced_names += [mean_alias, std_alias]
+
+    df = df.with_columns(exprs)
+    logger.debug(f"✅ Gün-spesifik (same-weekday) rolling özellikler eklendi (Polars): {produced_names}")
     return df
 
 
@@ -1589,6 +1977,162 @@ def add_momentum_features(
 
 
 # ---------------------------------------------------------------------------
+# 4.05 Rejim Değişimi (Regime Shift) Özellikleri — PDF "Seçenek B: Mevcut
+# Özniteliklerin Yapısal Olarak Geliştirilmesi" (Demand_Forecasting_Feature_
+# Strategies.pdf) — RETRAIN GEREKTİRİR.
+# ---------------------------------------------------------------------------
+
+def add_regime_shift_features(
+    df: pl.DataFrame,
+    target_columns: Union[str, List[str]],
+    group_column: Optional[str],
+    backlog_release_column: str = "backlog_release_index",
+    short_window: int = 3,
+    long_window: int = 14,
+) -> pl.DataFrame:
+    """
+    PDF'in "Seçenek B" analizinde önerilen 2 açık etkileşim (explicit
+    interaction) özniteliğini ekler. Motivasyon (PDF'ten birebir):
+
+      CatBoost'un simetrik (oblivious) ağaç yapısı, bir düğüm seviyesindeki
+      TÜM dalları aynı özellik/eşik ile böler. `week_of_year` gibi güçlü,
+      geniş-kapsamlı bir takvim sinyali sığ derinlikte (depth 1-2) ağacı
+      "düşük sezon" yaprağına yönlendirebiliyor; `backlog_release_index`
+      gibi nadir/zayıf ama KRİTİK bir sinyal ancak çok daha derin
+      seviyelerde değerlendiriliyor — o noktada takvim önceliği tarafından
+      zaten baskılanmış oluyor. Simetrik ağaçlar, özellikler AÇIKÇA
+      etkileşime sokulmadıkça bunu kendi başlarına çözemiyor (bkz. SHAP
+      teşhisi: rolling_mean_14_0900 ve week_of_year, Yalova → İstanbul
+      (09:00) tahminini backlog_release_index'in pozitif katkısına rağmen
+      aşağı çekmeye devam ediyordu).
+
+    Bu fonksiyon, modele "rejimin değiştiğini" AÇIKÇA bildiren, hazır
+    hesaplanmış 2 sentetik özellik üretir — böylece ağacın bunu kendi
+    başına, dolaylı split kombinasyonlarıyla keşfetmesine gerek kalmaz:
+
+      1. backlog_scaled_impact{suffix} = backlog_release_index ×
+             (lag_1{suffix} / (rolling_mean_{long_window}{suffix} + eps))
+         Normal günlerde backlog_release_index=0 olduğu için bu özellik
+         SIFIR'dır (günlük gürültü modele yansımaz — sadece gerçek bir
+         kapanış-sonrası pencerede aktif olur). Aktif olduğunda ise
+         lag_1/rolling_mean_14 oranı, sıçramanın O ROTANIN KENDİ tarihsel
+         ortalamasına göre ORANSAL büyüklüğünü verir (mutlak hacimden
+         bağımsız, 289 rota arasında genelleşebilir — PDF'in "rotaya özgü
+         heuristik yazmadan genelleme" ilkesi).
+
+      2. demand_acceleration{suffix} = (rolling_mean_{short_window}{suffix}
+             - rolling_mean_{long_window}{suffix}) / (rolling_std_{long_window}{suffix} + eps)
+         Kısa (3g) vs uzun (14g) ortalama farkının, rotanın KENDİ 14 günlük
+         volatilitesine göre normalize edilmiş hali (Z-skoru mantığı).
+         PDF'in "Seçenek A" (ham 3 günlük rolling_mean'i doğrudan feature
+         yapmak) uyarısına göre bu YALNIZ BAŞINA "kırbaç etkisi" (bullwhip)
+         riski taşır — bu yüzden ham rolling_mean_3 AYRI bir feature olarak
+         ASLA dışa açılmıyor, sadece bu volatilite-normalize edilmiş oranın
+         içinde (ara değişken olarak) hesaplanıyor. Oynak rotalarda payda
+         büyüdüğü için sinyal otomatik törpülenir (aşırı tahmin önlenir);
+         durağan rotalarda küçük bir sıçrama bile büyük bir Z-skoru
+         üretir — CatBoost için net bir ayrım eşiği.
+
+    ⚠️  Bağımlılık: Bu fonksiyon add_lag_features + add_rolling_features
+    (Adım 5/6) ve add_holiday_features (Adım 3, backlog_release_index)
+    ÇALIŞTIKTAN SONRA çağrılmalıdır — lag_1{suffix}/rolling_mean_{w}{suffix}/
+    rolling_std_{w}{suffix} sütunlarının halihazırda var olduğunu varsayar.
+
+    ⚠️  RETRAIN GEREKİR: Bu fonksiyonun ürettiği sütunlar feature matrisine
+    yeni eklenen sütunlardır — mevcut .joblib modelleri bunları hiç görmeden
+    eğitildi. build_feature_matrix()'e bu adım eklendikten sonra hem Model 1
+    (K-Fold ensemble) hem Model 2 (Surge/Residual) YENİDEN eğitilmelidir.
+
+    Wide format (09:00 / 17:00) desteği
+    -------------------------------------
+    target_columns birden fazla sütun içeriyorsa, her sütun için AYRI AYRI
+    üretilir ve çıktı sütun adına slot soneki eklenir:
+      backlog_scaled_impact_0900, demand_acceleration_0900, ...
+      backlog_scaled_impact_1700, demand_acceleration_1700, ...
+    backlog_release_index PAYLAŞILAN (slot'tan bağımsız, takvim kaynaklı)
+    bir sütun olduğu için soneksiz kalır.
+
+    Parameters
+    ----------
+    df                      : Polars DataFrame (add_lag_features/
+                              add_rolling_features/add_holiday_features
+                              çalıştırılmış olmalı)
+    target_columns          : Hedef sütun adı (str) veya sütun listesi
+    group_column            : Grup sütunu; None ise tek seri
+    backlog_release_column  : Paylaşılan backlog_release_index sütun adı
+    short_window            : demand_acceleration'ın kısa penceresi (gün) — vars. 3
+    long_window             : Her iki özelliğin de referans aldığı uzun
+                              pencere (rolling_mean_{long_window} ile
+                              hizalı olmalı) — vars. 14
+
+    Returns
+    -------
+    pl.DataFrame
+    """
+    target_cols: List[str] = [target_columns] if isinstance(target_columns, str) else list(target_columns)
+
+    EPS = 1e-5
+    exprs = []
+    produced_names: List[str] = []
+
+    has_backlog_col = backlog_release_column in df.columns
+    if not has_backlog_col:
+        logger.warning(
+            f"⚠️  '{backlog_release_column}' bulunamadı — "
+            f"add_regime_shift_features() backlog_scaled_impact'i 0.0 olarak üretecek "
+            f"(add_holiday_features'ın bu adımdan ÖNCE çalıştığından emin olun)."
+        )
+
+    for tcol in target_cols:
+        suffix = _feature_suffix(tcol, target_cols)
+
+        lag1_col   = f"lag_1{suffix}"
+        rmean_long = f"rolling_mean_{long_window}{suffix}"
+        rstd_long  = f"rolling_std_{long_window}{suffix}"
+
+        missing = [c for c in (lag1_col, rmean_long, rstd_long) if c not in df.columns]
+        if missing:
+            logger.warning(
+                f"⚠️  add_regime_shift_features() '{tcol}' için atlandı — "
+                f"eksik bağımlılık sütun(lar)ı: {missing} "
+                f"(add_lag_features/add_rolling_features bu adımdan ÖNCE çalışmalı)."
+            )
+            continue
+
+        impact_alias = f"backlog_scaled_impact{suffix}"
+        accel_alias  = f"demand_acceleration{suffix}"
+
+        # --- 1. backlog_scaled_impact ---
+        if has_backlog_col:
+            impact_expr = (
+                pl.col(backlog_release_column)
+                * (pl.col(lag1_col) / (pl.col(rmean_long) + EPS))
+            ).fill_null(0.0).alias(impact_alias)
+        else:
+            impact_expr = pl.lit(0.0).alias(impact_alias)
+
+        # --- 2. demand_acceleration (rolling_mean_{short_window} ara değişken,
+        #        AYRI bir sütun olarak dışa açılmıyor — bkz. docstring) ---
+        shifted = pl.col(tcol).shift(1)
+        if group_column and group_column in df.columns:
+            rmean_short_expr = shifted.rolling_mean(window_size=short_window, min_samples=1).over(group_column)
+        else:
+            rmean_short_expr = shifted.rolling_mean(window_size=short_window, min_samples=1)
+
+        accel_expr = (
+            (rmean_short_expr - pl.col(rmean_long)) / (pl.col(rstd_long) + EPS)
+        ).fill_null(0.0).alias(accel_alias)
+
+        exprs += [impact_expr, accel_expr]
+        produced_names += [impact_alias, accel_alias]
+
+    if exprs:
+        df = df.with_columns(exprs)
+    logger.debug(f"✅ Rejim Değişimi (Regime Shift) özellikleri eklendi (Polars): {produced_names}")
+    return df
+
+
+# ---------------------------------------------------------------------------
 # 4.5 Cross-Lag (Gün-İçi Slotlar Arası Bilgi Akışı) — 09:00 / 17:00
 # ---------------------------------------------------------------------------
 
@@ -1720,9 +2264,56 @@ def build_feature_matrix(
     drop_na: bool = True,
     campaign_release_alpha: float = 5.25,
     campaign_max_release_days: int = 6,
+    # ⚠️ KÖK NEDEN DÜZELTMESİ — backlog_alpha, campaign_release_alpha ile
+    # AYNI hastalığı taşıyordu (bkz. add_holiday_features docstring/yorumu,
+    # v17 notu: "alpha=5.25/max_release_days=6 — Çarşamba/Perşembe rezidüsü
+    # çok hızlı sönüyordu ... ~293 bin desilik underprediction'a yol
+    # açıyordu"). O düzeltme SADECE kampanya tarafına (campaign_release_
+    # alpha) uygulanmış, backlog_alpha (Pazar/tatil kapanışı sonrası) eski
+    # varsayılanında (1.4) unutulmuştu. Kanıt: backlog_release_index =
+    # exp(-d/1.4) formülüyle d=2 günde (kapanıştan 2. aktif gün) zaten
+    # 0.24'e düşüyor — Öneri A'nın BUCKET_EVENT_CONTINUOUS_THRESHOLD=0.35
+    # sınırının ALTINA, yani "event" bucket'tan "normal" bucket'a düşüyor
+    # — TAM OLARAK backtest'te Yalova→İstanbul (09:00) düzeltmesinin
+    # 06-23'te (d=2) kesilip sistematik eksik-tahmine geri döndüğü nokta
+    # (bkz. rota bazlı backtest logu: 06-21/22 -10/-11%, 06-23'ten
+    # itibaren -47/-65%). campaign_release_alpha ile TUTARLI/aynı kanıt-
+    # temelli değer (5.25) burada da varsayılan yapıldı; HPO ile ayrı
+    # ayrı kalibre edilmesi gerekebilir.
+    backlog_alpha: float = 5.25,
+    # bkz. add_holiday_features'daki backlog_max_release_days notu —
+    # campaign_release_alpha/campaign_max_release_days ile AYNI eşleştirme.
+    backlog_max_release_days: int = 6,
     enable_target_scaling: bool = False,
     target_scale_window_days: int = DEFAULT_TARGET_SCALE_WINDOW_DAYS,
     target_scale_min: float = DEFAULT_TARGET_SCALE_MIN,
+    # --- Adım 1.5 (Unconstraining) hiperparametreleri — ARTIK DIŞARIYA
+    # AÇIK. Önceden unconstrain_censored_demand() içinde SABİTTİ; bu yüzden
+    # test/kalibre/HPO etmenin bir yolu yoktu (bkz. debug_backtest.py
+    # bulgusu: 189 rota "FAZLA" / 17 rota "EKSİK" — haftalık mevsimselliğin
+    # tek-seferlik zirvelerinin gerçek kapasite sansürüyle karıştırılması).
+    censor_window: int = 14,
+    censor_min_volume_threshold: float = 50.0,
+    censor_cap_ratio: float = 0.98,
+    censor_inflation_factor: float = 1.05,
+    # require_weekday_persistence=False + inflation_factor=1.0 → hızlı A/B
+    # testi için eski (v1) davranışı tamamen kapatır (bkz. debug_backtest.py
+    # kullanım notu).
+    censor_require_weekday_persistence: bool = True,
+    censor_persistence_occurrences: int = 3,
+    censor_persistence_min_hits: int = 2,
+    # --- Gerçek Kapasite Doğrulaması (bkz. unconstrain_censored_demand
+    # Mantık 3.5) — VERİLİRSE istatistiksel proxy'nin (yukarıdaki censor_*
+    # kalıcılık parametreleri) YERİNE geçer, verilmezse (varsayılan None)
+    # eski davranış (sadece istatistiksel proxy) korunur. Örnek kullanım:
+    # Ellecleme-kapasite.xlsx'ten okunan {transfer_merkezi, ellecleme_kapasite}
+    # tablosunu censor_capacity_df olarak geçirin, censor_source_tm_column'ı
+    # "kaynak_tm" (run_forecast.py::KAYNAK_COL) yapın.
+    censor_capacity_df: Optional[Union[pd.DataFrame, pl.DataFrame]] = None,
+    censor_source_tm_column: Optional[str] = None,
+    censor_capacity_tm_column: str = "transfer_merkezi",
+    censor_capacity_value_column: str = "ellecleme_kapasite",
+    censor_real_capacity_ratio: float = 0.90,
 ) -> pd.DataFrame:
     """
     Tüm feature engineering adımlarını sırayla uygulayan ana fonksiyon.
@@ -1772,6 +2363,13 @@ def build_feature_matrix(
       6.2 Momentum (ivme)       (ema_3, momentum_ratio_3_14 — her hedef sütun için AYRI
                                   AYRI, shift(1) tabanlı, leakage yok; kısa vadeli trend
                                   kırılmalarını rolling_mean'in gecikmesi olmadan yakalar)
+      6.25 Rejim Değişimi       (backlog_scaled_impact, demand_acceleration — PDF
+           (Regime Shift)         "Seçenek B" — CatBoost'un simetrik ağaç yapısının
+                                  week_of_year gibi güçlü takvim sinyallerini
+                                  backlog_release_index gibi zayıf/nadir sinyallerin
+                                  önüne geçirmesini önlemek için AÇIK etkileşim
+                                  özellikleri; bkz. add_regime_shift_features.
+                                  RETRAIN GEREKTİRİR.)
       6.3 Cross-lag             (bugünkü 09:00 → 17:00 modeli için meşru gün-içi bilgi)
       6.4 Günlük toplam (geçici) (toplam_desi_0900 + toplam_desi_1700 — SADECE aşağıdaki
                                   hub/graph/hierarchical/extreme fonksiyonlarının iç
@@ -1854,15 +2452,35 @@ def build_feature_matrix(
     # hacimlerden beslenir (PDF Bölüm 3 — Unconstraining). Wide format'ta
     # her hedef sütun (09:00/17:00) KENDİ rota bazlı geçmişine göre ayrı
     # ayrı düzeltilir.
+    # ⚠️ date_column burada BİLEREK geçiliyor: require_weekday_persistence
+    # gate'i (haftalık mevsimselliğin tek-seferlik zirvesini gerçek
+    # kapasite sansüründen ayırt etmek için) hafta günü bilgisine ihtiyaç
+    # duyar — bu, add_time_features (Adım 2) çalışmadan ÖNCE, doğrudan
+    # tarihten türetilir.
     pl_df = unconstrain_censored_demand(
-        pl_df, target_columns=target_cols, group_column=group_column
+        pl_df,
+        target_columns=target_cols,
+        group_column=group_column,
+        date_column=date_column,
+        window=censor_window,
+        min_volume_threshold=censor_min_volume_threshold,
+        cap_ratio=censor_cap_ratio,
+        inflation_factor=censor_inflation_factor,
+        require_weekday_persistence=censor_require_weekday_persistence,
+        persistence_occurrences=censor_persistence_occurrences,
+        persistence_min_hits=censor_persistence_min_hits,
+        capacity_df=censor_capacity_df,
+        source_tm_column=censor_source_tm_column,
+        capacity_tm_column=censor_capacity_tm_column,
+        capacity_value_column=censor_capacity_value_column,
+        real_capacity_ratio=censor_real_capacity_ratio,
     )
 
     # --- Adım 2: Zaman özellikleri ---
     pl_df = add_time_features(pl_df, date_column)
 
     # --- Adım 3: Tatil özellikleri ---
-    pl_df = add_holiday_features(pl_df, date_column, group_column=group_column, lead_days=holiday_lead_days)
+    pl_df = add_holiday_features(pl_df, date_column, group_column=group_column, lead_days=holiday_lead_days, backlog_alpha=backlog_alpha, backlog_max_release_days=backlog_max_release_days)
 
     # --- Adım 3.5: Kampanya (E-ticaret) özellikleri ---
     # lead_days=3: Anneler Günü gibi kampanyalarda 5 günlük arife
@@ -1919,6 +2537,15 @@ def build_feature_matrix(
         pl_df, target_cols, group_column, windows=rolling_windows
     )
 
+    # --- Adım 6.05: Gün-Spesifik (Same-Weekday) Rolling Ortalama — YENİ ---
+    # (Öneri B) Sadece EK bir GİRDİ özelliği — hedef ölçeklendirme/clip
+    # zincirine (Adım 6.1) dokunmaz, tamamen bağımsız/düşük risklidir.
+    # "weekday" sütunu bu noktada zaten hazır (bkz. erken feature-prep adımı).
+    pl_df = add_same_weekday_rolling_features(
+        pl_df, target_cols, group_column, weekday_column="weekday",
+        n_occurrences=DEFAULT_SAME_WEEKDAY_WINDOW,
+    )
+
     # --- Adım 6.1: Rota Bazlı Hedef Ölçeklendirme (PDF Strateji 2) ---
     # Adım 6'dan HEMEN sonra çalışır çünkü add_rolling_features ile birebir
     # aynı shift(1)+rolling_mean(min_samples=1) deseninden faydalanır — bu
@@ -1941,6 +2568,14 @@ def build_feature_matrix(
     # ema_3 ve momentum_ratio_3_14, kısa pencereye ağırlık vererek trend
     # kırılmasını rolling_mean'in "1 hafta bekleme" gecikmesi olmadan yakalar.
     pl_df = add_momentum_features(pl_df, target_cols, group_column)
+
+    # --- Adım 6.25: Rejim Değişimi (Regime Shift) Özellikleri — PDF "Seçenek B"
+    # (Demand_Forecasting_Feature_Strategies.pdf) — RETRAIN GEREKTİRİR.
+    # backlog_scaled_impact / demand_acceleration; add_lag_features (Adım 5),
+    # add_rolling_features (Adım 6) VE add_holiday_features'ın (Adım 3,
+    # backlog_release_index) ÜÇÜNDEN de SONRA çalışmalı — bkz.
+    # add_regime_shift_features docstring'i.
+    pl_df = add_regime_shift_features(pl_df, target_cols, group_column)
 
     # --- Adım 6.3: Cross-lag (bugünkü 09:00 → 17:00 modeli için meşru feature) ---
     pl_df = add_cross_lag_features(pl_df, target_cols)
