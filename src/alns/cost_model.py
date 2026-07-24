@@ -59,7 +59,17 @@ def ellecleme_maliyet_hesapla(desi: float, kiralık_saat_maliyet: float) -> floa
     return int(round(maliyet))
 
 def spot_vehicle_count(desi: float, capacity: float, max_spot: int) -> int:
-    """Bir bacakta taşınacak desi miktarını, kapasiteye göre gereken spot araç sayısına çevirir."""
+    """Bir bacakta taşınacak desi miktarını, kapasiteye göre gereken spot araç sayısına çevirir.
+
+    DUZELTME: math.ceil()'e kucuk bir epsilon (1e-9) toleransi eklendi.
+    ALNS, leg_spot_desi[key]'i binlerce iterasyon boyunca += / -= ile
+    ARTIMLI guncelliyor; desi artik hep tam sayi olmadigindan (ondalikli
+    talepler de girebiliyor) bu birikimli float toplama/cikarma, kapasite
+    sinirinda (orn. tam 5600.0) minik bir kayma (5600.00000001 gibi)
+    yaratabiliyor - epsilonsuz ceil() bu kaymayi FAZLADAN BIR ARAC olarak
+    sayiyordu, bu da State.objective()'in (ALNS'in arama sirasinda gordugu
+    sinyal) gercek maliyetten (rapor aninda bucket_toplam_desi'den SIFIRDAN
+    hesaplanan) sapmasina yol aciyordu (bkz. sohbet gecmisi)."""
     if desi <= 0 or capacity <= 0:
         return 0
-    return min(max_spot, math.ceil(desi / capacity))
+    return min(max_spot, math.ceil(desi / capacity - 1e-9))

@@ -34,7 +34,6 @@ from ortools.sat.python import cp_model
 
 from src.alns.cost_model import spot_vehicle_count, vehicle_leg_cost, ellecleme_maliyet_hesapla
 from src.alns.time_model import (
-    DISPATCH_SLOTS,
     DEMAND_ARRIVAL_TIMES,
     RouteLookup,
     arrival_day,
@@ -70,18 +69,46 @@ MIN_SPOT_DOLULUK_ORANI = 0.10
 MIN_SPOT_DOLULUK_TAPER_GUN_SAYISI = 2
 
 
-def _min_doluluk_esigi(idx: int, toplam_slot: int) -> float:
+_hat_toplam_talep_cache: dict = {}
+
+
+def _hat_toplam_talep(demands) -> dict:
+    """Her hat (src,dst) icin, TUM ufuktaki (data.demands - statik, ALNS
+    calismasi boyunca degismez) toplam talep desisini dondurur. Bu, bir
+    hat'in konsolidasyonla ULASABILECEGI TEORIK TAVANI temsil eder -
+    dinamik alt limit (bkz. _min_doluluk_esigi'nin ust_sinir parametresi)
+    bunu kullanarak dusuk hacimli hatlarin imkansiz bir esigi kovalamasini
+    engeller. id(demands) ile cache'leniyor (diger benzer cache'lerle ayni
+    desen - bkz. arrival_day)."""
+    cache_key = id(demands)
+    if cache_key in _hat_toplam_talep_cache:
+        return _hat_toplam_talep_cache[cache_key]
+    toplam: dict = {}
+    for (hat, _gun, _slot, desi, _talep_id) in demands:
+        toplam[hat] = toplam.get(hat, 0.0) + desi
+    _hat_toplam_talep_cache[cache_key] = toplam
+    return toplam
+
+
+def _min_doluluk_esigi(idx: int, toplam_slot: int, ust_sinir: float = 1.0) -> float:
     """zaman_sirali[idx] icin uygulanacak minimum doluluk esigini dondurur.
     Son MIN_SPOT_DOLULUK_TAPER_GUN_SAYISI gun disinda MIN_SPOT_DOLULUK_ORANI
     (sabit); taper penceresi icinde, en son slota (esik=0) dogru DOGRUSAL
-    olarak azalir - bkz. MIN_SPOT_DOLULUK_TAPER_GUN_SAYISI tanimindaki not."""
+    olarak azalir - bkz. MIN_SPOT_DOLULUK_TAPER_GUN_SAYISI tanimindaki not.
+
+    DINAMIK ALT LIMIT: `ust_sinir`, bu hat icin FIILEN ulasilabilir maksimum
+    doluluk oranidir (bkz. _hat_toplam_talep). Dusuk hacimli bir hatta TUM
+    ufuktaki talep toplansa bile MIN_SPOT_DOLULUK_ORANI'na (%10) ulasilamiyorsa,
+    esik bu ust_sinir'a KISILIR - aksi halde kural, hicbir zaman
+    saglanamayacak bir esigi kovalayip mikro talebi ufkun sonuna kadar
+    erteler ve gereksiz SLA cezasi biriktirir (bkz. sohbet gecmisi)."""
     taper_slot_sayisi = MIN_SPOT_DOLULUK_TAPER_GUN_SAYISI * len(DEMAND_ARRIVAL_TIMES)
     if taper_slot_sayisi <= 0:
-        return MIN_SPOT_DOLULUK_ORANI
+        return min(MIN_SPOT_DOLULUK_ORANI, ust_sinir)
     kalan_slot = toplam_slot - 1 - idx  # en son slotta 0
     if kalan_slot >= taper_slot_sayisi:
-        return MIN_SPOT_DOLULUK_ORANI
-    return MIN_SPOT_DOLULUK_ORANI * (kalan_slot / taper_slot_sayisi)
+        return min(MIN_SPOT_DOLULUK_ORANI, ust_sinir)
+    return min(MIN_SPOT_DOLULUK_ORANI, ust_sinir) * (kalan_slot / taper_slot_sayisi)
 
 
 # ============================================================================
@@ -238,7 +265,6 @@ class State:
         self.leg_kiralik_desi: dict = {}   # (src,dst,gun,slot,arac_turu) -> desi
         self.handling_usage: dict = {}     # (tm,gun) -> desi
         self.tir_usage: dict = {}          # (tm,gun) -> adet (spot kaynakli, kiralik ayrica sabit)
-        # self._fixed_kiralik_cost = self._compute_fixed_kiralik_cost()
         self._fixed_kiralik_cost = self._kiralik_bos_seyir_maliyeti()
         # Her bacagin GUNCEL arac maliyetinin (seyir+ellecleme) ARTIMLI takibi -
         # _commit_leg/force_insert eklerken, _remove_assignment cikarirken bunu
@@ -246,23 +272,6 @@ class State:
         # yeniden taramak zorunda kalmiyor (performans), ama HALA guncel/dogru
         # kaliyor (silme sirasinda da dogru dusuruldugu icin bayatlamiyor).
         self._arac_maliyeti_toplam: float = 0.0
-
-    # def _compute_fixed_kiralik_cost(self) -> float:
-    #     total = 0.0
-    #     for (hat, arac_turu), stok in self.data.kiralik_stok_gunluk.items():
-    #         if stok <= 0:
-    #             continue
-    #         p = self.data.arac_parametreleri[arac_turu]
-    #         birim = vehicle_leg_cost(
-    #             self.data.route_lookup,
-    #             hat,
-    #             arac_turu,
-    #             p["rental_hourly"],
-    #             p["rental_km"],
-    #             tasinan_desi=0.0, # kiralık aracın sabit maliyeti hesaplanıyor
-    #         )
-    #         total += len(self.data.gunler) * stok * birim
-    #     return total
 
     def _kiralik_bos_seyir_maliyeti(self) -> float:
         total = 0.0
@@ -447,8 +456,6 @@ class State:
 
         self._arac_maliyeti_toplam += marjinal_maliyet
 
-        ellecleme_suresi_saat = (desi * 0.01) / 60
-
         self.handling_usage[(src, gun)] = self.handling_usage.get((src, gun), 0.0) + desi
         varis_g = arrival_day(self.data.route_lookup, self.data.gunler, (src, dst), gun, slot, arac_turu)
         if varis_g:
@@ -460,12 +467,6 @@ class State:
 # ============================================================================
 # Yol (path) seçenekleri ve maliyet/SLA hesabı
 # ============================================================================
-def _pick_vehicle_type(data: ProblemData, desi: float) -> list:
-    """Araç türlerini büyükten küçüğe kapasiteye göre sırala (yalnızca zaman/hız
-    tahmini gibi maliyetin önemsiz olduğu yerlerde kullanılır — bkz. _rank_spot_types_by_cost)."""
-    return sorted(data.arac_turleri, key=lambda a: -data.arac_parametreleri[a]["kapasite_desi"])
-
-
 def _rank_spot_types_by_cost(data: ProblemData, hat: tuple, desi: float) -> list:
     """Spot araç türlerini, bu MİKTARI taşımak için gereken tahmini toplam maliyete
     (ceil(desi/kapasite) × birim_maliyet) göre ARTAN sırada döndürür. "Büyük araç
@@ -515,25 +516,6 @@ def _completion_datetime(data: ProblemData, legs: list, desi: float):
     son_varis = leg_zaman_cizelgesi(data, legs, desi)[-1][1]
     return ellecleme_tamamlanma_zamani(son_varis, desi, consolidation=False)
 
-
-# def _completion_datetime(data: ProblemData, legs: list, desi: float):
-#     """SLA için esas alınan an: PDF'e göre araç VARIŞI değil, o TM'deki
-#     elleçlemenin TAMAMLANMA anı. Son bacağın kalkışı+seyir süresiyle varışa
-#     ulaşılır, sonra final destinasyondaki elleçleme süresi (desi × 0.01 dk)
-#     eklenir — bu adım daha önce hiç yapılmıyordu ve büyük yüklerde (binlerce
-#     desi → onlarca dakika/birkaç saat) SLA'yı yapay şekilde "zamanında"
-#     gösteriyordu (bkz. sohbet geçmişi).
-
-#     Ara (relay) bacaklarının kendi elleçlemesi burada AYRICA eklenmiyor -
-#     `next_dispatch_slot` zaten bir sonraki bacağın kalkışını, elleçleme+bekleme
-#     payı bırakarak hesaplıyor (bkz. o fonksiyonun docstring'i); yalnızca NİHAİ
-#     varış noktasındaki elleçleme SLA tamamlanma anını geciktirir."""
-#     zaman = None
-#     for leg in legs:
-#         kalkis = slot_datetime(leg.gun, leg.slot)
-#         seyir = data.route_lookup[(leg.src, leg.dst)][leg.arac_turu]
-#         zaman = varis_zamani(kalkis, seyir)
-#     return ellecleme_tamamlanma_zamani(zaman, desi, consolidation=False)
 
 def try_insert_path(
     state: State,
@@ -1155,6 +1137,7 @@ def dogrula_min_spot_doluluk(state: "State") -> list:
     liste = kural %100 saglaniyor - bkz. enforce_min_spot_occupancy()."""
     zamanlar = state.data.zaman_sirali
     zaman_index = {gs: i for i, gs in enumerate(zamanlar)}
+    hat_toplam = _hat_toplam_talep(state.data.demands)
     ihlaller = []
     for (src, dst, gun, slot, arac_turu), desi in state.leg_spot_desi.items():
         if desi <= 1e-9:
@@ -1162,10 +1145,11 @@ def dogrula_min_spot_doluluk(state: "State") -> list:
         idx = zaman_index.get((gun, slot))
         if idx is None:
             continue
-        esik = _min_doluluk_esigi(idx, len(zamanlar))
+        kap = state.data.arac_parametreleri[arac_turu]["kapasite_desi"]
+        ust_sinir = min(1.0, hat_toplam.get((src, dst), 0.0) / kap) if kap else 1.0
+        esik = _min_doluluk_esigi(idx, len(zamanlar), ust_sinir)
         if esik <= 1e-9:
             continue
-        kap = state.data.arac_parametreleri[arac_turu]["kapasite_desi"]
         adet = spot_vehicle_count(desi, kap, MAX_SPOT)
         if adet <= 0:
             continue
@@ -1262,8 +1246,15 @@ def enforce_min_spot_occupancy(state: "State", rng) -> "State":
         if not etkilenen:
             break  # ihlal var ama eslesen atama yok (olmamali) - guvenlik agi
 
+        # PERFORMANS: state.assignments.remove(a) DEGER esitligiyle (frozen
+        # dataclass'in otomatik __eq__'i, ic ice legs tuple'i dahil) O(n)
+        # tarama yapiyordu - binlerce elemanli listede yuzlerce silme
+        # BASINA bunu tekrarlamak pratikte O(n^2) oluyordu (profil ile
+        # dogrulandi: list.remove() + __eq__ TEK BASINA bir run'in ~%15-20'sini
+        # yiyordu). id() bazli TEK GECISLI toplu silmeye cevrildi - O(n) toplam.
+        etkilenen_id = {id(a) for a in etkilenen}
+        state.assignments = [a for a in state.assignments if id(a) not in etkilenen_id]
         for a in etkilenen:
-            state.assignments.remove(a)
             _remove_assignment(state, a)
         # _remove_assignment() sokulen HER atamayi kendisi state.unassigned'a
         # geri ekler (normal sozlesmesi budur - repair operatorlerinin havuzdan
@@ -1379,16 +1370,20 @@ def low_occupancy_removal(state, rng, **kwargs):
     # Adaylar arasından rastgele bir kısmını seç (Böylece model her seferinde farklı kombinasyonlar dener)
     to_remove = rng.choice(candidates_to_remove, num_to_remove, replace=False)
 
-    # 5. Seçilen atamaları State'ten çıkar ve 'unassigned' havuzuna geri at
+    # 5. Seçilen atamaları State'ten çıkar
+    # DUZELTME: _remove_assignment() sokulen atamayi KENDISI zaten
+    # state.unassigned'a ekliyor (bkz. tanimi) - burada AYRICA elle
+    # eklemek, ayni kargoyu unassigned havuzuna 2 KERE koyuyordu; repair
+    # operatorleri unassigned'i sirayla islediginden aynen desi 2 kere
+    # yerlestiriliyordu (kargo korunumu ihlali - bkz. sohbet gecmisi: "100
+    # desi 350 oldu" bulgusu, ayni hatanin enforce_min_spot_occupancy'de
+    # bilincli sekilde temizlendigi yer).
+    # PERFORMANS: bkz. enforce_min_spot_occupancy'deki ayni duzeltmenin notu -
+    # id() bazli tek gecisli toplu silme, deger esitligiyle O(n) x O(k) yerine.
+    to_remove_id = {id(a) for a in to_remove}
+    state.assignments = [a for a in state.assignments if id(a) not in to_remove_id]
     for a in to_remove:
-        # DİKKAT: Burada senin state sınıfının içindeki sökme fonksiyonunu kullanmalısın.
-        # worst_removal veya random_removal içinde hangi metot kullanılıyorsa onu çağır.
-        # Genelde şu şekildedir:
-        state.assignments.remove(a)
         _remove_assignment(state, a)
-        
-        # Talebi, Onarıcı (Repair) operatörlerin yeniden alabilmesi için unassigned listesine ekle
-        state.unassigned.append((a.demand_hat, a.demand_gun, a.demand_slot, a.desi, a.talep_id))
 
     return state
 
@@ -1466,13 +1461,15 @@ def shaw_related_removal(state, rng, **kwargs):
         # Seçilen adayı listeden kopar ve silinecekler listesine ekle
         to_remove.append(candidates.pop(idx))
 
-    # 5. SÖKME (Removal) İŞLEMİ: Senin verdiğin yapıya tam uygun olarak
+    # 5. SÖKME (Removal) İŞLEMİ
+    # DUZELTME: _remove_assignment() sokulen atamayi KENDISI zaten
+    # state.unassigned'a ekliyor - elle tekrar eklemek cift sayima
+    # (kargo korunumu ihlaline) yol aciyordu, bkz. low_occupancy_removal'daki
+    # ayni duzeltmenin notu.
+    to_remove_id = {id(a) for a in to_remove}
+    state.assignments = [a for a in state.assignments if id(a) not in to_remove_id]
     for a in to_remove:
-        state.assignments.remove(a)
         _remove_assignment(state, a)
-        
-        # Sökülen kargoyu yeniden atanmak (repair) üzere unassigned havuzuna gönder
-        state.unassigned.append((a.demand_hat, a.demand_gun, a.demand_slot, a.desi, a.talep_id))
 
     return state
 
@@ -1484,28 +1481,43 @@ def worst_removal(state: State, rng: rnd.Generator, **kwargs) -> State:
     # (bkz. random_removal'daki not) - sabit orana donuldu.
     n = max(1, int(0.04 * len(state.assignments)))
     ranked = sorted(state.assignments, key=lambda a: -(a.sla_cost + a.vehicle_cost))
-    for a in ranked[:n]:
-        state.assignments.remove(a)
+    to_remove = ranked[:n]
+    to_remove_id = {id(a) for a in to_remove}
+    state.assignments = [a for a in state.assignments if id(a) not in to_remove_id]
+    for a in to_remove:
         _remove_assignment(state, a)
     return state
 
 
 def tm_overload_removal(state: State, rng: rnd.Generator, **kwargs) -> State:
+    """Sadece esigi (%85) FIILEN asan (tm, gun) ciftindeki yuku hedef alir.
+
+    DUZELTME: eskiden aday secimi (tm, gun) bazinda yapilip, sokme filtresi
+    SADECE tm bazinda (gun'den BAGIMSIZ) uygulaniyordu - bu da bir TM'nin
+    SADECE 1 gununde asim varsa, o TM'ye dokunan ama HICBIR asim OLMAYAN
+    baska gunlerdeki BASARILI atamalarin da sokulme riskine girmesine yol
+    aciyordu (bkz. sohbet gecmisi). Artik to_remove filtresi de ayni (tm, gun)
+    ciftine gore uygulaniyor - sadece gercekten asan gun etkileniyor."""
     state = state.copy()
-    aday_tmler = [
-        tm
+    aday_tm_gun = [
+        (tm, gun)
         for tm in state.data.merkezler
         for gun in state.data.gunler
         if state.data.handling_capacity.get(tm) is not None
         and state.handling_usage.get((tm, gun), 0.0) > 0.85 * state.data.handling_capacity[tm]
     ]
-    if not aday_tmler:
+    if not aday_tm_gun:
         return random_removal(state, rng, **kwargs)
-    tm = aday_tmler[int(rng.integers(0, len(aday_tmler)))]
-    to_remove = [a for a in state.assignments if any(leg.src == tm or leg.dst == tm for leg in a.legs)]
+    tm, gun = aday_tm_gun[int(rng.integers(0, len(aday_tm_gun)))]
+    to_remove = [
+        a for a in state.assignments
+        if any(leg.gun == gun and (leg.src == tm or leg.dst == tm) for leg in a.legs)
+    ]
     rng.shuffle(to_remove)
-    for a in to_remove[: max(1, len(to_remove) // 3)]:
-        state.assignments.remove(a)
+    to_remove = to_remove[: max(1, len(to_remove) // 3)]
+    to_remove_id = {id(a) for a in to_remove}
+    state.assignments = [a for a in state.assignments if id(a) not in to_remove_id]
+    for a in to_remove:
         _remove_assignment(state, a)
     return state
 
@@ -1724,7 +1736,6 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
     # sonra TEK bir kisit ekliyoruz (slot slot ayri kisitlamak yanlis olurdu -
     # ayni gunun iki slotu ayni kapasiteyi paylasir).
 
-    yuk_terimleri_by_slot = {}
     handling_terimleri_by_tm_gun: dict = {} # "Bu TM'de bu günde bu kadar ellecleme yapılıyor" diyoruz.
     yuk_dict = {} # YENİ EKLENEN SÖZLÜK
     for idx, (g, s) in enumerate(zaman_sirali):
@@ -1744,8 +1755,7 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
             yuk_terimleri.append(yuk)
             varis_g = arrival_day(data.route_lookup, data.gunler, target_hat, g, s, a) or g
             handling_terimleri_by_tm_gun.setdefault((src, g), []).append(yuk)
-            handling_terimleri_by_tm_gun.setdefault((dst, varis_g), []).append(yuk) 
-        yuk_terimleri_by_slot[(g, s)] = yuk_terimleri
+            handling_terimleri_by_tm_gun.setdefault((dst, varis_g), []).append(yuk)
         model.Add(biriken[(g, s)] == cp_model.LinearExpr.Sum(yuk_terimleri) + ertelenen[(g, s)])
 
     # Diger hatlarin MEVCUT kullanimi sabit kabul edilip kalan pay bu hatta

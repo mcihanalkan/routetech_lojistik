@@ -86,13 +86,6 @@ def build_route_lookup(route_matrix: pd.DataFrame) -> RouteLookup:
     return lookup
 
 
-def seyir_suresi_saat(route_lookup: RouteLookup, source: str, destination: str, vehicle_type: str) -> float:
-    entry = route_lookup.get((source, destination))
-    if entry is None:
-        raise KeyError(f"Rota bulunamadı: {source} -> {destination}")
-    return entry[vehicle_type]
-
-
 def ellecleme_suresi_dakika(desi: float, consolidation: bool = False) -> float:
     """Elleçleme süresi = desi * 0.01 dk. Konsolidasyonda (indir + tekrar yükle) 2x sayılır.
     En yakın büyük tam sayıya yuvarlanır. Konsolidasyonda 2x sayılır."""
