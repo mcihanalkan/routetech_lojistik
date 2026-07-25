@@ -9,7 +9,7 @@ sabit kalmasını sağlayan kilit karardır — bkz. plan dosyası.
 from __future__ import annotations
 
 import math
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, time as dt_time
 
 import pandas as pd
 
@@ -31,12 +31,56 @@ DEMAND_ARRIVAL_TIMES = [
 RouteLookup = dict[tuple[str, str], dict]
 
 
+
+DESI_PER_MINUTE = 100.0  # ellecleme_suresi_dakika'daki 0.01 dk/desi ile TUTARLI olmalı (1/0.01)
+
+
+def ellecleme_gun_dagilimi(baslangic_zamani: datetime, desi: float) -> dict:
+    """Bir elleçleme işleminin (baslangic_zamani'ndan itibaren, 'desi' miktarına
+    karşılık gelen süre boyunca) hangi takvim günlerine ne kadar (desi cinsinden)
+    yük olarak düştüğünü hesaplar. Gece yarısını (00:00) geçen işlemler için
+    yükü SÜREYE ORANTILI olarak günler arasında böler.
+
+    Örnek: 04 Temmuz 23:30'da başlayıp 50 dk süren bir elleçleme -> 30 dk (=3000
+    desi) 04 Temmuz'a, 20 dk (=2000 desi) 05 Temmuz'a düşer.
+
+    Dönüş: {"YYYY-MM-DD": desi_payi, ...} - anahtarların toplamı == desi
+    (yuvarlama farkları hariç, aşağıdaki assert ile kontrol edilebilir).
+    """
+    toplam_dakika = desi / DESI_PER_MINUTE
+    if toplam_dakika <= 0:
+        return {}
+
+    pay: dict = {}
+    kalan_dakika = toplam_dakika
+    an = baslangic_zamani
+    # Sonsuz döngü koruması: normalde 1-2 gün sınırı aşılmaz ama garanti olsun
+    guard = 0
+    while kalan_dakika > 1e-9 and guard < 10:
+        guard += 1
+        gun_str = an.strftime("%Y-%m-%d")
+        gun_sonu = datetime.combine(an.date() + timedelta(days=1), dt_time(0, 0))
+        bu_gune_kalan_dakika = (gun_sonu - an).total_seconds() / 60.0
+        bu_gune_dusen_dakika = min(kalan_dakika, bu_gune_kalan_dakika)
+        bu_gune_dusen_desi = bu_gune_dusen_dakika * DESI_PER_MINUTE
+        pay[gun_str] = pay.get(gun_str, 0.0) + bu_gune_dusen_desi
+        kalan_dakika -= bu_gune_dusen_dakika
+        an = gun_sonu
+    return pay
+
 def slot_to_hour(slot: str) -> int:
     return int(str(slot).split(":")[0])
 
 
 def build_route_lookup(route_matrix: pd.DataFrame) -> RouteLookup:
-    """(source, destination) -> {distance_km, target_delivery_days, <araç türü>: seyir_saat}."""
+    """(source, destination) -> {distance_km, target_delivery_days, <araç türü>: seyir_saat}.
+
+    Seyir süresi (saat), PDF kuralına uygun olarak en yakın büyük tam dakikaya
+    yuvarlanıp saate geri çevrilir (örn. 0.92 saat = 55.2 dk -> 56 dk -> 56/60
+    saat). Bu, TEK noktada yapılıyor ki varis_zamani/arrival_day/vehicle_leg_cost
+    ve raporlanan Yolculuk_Suresi_Dk sütunu HEP aynı (yuvarlanmış) süreyi
+    kullansın - aksi halde Çıkış/Varış Saati sütunları, ayrıca raporlanan
+    Yolculuk_Suresi_Dk ile tutarsız (kesilmiş/truncate) görünür."""
     lookup: RouteLookup = {}
     for _, row in route_matrix.iterrows():
         entry = {
@@ -44,16 +88,9 @@ def build_route_lookup(route_matrix: pd.DataFrame) -> RouteLookup:
             "target_delivery_days": float(row["target_delivery_days"]),
         }
         for vehicle_type, column in VEHICLE_DURATION_COLUMNS.items():
-            entry[vehicle_type] = float(row[column])
+            entry[vehicle_type] = math.ceil(float(row[column]) * 60) / 60.0
         lookup[(row["source"], row["destination"])] = entry
     return lookup
-
-
-def seyir_suresi_saat(route_lookup: RouteLookup, source: str, destination: str, vehicle_type: str) -> float:
-    entry = route_lookup.get((source, destination))
-    if entry is None:
-        raise KeyError(f"Rota bulunamadı: {source} -> {destination}")
-    return entry[vehicle_type]
 
 
 def ellecleme_suresi_dakika(desi: float, consolidation: bool = False) -> float:

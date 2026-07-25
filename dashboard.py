@@ -77,8 +77,27 @@ def rota_haritasini_ciz(rota_adi, df_opt_filtered):
         folium.PolyLine(locations=[merkez_koordinat, varis_koordinat], color="gray", weight=2, dash_array="10", tooltip="Bu Slot İçin Sefer Bulunamadı").add_to(m)
         return m
 
-    # Eğer sefer varsa, fiziksel bacakları (Cikis_TM -> Varis_TM) grupla ve çiz
-    bacak_ozetleri = df_opt_filtered.groupby(['Cikis_TM', 'Varis_TM', 'Arac_Tipi', 'Rota_Tipi'])['Bu_Talebin_Desisi'].sum().reset_index()
+    df_harita = df_opt_filtered.copy()
+
+    # Araç Tipi ve Türü varsa birleştir (Örn: Spot + Kamyonet = Spot Kamyonet)
+    if 'Arac_Turu' in df_harita.columns:
+        df_harita['Tam_Arac_Tipi'] = df_harita['Arac_Tipi'].astype(str) + " " + df_harita['Arac_Turu'].astype(str)
+    else:
+        df_harita['Tam_Arac_Tipi'] = df_harita['Arac_Tipi'].astype(str)
+
+    # Dinamik kolon kontrolü (Eski ve Yeni CSV'ye uyumlu olması için)
+    group_cols = ['Cikis_TM', 'Varis_TM']
+    for col in ['Arac_ID', 'Slot', 'Varis_Saati', 'Yolculuk_Suresi_Dk']:
+        if col in df_harita.columns:
+            group_cols.append(col)
+
+    # Aynı fiziksel bacaktaki ve aynı araçtaki yükleri AKILLICA grupla
+    bacak_ozetleri = df_harita.groupby(group_cols).agg({
+        'Bu_Talebin_Desisi': 'sum',
+        'Tam_Arac_Tipi': 'first',
+        'Talep_ID': lambda x: ", ".join(x.astype(str).unique()),
+        'Rota_Tipi': lambda x: "<br>".join(x.astype(str).unique()) # Birden fazla hedef varsa satır satır yazar
+    }).reset_index()
 
     cizilen_noktalar = set()
 
@@ -86,7 +105,15 @@ def rota_haritasini_ciz(rota_adi, df_opt_filtered):
         c_tm = row['Cikis_TM']
         v_tm = row['Varis_TM']
         desi = row['Bu_Talebin_Desisi']
-        arac = row['Arac_Tipi']
+        
+        # Yeni veriler (Varsa al, yoksa Bilinmiyor yaz)
+        arac_id = row.get('Arac_ID', 'Bilinmiyor')
+        cikis_saati = row.get('Slot', 'Bilinmiyor')
+        varis_saati = row.get('Varis_Saati', 'Bilinmiyor')
+        yolculuk_sure = row.get('Yolculuk_Suresi_Dk', 'Bilinmiyor')
+        
+        arac_tipi = row['Tam_Arac_Tipi']
+        talep_idler = row['Talep_ID']
         konsolidasyon_durumu = row['Rota_Tipi']
         
         c_koordinat = TURKIYE_KOORDINATLAR.get(c_tm, [39.0, 35.0])
@@ -99,17 +126,28 @@ def rota_haritasini_ciz(rota_adi, df_opt_filtered):
             folium.Marker(v_koordinat, tooltip=f"{v_tm} (Transfer Merkezi)", icon=folium.Icon(color='red' if v_tm==nihai_varis else 'blue', icon='building', prefix='fa')).add_to(m)
             cizilen_noktalar.add(v_tm)
             
+        # Zenginleştirilmiş HTML Tooltip (CSS İle Şıklaştırıldı)
         html_tooltip = f"""
-        <b>Fiziksel Bacak:</b> {c_tm} ➡️ {v_tm}<br>
-        <b>Taşınan Yük:</b> {desi:.2f} Desi<br>
-        <b>Araç Tipi:</b> {arac}<br>
-        <b>Durum:</b> {konsolidasyon_durumu}
+        <div style='font-family: Arial, sans-serif; font-size: 13px; min-width: 300px; padding: 5px;'>
+            <b style='color: #2563eb; font-size: 14px;'>📍 Fiziksel Bacak:</b> {c_tm} ➡️ {v_tm}<br>
+            <hr style='margin: 6px 0; border: 0; border-top: 1px solid #e5e7eb;'>
+            <b style='color: #4b5563;'>🚚 Araç:</b> {arac_id} ({arac_tipi})<br>
+            <b style='color: #4b5563;'>⏱️ Gerçek Kalkış:</b> {cikis_saati} | <b style='color: #4b5563;'>🏁 Varış:</b> {varis_saati}<br>
+            <b style='color: #4b5563;'>⏳ Yolculuk Süresi:</b> {yolculuk_sure} Dk<br>
+            <b style='color: #16a34a; font-size: 14px;'>📦 Araçtaki Toplam Yük:</b> {desi:.2f} Desi<br>
+            <hr style='margin: 6px 0; border: 0; border-top: 1px solid #e5e7eb;'>
+            <b style='color: #d97706;'>🔖 Taşıdığı Talep ID'ler:</b> <span style='font-size: 11px;'>{talep_idler}</span><br>
+            <b style='color: #dc2626;'>🚦 Yüklerin Durumu:</b><br><span style='font-size: 11px;'>{konsolidasyon_durumu}</span>
+        </div>
         """
+        
+        # İçinde herhangi bir "Uğramalı" veya "Konsolidasyon" geçen satır varsa rengi turuncu yap
+        is_konsolide = "Uğramalı" in konsolidasyon_durumu or "Konsolidasyon" in konsolidasyon_durumu
         
         folium.PolyLine(
             locations=[c_koordinat, v_koordinat], 
-            color="blue" if "Konsolidasyon" not in konsolidasyon_durumu else "orange", 
-            weight=4, 
+            color="orange" if is_konsolide else "blue", 
+            weight=5, 
             opacity=0.8,
             tooltip=html_tooltip
         ).add_to(m)
@@ -208,7 +246,7 @@ for idx, sekme in enumerate(sekmeler):
             label_visibility="collapsed"
         )
         
-        # Haritaya gidecek veriyi filtreleme mantığı
+        # Haritaya gidecek veriyi filtreleme mantığı (Talep slotuna göre)
         df_gunluk_opt = df_opt[(df_opt['Rota'] == secilen_rota) & (df_opt['Talep_Tarihi'] == secilen_tarih)]
         
         if secilen_harita_slotu == "09:00 Slotu Operasyonu":
@@ -218,7 +256,6 @@ for idx, sekme in enumerate(sekmeler):
             
         with st.expander(f"🗺️ {secilen_harita_slotu} Haritasını İncele", expanded=True):
             rota_haritasi = rota_haritasini_ciz(secilen_rota, df_gunluk_opt)
-            # Haritaların çakışmasını engellemek için benzersiz key atadık
             st_folium(rota_haritasi, height=350, key=f"map_{idx}", use_container_width=True)
         
         st.write("---")

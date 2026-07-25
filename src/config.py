@@ -7,9 +7,6 @@ RAW_DATA_DIR = DATA_DIR / "raw"
 PROCESSED_DATA_DIR = DATA_DIR / "processed"
 OUTPUT_DIR = DATA_DIR / "outputs"
 
-FORECAST_START = "2026-05-11"
-FORECAST_END = "2026-05-17"
-
 RENTAL_COLUMNS = {
     "source": "Çıkış Transfer Merkezi",
     "destination": "Varış Transfer Merkezi",
@@ -56,14 +53,6 @@ TIR_CAPACITY_COLUMNS = {
     "capacity": "tir_kapasitesi",
 }
 
-# Dosya yolları (PROJECT_ROOT'a göre)
-PAYLOAD_CSV = PROJECT_ROOT / "src" / "predict_model" / "ortools_payload.csv"
-
 # Model parametreleri (Faz 2 — PDF "Gelişmiş Çözüm Aşaması")
-MAX_SPOT = 500
 SLA_CEZA_TL_PER_DESI_PER_SAAT = 0.4  # Geciken Desi × Gecikme Süresi (saat) × 0.4 TL
 ELLECLEME_DAKIKA_PER_DESI = 0.01  # 0.01 dk/desi elleçleme süresi
-MAX_SOLVE_TIME = 300  # saniye
-
-TALEP_ID_PREFIX = "D"
-ARAC_ID_PREFIX = "V"

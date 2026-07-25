@@ -50,16 +50,44 @@ def vehicle_leg_cost(
     return sonuc
 
 
-def ellecleme_maliyet_hesapla(desi: float, kiralık_saat_maliyet: float) -> float:
-    """Elleçleme süresi = desi * 0.01 dk. Konsolidasyonda (indir + tekrar yükle) 2x sayılır."""
-    sure = desi * ELLECLEME_DAKIKA_PER_DESI # 1000 desi elleçlenirse 10dk
+def ellecleme_maliyet_hesapla(desi: float, kiralık_saat_maliyet: float, dokunus_sayisi: int = 2) -> float:
+    """Bir BACAĞIN (tek fiziksel sevkiyatın) elleçleme maliyeti.
+
+    PDF (OptiVision örneği): tek bacaklı, konsolidasyonsuz bir sevkiyatta bile
+    Kullanım Süresi hem ÇIKIŞ hem VARIŞ elleçlemesini içerir (100dk+300dk(yol)+100dk=500dk).
+    Yani her bacak - konsolidasyonlu olsun olmasın - kendi çıkışını VE kendi varışını
+    faturalandırmalı: N bacaklı bir yolda toplam elleçleme "dokunuşu" varsayılan olarak
+    2N'dir (ilk durak sadece yükleme, son durak sadece indirme, aradaki her durak hem
+    indirme hem yeniden yükleme = 2 dokunuş).
+
+    dokunus_sayisi: bu ÇAĞRIDA kaç elleçleme ucu (çıkış/varış) faturalandırılacağı
+    (0, 1 ya da 2). Varsayılan 2 (mevcut/normal konsolidasyon davranışı). Uğrama
+    (milk-run) senaryosunda ARA duraklarda araç hiç indirilmediği için o ucun payı
+    0 (araya giren durak) ya da 1 (zincirin ilk/son bacağı, sadece kendi ucu gerçek)
+    olabilir - bkz. alns_engine._commit_leg skip_src_handling/skip_dst_handling.
+
+    time_model.ellecleme_suresi_dakika() ile AYNI yuvarlama sırasını kullanır:
+    önce ham süre dokunus_sayisi ile çarpılır, SONRA tek seferde yukarı yuvarlanır."""
+    if dokunus_sayisi <= 0 or desi <= 0:
+        return 0
+    sure = desi * ELLECLEME_DAKIKA_PER_DESI * dokunus_sayisi
     sure = math.ceil(sure) # dakika biriminde yukarı yuvarla
-    sure_saat = sure / 60 # 1/6 saat
-    maliyet = sure_saat * kiralık_saat_maliyet 
+    sure_saat = sure / 60 # saat
+    maliyet = sure_saat * kiralık_saat_maliyet
     return int(round(maliyet))
 
 def spot_vehicle_count(desi: float, capacity: float, max_spot: int) -> int:
-    """Bir bacakta taşınacak desi miktarını, kapasiteye göre gereken spot araç sayısına çevirir."""
+    """Bir bacakta taşınacak desi miktarını, kapasiteye göre gereken spot araç sayısına çevirir.
+
+    DUZELTME: math.ceil()'e kucuk bir epsilon (1e-9) toleransi eklendi.
+    ALNS, leg_spot_desi[key]'i binlerce iterasyon boyunca += / -= ile
+    ARTIMLI guncelliyor; desi artik hep tam sayi olmadigindan (ondalikli
+    talepler de girebiliyor) bu birikimli float toplama/cikarma, kapasite
+    sinirinda (orn. tam 5600.0) minik bir kayma (5600.00000001 gibi)
+    yaratabiliyor - epsilonsuz ceil() bu kaymayi FAZLADAN BIR ARAC olarak
+    sayiyordu, bu da State.objective()'in (ALNS'in arama sirasinda gordugu
+    sinyal) gercek maliyetten (rapor aninda bucket_toplam_desi'den SIFIRDAN
+    hesaplanan) sapmasina yol aciyordu (bkz. sohbet gecmisi)."""
     if desi <= 0 or capacity <= 0:
         return 0
-    return min(max_spot, math.ceil(desi / capacity))
+    return min(max_spot, math.ceil(desi / capacity - 1e-9))
