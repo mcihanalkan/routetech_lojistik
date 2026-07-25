@@ -367,7 +367,7 @@ assignment_cizelgeleri = {}   # id(a) -> [(kalkis0, varis0), (kalkis1, varis1), 
 bucket_gercek_kalkis = {}     # bucket_key -> en gec kalkis (sadece ozet icin)
 
 for a in best.assignments:
-    cizelge = leg_zaman_cizelgesi(data, a.legs, a.desi)
+    cizelge = leg_zaman_cizelgesi(data, a.legs, a.desi, milk_run=a.milk_run)
     assignment_cizelgeleri[id(a)] = cizelge
     for leg, (kalkis, _varis) in zip(a.legs, cizelge):
         key = _bucket_key(leg)
@@ -462,17 +462,30 @@ arac_id_kodu: dict = {
     for sira, arac_key in enumerate(_siralanmis_arac_keyler)
 }
 
+# Bu FİZİKSEL aracı (bucket_key, arac_index) paylaşan farklı taleplerin HER
+# BİRİNİN kendi elleçleme "dokunuş" sayısı (0/1/2) farklı olabilir - bir talep
+# buradan uğrayarak (milk_run) geçiyorsa dokunuş 0/1, gerçekten iniyor/biniyorsa
+# dokunuş 2. Arama motorunun kendi iç muhasebesiyle (State.leg_ellecleme_desi,
+# bkz. alns_engine._commit_leg) BİREBİR tutarlı olması için elleçleme maliyetini
+# dokunuşa göre GRUPLAYIP her grubu ayrı (kendi toplam desisi üzerinden, bir kez)
+# yuvarlıyoruz - tek bir toplam_yuk üzerinden hesaplamak, uğramalı/uğramasız
+# parçaları karıştırıp yanlış (fazla) elleçleme faturalandırırdı.
+def _fragman_dokunus_sayisi(a, leg_i):
+    if not a.milk_run:
+        return 2
+    n = len(a.legs)
+    return (0 if leg_i > 0 else 1) + (0 if leg_i < n - 1 else 1)
+
 # Her aracin GERCEK toplam maliyetini, motorun "kim once geldi" (marjinal)
 # muhasebesine BAKMADAN, bagimsiz olarak yeniden hesapliyoruz - boylece her
 # parcaya, o aracin toplam maliyetinden ADIL (yukune orantili) bir pay
 # verebiliriz. Kiralik aracta seyir maliyeti sabit/batik oldugu (ayrica
 # raporlaniyor) icin sadece ellecleme payi hesaplaniyor.
 arac_maliyeti: dict = {}
-for arac_key in arac_gruplari:
+for arac_key, kayitlar in arac_gruplari.items():
     key, arac_index = arac_key
     src, dst, gun, slot, arac_turu, is_kiralik = key
     p = arac_parametreleri[arac_turu]
-    toplam_yuk = arac_toplam_yuk[arac_key]
 
     if is_kiralik:
         seyir_maliyeti = 0.0
@@ -481,7 +494,15 @@ for arac_key in arac_gruplari:
         seyir_maliyeti = vehicle_leg_cost(data.route_lookup, (src, dst), arac_turu, p["spot_hourly"], p["spot_km"])
         hourly_rate = p["spot_hourly"]
 
-    ellecleme_maliyeti = ellecleme_maliyet_hesapla(toplam_yuk, hourly_rate)
+    dokunus_gruplari: dict = {}  # dokunus_sayisi -> bu gruba ait toplam desi
+    for (a, leg, pay_desi, leg_i) in kayitlar:
+        dokunus = _fragman_dokunus_sayisi(a, leg_i)
+        dokunus_gruplari[dokunus] = dokunus_gruplari.get(dokunus, 0.0) + pay_desi
+
+    ellecleme_maliyeti = sum(
+        ellecleme_maliyet_hesapla(grup_desi, hourly_rate, dokunus)
+        for dokunus, grup_desi in dokunus_gruplari.items()
+    )
     arac_maliyeti[arac_key] = seyir_maliyeti + ellecleme_maliyeti
 
 # Her (assignment, leg_i) cifti hangi (bucket_key, arac_index)'e denk geliyor -
@@ -615,14 +636,26 @@ for a in best.assignments:
                 sla_cezasi = (round(a.sla_cost * (pay_desi / a.desi), 2) if i == len(a.legs) - 1 else 0)
                 if sla_cezasi > 0:
                     sla_penalties.append((a.talep_id, sla_cezasi))
+                if a.milk_run:
+                    # Uğrama: aynı fiziksel araç ara durakta hiç elleçlenmez (pass-through) -
+                    # sadece zincirin gerçek uçlarında (ilk çıkış / son varış) elleçleme olur.
+                    skip_src = i > 0
+                    skip_dst = i < len(a.legs) - 1
+                    cikis_ellec_dk = 0 if skip_src else math.ceil(ellecleme_suresi_dakika(pay_desi, consolidation=False))
+                    varis_ellec_dk = 0 if skip_dst else math.ceil(ellecleme_suresi_dakika(pay_desi, consolidation=False))
+                    rota_tipi_cok_bacakli = f"Uğramalı {i + 1}/{len(a.legs)} (via {ara_duraklar}, nihai varis: {nihai_varis})"
+                else:
+                    cikis_ellec_dk = math.ceil(ellecleme_suresi_dakika(pay_desi, consolidation=(i > 0)))
+                    varis_ellec_dk = math.ceil(ellecleme_suresi_dakika(pay_desi, consolidation=(i < len(a.legs) - 1)))
+                    rota_tipi_cok_bacakli = f"Aktarmalı/Konsolidasyonlu {i + 1}/{len(a.legs)} (via {ara_duraklar}, nihai varis: {nihai_varis})"
                 csv_records.append({
                     "Tarih": gercek_gun, "Slot": gercek_slot, "Arac_Tipi": arac_tipi, "Arac_Turu": leg.arac_turu, # BURASI GÜNCELLENDİ
                     "Arac_ID": arac_id_kodu[(key, arac_index)],
                     "Talep_ID": talep_id_goruntu.get(id(a), a.talep_id),
                     "Cikis_TM": leg.src, "Varis_TM": leg.dst,
                     "Yolculuk_Suresi_Dk": math.ceil(data.route_lookup[(leg.src, leg.dst)][leg.arac_turu] * 60),
-                    "Cikis_Ellecleme_Dk": math.ceil(ellecleme_suresi_dakika(pay_desi, consolidation=(i > 0))),
-                    "Varis_Ellecleme_Dk": math.ceil(ellecleme_suresi_dakika(pay_desi, consolidation=(i < len(a.legs) - 1))),
+                    "Cikis_Ellecleme_Dk": cikis_ellec_dk,
+                    "Varis_Ellecleme_Dk": varis_ellec_dk,
                     "Nihai_Kaynak": nihai_kaynak, "Nihai_Varis": nihai_varis,
                     "Bacaktaki_Arac_Sayisi": _bacak_arac_sayisi(leg),
                     "Bu_Talebin_Desisi": round(pay_desi, 2),
@@ -638,7 +671,7 @@ for a in best.assignments:
                         arac_maliyeti[(key, arac_index)] * (pay_desi / arac_toplam_yuk[(key, arac_index)])
                         + (a.sla_cost * (pay_desi / a.desi) if i == len(a.legs) - 1 else 0), 2
                     ),
-                    "Rota_Tipi": f"Uğramalı {i + 1}/{len(a.legs)} (via {ara_duraklar}, nihai varis: {nihai_varis})",
+                    "Rota_Tipi": rota_tipi_cok_bacakli,
                     "Konsolide_Talep_Sayisi": bucket_konsolidasyon_sayisi[key],
                     "Talep_Tarihi": a.demand_gun, "Talep_Slotu": a.demand_slot,
                     "Varis_Tarihi": varis_gun, "Varis_Saati": varis_saat,
@@ -684,14 +717,17 @@ for key, toplam_desi in sorted(bucket_toplam_desi.items()):
     })
 
 kiralik_sabit_toplam = best._fixed_kiralik_cost
-# Kiralıkların elleçleme maliyetini bucket üzerinden ayrıştırıyoruz
-kiralik_ellecleme_toplam = 0.0
-for key, toplam_desi in bucket_toplam_desi.items():
-    src, dst, gun, slot, arac_turu, is_kiralik = key
-    if is_kiralik:
-        p = arac_parametreleri[arac_turu]
-        # Kiralık araca yüklenen toplam desinin yarattığı saatlik maliyet
-        kiralik_ellecleme_toplam += ((toplam_desi * 0.01) / 60) * p["rental_hourly"]
+# Kiralığın elleçleme maliyetini artık arac_maliyeti sözlüğünden türetiyoruz - o zaten
+# doğru (dokunuş/uğrama-farkındalıklı, cost_model.ellecleme_maliyet_hesapla üzerinden
+# hesaplanmış) değeri tutuyor. Kiralık bucket'larda seyir_maliyeti=0 olduğu için
+# arac_maliyeti[arac_key] TAMAMEN elleçleme payıdır (bkz. yukarıdaki arac_maliyeti
+# hesap döngüsü). DÜZELTME: burada eskiden AYRI, eski (×1, uğrama-farkındasız) bir
+# formül vardı - GENEL TOPLAM'ı etkilemiyordu (aşağıda +/- ile sadeleşiyordu) ama
+# konsol özetindeki Kiralık/Spot kalem kırılımını yanlış gösteriyordu (CSV'nin
+# yarısı kadar Kiralık, farkı da yanlışlıkla Spot'a sızmış gibi).
+kiralik_ellecleme_toplam = sum(
+    v for arac_key, v in arac_maliyeti.items() if arac_key[0][5]  # arac_key[0][5] = is_kiralik
+)
 
 # Atamalardaki tüm araç maliyetleri (Spot Tamamı + Kiralık Elleçleme).
 # NOT: artik best.assignments'in kendi (potansiyel olarak BAYAT/stale)
@@ -723,7 +759,9 @@ if data.tir_arac_turu is not None:
                 tir_ceza_toplam += asim * 50000.0
 
 genel_toplam = best.objective()
-ugramali_talep_sayisi = sum(1 for a in best.assignments if len(a.legs) > 1)
+cok_bacakli_talep_sayisi = sum(1 for a in best.assignments if len(a.legs) > 1)
+gercek_ugrama_talep_sayisi = sum(1 for a in best.assignments if len(a.legs) > 1 and a.milk_run)
+konsolidasyonlu_talep_sayisi = cok_bacakli_talep_sayisi - gercek_ugrama_talep_sayisi
 gercek_konsolidasyon_bacak_sayisi = sum(1 for v in bucket_konsolidasyon_sayisi.values() if v > 1)
 
 # YENİ: yerleştirilemeyen (unassigned) talep cezası - force_insert kaldırıldığından
@@ -761,8 +799,10 @@ OZET ISTATISTIKLER (Faz 2 - ALNS, saat bazli, konsolidasyon destekli)
   OPERASYONEL MALIYET         : {(kiralik_gercek_toplam + spot_toplam_maliyet + sla_ceza_toplam):>15,.0f} TL
 {'-' * 80}
   UGRAMA / KONSOLIDASYON
-      -> Ugramali talep sayisi        : {ugramali_talep_sayisi:>10}
-      -> Gercek konsolide bacak sayisi: {gercek_konsolidasyon_bacak_sayisi:>10}
+      -> Cok bacakli talep sayisi (toplam)   : {cok_bacakli_talep_sayisi:>10}
+      -> Gercek ugrama (milk-run) talep say. : {gercek_ugrama_talep_sayisi:>10}
+      -> Konsolidasyonlu (indir+yukle) talep : {konsolidasyonlu_talep_sayisi:>10}
+      -> Gercek konsolide bacak sayisi        : {gercek_konsolidasyon_bacak_sayisi:>10}
 {'-' * 80}
   KAPASITE ASIM CEZALARI (Sanal Maliyetler)
       -> Ellecleme Asim Cezasi: {ellecleme_ceza_toplam:>15,.0f} TL

@@ -73,7 +73,14 @@ def slot_to_hour(slot: str) -> int:
 
 
 def build_route_lookup(route_matrix: pd.DataFrame) -> RouteLookup:
-    """(source, destination) -> {distance_km, target_delivery_days, <araç türü>: seyir_saat}."""
+    """(source, destination) -> {distance_km, target_delivery_days, <araç türü>: seyir_saat}.
+
+    Seyir süresi (saat), PDF kuralına uygun olarak en yakın büyük tam dakikaya
+    yuvarlanıp saate geri çevrilir (örn. 0.92 saat = 55.2 dk -> 56 dk -> 56/60
+    saat). Bu, TEK noktada yapılıyor ki varis_zamani/arrival_day/vehicle_leg_cost
+    ve raporlanan Yolculuk_Suresi_Dk sütunu HEP aynı (yuvarlanmış) süreyi
+    kullansın - aksi halde Çıkış/Varış Saati sütunları, ayrıca raporlanan
+    Yolculuk_Suresi_Dk ile tutarsız (kesilmiş/truncate) görünür."""
     lookup: RouteLookup = {}
     for _, row in route_matrix.iterrows():
         entry = {
@@ -81,7 +88,7 @@ def build_route_lookup(route_matrix: pd.DataFrame) -> RouteLookup:
             "target_delivery_days": float(row["target_delivery_days"]),
         }
         for vehicle_type, column in VEHICLE_DURATION_COLUMNS.items():
-            entry[vehicle_type] = float(row[column])
+            entry[vehicle_type] = math.ceil(float(row[column]) * 60) / 60.0
         lookup[(row["source"], row["destination"])] = entry
     return lookup
 
