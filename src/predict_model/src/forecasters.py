@@ -442,11 +442,36 @@ SURGE_BINARY_TRIGGER_COLUMNS: List[str] = [
 # Sürekli (binary olmayan) sinyal — pozitif değer, kapanış sonrası ilk
 # saatlerdeki üstel-azalan birikim baskısını temsil eder (bkz. features.py:
 # backlog_release_index = α · exp(-d/alpha)).
+#
+# ⚠️⚠️ v18 ÖLÇEK UYARISI (features.py'deki backlog_severity_ratio /
+# campaign_severity_ratio entegrasyonu, bkz. add_holiday_features/
+# add_campaign_features docstring'i) ⚠️⚠️
+# Bu iki sütunun İSİMLERİ değişmedi ama DEĞER ARALIĞI kökten değişti:
+#   ESKİ (v17) : backlog_release_index = accumulated_closed_days (ARDIŞIK
+#                GÜN SAYISI, weight_col=None) * exp(-d/alpha)
+#                → tipik aralık ~0-6 (kapalı gün sayısı × sönüm ağırlığı).
+#   YENİ (v18) : backlog_release_index = backlog_severity_ratio (biriken
+#                GERÇEK HACİM / baseline, weight_col=target_column) *
+#                exp(-d/alpha)
+#                → tipik aralık artık "normal hacme oran" etrafında (tek
+#                günlük bir kapanışta bile ratio kolayca ~0.8-1.5 civarına
+#                ulaşabilir — bkz. features.py smoke-test çıktısı), yani
+#                ESKİ 0-6 aralığıyla KIYASLANAMAZ.
+# SONUÇ: aşağıdaki SURGE_CONTINUOUS_TRIGGER_THRESHOLD (Model 2 satır
+# seçimi) ve BUCKET_EVENT_CONTINUOUS_THRESHOLD (OOF bucket ataması) —
+# ikisi de ESKİ ölçeğe göre elle kalibre edilmiş sabitlerdir. features.py
+# v18 entegrasyonundan sonra retrain edilmeden ÖNCE bu iki sabit YENİDEN
+# ölçülmelidir — kod değişikliği gerektirmez, `suggest_bucket_event_
+# threshold()` (aşağıda) veya debug_backtest.py::_print_bucket_threshold_
+# calibration_diagnosis() ile gerçek OOF/feature dağılımına bakılarak
+# yeni bir sayı bulunmalıdır. Bu dosyadaki mekanik davranış (aynı isim,
+# aynı >threshold karşılaştırması) DEĞİŞMEDİ — sadece sayısal değerler
+# yeniden kalibre edilmeyi bekliyor.
 SURGE_CONTINUOUS_TRIGGER_COLUMNS: List[str] = [
     "backlog_release_index",
     "campaign_release_index",
 ]
-SURGE_CONTINUOUS_TRIGGER_THRESHOLD: float = 0.05
+SURGE_CONTINUOUS_TRIGGER_THRESHOLD: float = 0.05  # ⚠️ v17 ölçeğine göre kalibre edildi — v18 sonrası yeniden ölçülmeli (bkz. yukarıdaki uyarı)
 
 # --- [PDF Entegrasyonu — Dinamik Asimetrik Kayıp] Satır Bazlı τ Sigmoid Sabitleri ---
 # _build_dynamic_tau_array() tarafından kullanılır. Eskiden sabit τ=0.85/0.95
@@ -484,7 +509,112 @@ _DYNAMIC_TAU_LOGIT_ANCHOR: float = 2.9444169900767976  # ln(19) = ln(0.95/0.05)
 # Bu sabit SADECE _learn_route_bucket_bias_correction / predict / eval
 # içindeki (rota,bucket) ataması için kullanılır; _build_surge_trigger_mask
 # (Model 2 satır seçimi) HİÇ etkilenmez.
+#
+# ⚠️⚠️ v18 SONRASI YENİDEN KALİBRASYON GEREKİYOR ⚠️⚠️ — bu 0.35 değeri,
+# yukarıdaki SURGE_CONTINUOUS_TRIGGER_COLUMNS uyarısında açıklanan ESKİ
+# (v17, gün-sayısı × decay) ölçeğine göre elle bulunmuştu (yukarıdaki
+# "sunday=0, event=289, normal=0" günlüğü de o ölçekle üretildi). features.py
+# v18 (backlog_severity_ratio/campaign_severity_ratio) entegrasyonundan
+# sonra bu sütunların dağılımı kökten değişti — 0.35 artık ANLAMSIZ bir
+# eşik olabilir (çok düşük kalıp her satırı "event" yapabilir YA DA çok
+# yüksek kalıp hiç "event" yakalamayabilir; yön a priori belli değil,
+# gerçek veriyle ÖLÇÜLMEDEN production'da kullanılmamalı). Kod
+# değişikliği gerekmiyor — retrain öncesi suggest_bucket_event_threshold()
+# (aşağıda) veya debug_backtest.py::_print_bucket_threshold_calibration_
+# diagnosis() ile gerçek OOF verisi üzerinde "sunday/event/normal" dağılımı
+# tekrar incelenip bu sabit elle güncellenmelidir.
 BUCKET_EVENT_CONTINUOUS_THRESHOLD: float = 0.35
+
+
+def suggest_bucket_event_threshold(
+    X: pd.DataFrame,
+    columns: Optional[List[str]] = None,
+    weekday_column: str = "weekday",
+    candidate_thresholds: Optional[List[float]] = None,
+) -> Dict[str, Any]:
+    """
+    v18 SONRASI YENİDEN KALİBRASYON YARDIMCISI — kod değişikliği değil,
+    "yeni feature dağılımına bakıp sabit bulma" işini otomatikleştirir.
+
+    BUCKET_EVENT_CONTINUOUS_THRESHOLD (ve isteğe bağlı SURGE_CONTINUOUS_
+    TRIGGER_THRESHOLD) features.py'nin v18 backlog_severity_ratio/
+    campaign_severity_ratio değişikliğinden sonra ESKİ ölçeğe göre
+    kalibre edilmiş kalır. Bu fonksiyon retrain'den önce/sonra gerçek
+    (OOF veya ham) feature matrisi üzerinde:
+      1. SURGE_CONTINUOUS_TRIGGER_COLUMNS sütunlarının dağılımını
+         (quantile'lar) raporlar,
+      2. Bir aday eşik listesi için (varsayılan: 0.05'ten 2.0'a kadar
+         geniş bir grid) her birinin "sunday / event / normal" bucket
+         dağılımını hesaplar — orijinal teşhis logundaki ("sunday=0,
+         event=289, normal=0" — bkz. yukarıdaki yorum) YÖNTEMİN AYNISI,
+         ama artık elle deneme yerine tek çağrıda.
+    Üç bucket'ın da (özellikle "normal") sıfırlanmadığı, "event"in
+    haftanın tamamına eşdeğer hale gelmediği bir eşik aralığı, yeni
+    BUCKET_EVENT_CONTINUOUS_THRESHOLD için makul bir aday kümesidir —
+    nihai seçim bu raporu okuyan kişiye (operatöre) aittir, bu fonksiyon
+    sadece ölçer, otomatik ATAMA yapmaz.
+
+    Parameters
+    ----------
+    X : Gerçek/OOF feature matrisi (build_feature_matrix çıktısı ya da
+        fc._oof_X_ gibi bir DataFrame) — SURGE_CONTINUOUS_TRIGGER_COLUMNS
+        ve weekday_column sütunlarını içermeli.
+    columns : Hangi sürekli tetikleyici sütunların inceleneceği
+        (varsayılan: SURGE_CONTINUOUS_TRIGGER_COLUMNS).
+    weekday_column : Pazar (weekday==6) satırlarını "sunday" bucket'ına
+        ayırmak için kullanılan sütun adı.
+    candidate_thresholds : Denenecek eşik listesi (varsayılan: geniş bir
+        grid — 0.05, 0.10, ..., 2.0).
+
+    Returns
+    -------
+    dict: {
+        "distribution": {col: {"min":.., "p50":.., "p75":.., "p90":.., "p95":.., "max":..}, ...},
+        "bucket_counts_by_threshold": {threshold: {"sunday": n, "event": n, "normal": n}, ...},
+    }
+    Bu sözlüğü print ederek/loglayarak BUCKET_EVENT_CONTINUOUS_THRESHOLD
+    için yeni bir sayı seçin; bu fonksiyon sabiti KENDİSİ değiştirmez.
+    """
+    cols = [c for c in (columns or SURGE_CONTINUOUS_TRIGGER_COLUMNS) if c in X.columns]
+    if not cols:
+        return {"distribution": {}, "bucket_counts_by_threshold": {}}
+
+    distribution: Dict[str, Dict[str, float]] = {}
+    for col in cols:
+        vals = pd.to_numeric(X[col], errors="coerce").fillna(0.0).to_numpy()
+        distribution[col] = {
+            "min": float(np.min(vals)),
+            "p50": float(np.percentile(vals, 50)),
+            "p75": float(np.percentile(vals, 75)),
+            "p90": float(np.percentile(vals, 90)),
+            "p95": float(np.percentile(vals, 95)),
+            "max": float(np.max(vals)),
+        }
+
+    thresholds = candidate_thresholds or [0.05, 0.10, 0.20, 0.35, 0.50, 0.75, 1.0, 1.5, 2.0]
+
+    is_sunday = (
+        (pd.to_numeric(X[weekday_column], errors="coerce").fillna(-1).to_numpy() == 6)
+        if weekday_column in X.columns else np.zeros(len(X), dtype=bool)
+    )
+
+    bucket_counts_by_threshold: Dict[float, Dict[str, int]] = {}
+    for th in thresholds:
+        event_mask = np.zeros(len(X), dtype=bool)
+        for col in cols:
+            vals = pd.to_numeric(X[col], errors="coerce").fillna(0.0).to_numpy()
+            event_mask |= (vals > th)
+        bucket = np.where(is_sunday, "sunday", np.where(event_mask, "event", "normal"))
+        bucket_counts_by_threshold[th] = {
+            "sunday": int((bucket == "sunday").sum()),
+            "event": int((bucket == "event").sum()),
+            "normal": int((bucket == "normal").sum()),
+        }
+
+    return {
+        "distribution": distribution,
+        "bucket_counts_by_threshold": bucket_counts_by_threshold,
+    }
 
 # ---------------------------------------------------------------------------
 # Özellik Uzayı Ortogonalleştirmesi (Feature Orthogonalization) — PDF Bölüm
@@ -801,6 +931,15 @@ class DemandForecaster(BaseForecaster):
         # (slot-bazlı override) geçirilebilir durumda bırakıldı.
         backlog_alpha: float = 1.4,
         backlog_max_release_days: int = 4,
+        # v18 — features.py::add_holiday_features/add_campaign_features artık
+        # backlog_severity_ratio/campaign_severity_ratio üretiyor (bkz.
+        # features.py::build_feature_matrix'teki backlog_baseline_window/
+        # campaign_baseline_window notu). Varsayılan (14) add_organic_
+        # backlog_features ile tutarlı ve genelde yeterli — buradaki
+        # parametreler sadece HPO/kalibrasyon amaçlı dışarıya açık, zorunlu
+        # override DEĞİL.
+        backlog_baseline_window: int = 14,
+        campaign_baseline_window: int = 14,
         # bkz. features.py::unconstrain_censored_demand — HPO/backtest'te
         # A/B testi veya kalibrasyon amacıyla dışarıdan set edilebilir.
         # require_weekday_persistence=False + inflation_factor=1.0 → eski
@@ -957,6 +1096,8 @@ class DemandForecaster(BaseForecaster):
         self.campaign_max_release_days_ = campaign_max_release_days
         self.backlog_alpha_ = backlog_alpha
         self.backlog_max_release_days_ = backlog_max_release_days
+        self.backlog_baseline_window_ = backlog_baseline_window
+        self.campaign_baseline_window_ = campaign_baseline_window
 
         # bkz. features.py::unconstrain_censored_demand — sansürlü talep
         # (sahte-tavan) düzeltmesi hiperparametreleri. debug_backtest.py
@@ -1449,6 +1590,17 @@ class DemandForecaster(BaseForecaster):
         ile AYNI mantık, ama self.surge_trigger_columns_used_ (Model 2
         loglaması için kullanılan paylaşılan durum) üzerinde yan etki
         yaratmamak için BAĞIMSIZ/yerel olarak hesaplanır.
+
+        ⚠️ v18 UYARISI: Bucket ataması BUCKET_EVENT_CONTINUOUS_THRESHOLD'a
+        bağlıdır (yukarıda) — features.py'nin backlog_severity_ratio/
+        campaign_severity_ratio entegrasyonundan sonra bu eşiğin ölçeği
+        değişti (kod burada değişmedi, sadece davranış). route_bias_
+        cap_low/high (cap_low_event/cap_high_event vb., aşağıdaki
+        parametreler) dolaylı olarak etkilenir: "event" bucket'ına giren
+        satır kümesi değişirse, o bucket için öğrenilen çarpan da değişir.
+        v18 features.py ile retrain sonrası suggest_bucket_event_
+        threshold() ile yeniden teşhis edilmeli — bu fonksiyonun kendisi
+        değişmedi, sadece girdi dağılımı değişti.
         """
         self.route_bucket_bias_correction_: Dict[Tuple[Any, str], float] = {}
 
@@ -2484,6 +2636,12 @@ class DemandForecaster(BaseForecaster):
             # factor_ gibi diğer attribute'lardaki AYNI desen).
             backlog_alpha=getattr(self, "backlog_alpha_", 5.25),
             backlog_max_release_days=getattr(self, "backlog_max_release_days_", 6),
+            # v18 — aynı getattr geriye dönük uyumluluk deseni: bu attribute'lar
+            # (backlog_baseline_window_/campaign_baseline_window_) v18'den ÖNCE
+            # eğitilmiş pickle'lanmış modellerde yok; yoksa features.py'nin
+            # kendi sınıf varsayılanına (14) düşer.
+            backlog_baseline_window=getattr(self, "backlog_baseline_window_", 14),
+            campaign_baseline_window=getattr(self, "campaign_baseline_window_", 14),
             drop_na=drop_na,
             enable_target_scaling=self.target_scaling_enabled_,
             target_scale_window_days=self.target_scale_window_days_,

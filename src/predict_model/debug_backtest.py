@@ -69,6 +69,7 @@ from src.forecasters import (
     SURGE_BINARY_TRIGGER_COLUMNS,
     SURGE_CONTINUOUS_TRIGGER_COLUMNS,
     BUCKET_EVENT_CONTINUOUS_THRESHOLD,
+    suggest_bucket_event_threshold,
 )
 from src.metrics import decision_regret, wape
 
@@ -155,14 +156,21 @@ def parse_args():
         help="Tahmin-zamanına özel, DAHA SIKI sürekli-tetikleyici eşiği "
              "(SURGE_CONTINUOUS_TRIGGER_THRESHOLD=0.05 yerine). Kök neden: "
              "backlog_release_index her Pazar kapanışından sonra üretiliyor "
-             "ve 0.05'in üzerinde haftanın neredeyse tamamı boyunca kalıyor "
-             "(bkz. BUCKET_EVENT_CONTINUOUS_THRESHOLD=0.35 yorumu, forecasters.py) "
+             "ve eşiğin üzerinde haftanın neredeyse tamamı boyunca kalabiliyor "
+             "(bkz. BUCKET_EVENT_CONTINUOUS_THRESHOLD yorumu, forecasters.py) "
              "— Model 2 rutin haftalık kapanışları bile 'surge' sanıyor. "
              "Bu değer set edilirse SADECE predict()'te hangi satırlara "
              "correction uygulanacağı süzülür; Model 2'nin eğitimi/ağırlıkları "
              "etkilenmez, retrain gerekmez. Her iki hedefe (09:00 + 17:00) "
-             "birden uygulanır. Önerilen ilk deneme: 0.35 (bkz. yukarıdaki "
-             "BUCKET_EVENT_CONTINUOUS_THRESHOLD).",
+             "birden uygulanır. ⚠️ v18 UYARISI: features.py'nin backlog_"
+             "severity_ratio/campaign_release_index entegrasyonundan sonra "
+             "backlog_release_index/campaign_release_index artık ORAN bazlı "
+             "(gün-sayısı × decay DEĞİL) — eski '0.35 ilk deneme' önerisi bu "
+             "yeni ölçekte YANILTICIDIR, kullanmayın. Bunun yerine bu script'i "
+             "çalıştırıp konsoldaki '📏 v18 Sonrası Eşik Kalibrasyon Raporu'nu "
+             "(bkz. _print_bucket_threshold_calibration_diagnosis) okuyun ve "
+             "oradaki 'normal' bucket'ı sıfırlamayan/'event'i haftanın tamamına "
+             "eşitlemeyen bir eşik seçin.",
     )
     p.add_argument(
         "--censor-require-persistence", type=str, default=None,
@@ -454,6 +462,53 @@ def _print_oof_bucket_raw_diagnosis(fc, tracked_routes, label, half_life_days: f
             )
 
 
+def _print_bucket_threshold_calibration_diagnosis(fc, label):
+    """
+    v18 SONRASI YENİDEN KALİBRASYON TEŞHİSİ — SALT OKUMA, retrain yok.
+
+    features.py'nin backlog_severity_ratio/campaign_severity_ratio
+    entegrasyonundan (v18) sonra BUCKET_EVENT_CONTINUOUS_THRESHOLD (ve
+    isteğe bağlı SURGE_CONTINUOUS_TRIGGER_THRESHOLD) ESKİ (v17, gün-sayısı
+    × decay) ölçeğine göre kalibre edilmiş kalır — bkz. forecasters.py
+    başındaki "v18 ÖLÇEK UYARISI" yorumu. Bu fonksiyon forecasters.py::
+    suggest_bucket_event_threshold()'ı gerçek OOF verisi (fc._oof_X_)
+    üzerinde çalıştırıp:
+      1. backlog_release_index/campaign_release_index'in gerçek
+         dağılımını (p50/p75/p90/p95/max),
+      2. bir aday eşik grid'i için "sunday/event/normal" bucket
+         dağılımını
+    yazdırır — nihai BUCKET_EVENT_CONTINUOUS_THRESHOLD seçimi (forecasters.py
+    içinde elle güncellenir) bu rapora bakılarak yapılır; bu fonksiyon
+    otomatik atama yapmaz, sadece ölçer.
+    """
+    X_oof = getattr(fc, "_oof_X_", None)
+    if X_oof is None or len(X_oof) == 0:
+        print(f"   ⚠️ [{label}] Eşik kalibrasyon teşhisi atlandı: _oof_X_ boş/uygun değil.")
+        return
+
+    report = suggest_bucket_event_threshold(X_oof, columns=SURGE_CONTINUOUS_TRIGGER_COLUMNS)
+    if not report["distribution"]:
+        print(f"   ⚠️ [{label}] Eşik kalibrasyon teşhisi atlandı: sürekli tetikleyici sütunlar OOF'ta yok.")
+        return
+
+    print(f"\n📏 [{label}] v18 Sonrası Eşik Kalibrasyon Raporu (mevcut BUCKET_EVENT_CONTINUOUS_THRESHOLD={BUCKET_EVENT_CONTINUOUS_THRESHOLD}):")
+    for col, stats in report["distribution"].items():
+        print(
+            f"   {col:24s} | p50={stats['p50']:.3f} p75={stats['p75']:.3f} "
+            f"p90={stats['p90']:.3f} p95={stats['p95']:.3f} max={stats['max']:.3f}"
+        )
+    print(f"   {'eşik':>8s} | {'sunday':>8s} | {'event':>8s} | {'normal':>8s}")
+    for th, counts in report["bucket_counts_by_threshold"].items():
+        marker = "  ← mevcut sabit" if abs(th - BUCKET_EVENT_CONTINUOUS_THRESHOLD) < 1e-9 else ""
+        print(f"   {th:8.2f} | {counts['sunday']:8d} | {counts['event']:8d} | {counts['normal']:8d}{marker}")
+    print(
+        "   ℹ️ Sağlıklı bir eşik: 'normal' bucket'ı sıfırlanmamalı VE 'event' "
+        "haftanın neredeyse tamamına eşdeğer olmamalı (bkz. forecasters.py "
+        "BUCKET_EVENT_CONTINUOUS_THRESHOLD yorumundaki orijinal 'sunday=0, "
+        "event=289, normal=0' vakası)."
+    )
+
+
 def _print_shap_diagnosis(fc, tracked_routes, label):
     """
     Adım 4 — Model 1'in (taban) q50_base'i ufuk (h) arttıkça neden düşüyor?
@@ -645,6 +700,7 @@ def run_one_target(label, target_col, model_path, full_df, cutoff, start, end,
     _print_shap_diagnosis(fc, _izlenen_rotalar_shap, label)
     _print_bucket_correction_diagnosis(fc, _izlenen_rotalar_shap, label)
     _print_oof_bucket_raw_diagnosis(fc, _izlenen_rotalar_shap, label)
+    _print_bucket_threshold_calibration_diagnosis(fc, label)
 
     pred_daily = preds_df.groupby("tarih")["q50"].sum()
 

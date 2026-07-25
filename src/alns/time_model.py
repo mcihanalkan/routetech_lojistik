@@ -73,7 +73,14 @@ def slot_to_hour(slot: str) -> int:
 
 
 def build_route_lookup(route_matrix: pd.DataFrame) -> RouteLookup:
-    """(source, destination) -> {distance_km, target_delivery_days, <araç türü>: seyir_saat}."""
+    """(source, destination) -> {distance_km, target_delivery_days, <araç türü>: seyir_saat}.
+
+    Seyir süresi (saat), PDF kuralına uygun olarak en yakın büyük tam dakikaya
+    yuvarlanıp saate geri çevrilir (örn. 0.92 saat = 55.2 dk -> 56 dk -> 56/60
+    saat). Bu, TEK noktada yapılıyor ki varis_zamani/arrival_day/vehicle_leg_cost
+    ve raporlanan Yolculuk_Suresi_Dk sütunu HEP aynı (yuvarlanmış) süreyi
+    kullansın - aksi halde Çıkış/Varış Saati sütunları, ayrıca raporlanan
+    Yolculuk_Suresi_Dk ile tutarsız (kesilmiş/truncate) görünür."""
     lookup: RouteLookup = {}
     for _, row in route_matrix.iterrows():
         entry = {
@@ -81,10 +88,13 @@ def build_route_lookup(route_matrix: pd.DataFrame) -> RouteLookup:
             "target_delivery_days": float(row["target_delivery_days"]),
         }
         for vehicle_type, column in VEHICLE_DURATION_COLUMNS.items():
-            entry[vehicle_type] = float(row[column])
+            entry[vehicle_type] = math.ceil(float(row[column]) * 60) / 60.0
         lookup[(row["source"], row["destination"])] = entry
     return lookup
 
+def seyir_suresi_saat(routeLookup: RouteLookup, src: str, dst:str, arac_turu: str):
+    entry = routeLookup.get((src,dst))
+    return entry[arac_turu]
 
 def ellecleme_suresi_dakika(desi: float, consolidation: bool = False) -> float:
     """Elleçleme süresi = desi * 0.01 dk. Konsolidasyonda (indir + tekrar yükle) 2x sayılır.
@@ -94,7 +104,28 @@ def ellecleme_suresi_dakika(desi: float, consolidation: bool = False) -> float:
     return math.ceil(sure)
 
 
-
+def _ellecleme_dagilimi(baslangic: datetime, desi: float, sure_dk: float) -> dict:
+    """
+    Elleçleme işlemi gece yarısını aşıyorsa desi'yi günlere oransal böler.
+    Dönüş: {"YYYY-MM-DD": desi_payı, ...} - en fazla 2 gün.
+    """
+    bitis = baslangic + timedelta(minutes=sure_dk)
+    baslangic_gun = baslangic.date()
+    bitis_gun = bitis.date()
+    
+    if baslangic_gun == bitis_gun:
+        return {baslangic_gun.isoformat(): desi}
+    
+    # Gece yarısına kalan saniye
+    gece_yarisi = datetime.combine(baslangic_gun + timedelta(days=1), datetime.min.time())
+    ilk_gun_saniye = (gece_yarisi - baslangic).total_seconds()
+    toplam_saniye = sure_dk * 60
+    oran = ilk_gun_saniye / toplam_saniye
+    
+    return {
+        baslangic_gun.isoformat(): desi * oran,
+        bitis_gun.isoformat(): desi * (1 - oran),
+    }
 
 def varis_zamani(kalkis: datetime, seyir_saat: float) -> datetime:
     return kalkis + timedelta(hours=seyir_saat)
