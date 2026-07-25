@@ -489,6 +489,15 @@ def _fit_or_load_forecaster(
         # backlog_alpha/backlog_max_release_days: sınıf varsayılanı (1.4/4,
         # main ile aynı — bkz. forecasters.py::__init__ açıklaması) her iki
         # hedef için de kullanılıyor; burada override edilmiyor.
+        # v18 — backlog_baseline_window/campaign_baseline_window (features.py::
+        # add_holiday_features/add_campaign_features'ın backlog_severity_ratio/
+        # campaign_severity_ratio için kullandığı rolling baseline penceresi):
+        # sınıf varsayılanı (14, add_organic_backlog_features ile tutarlı)
+        # burada da override EDİLMİYOR — mevcut veriyle yeterli görünüyor.
+        # Retrain sonrası backlog_severity_ratio/campaign_severity_ratio
+        # dağılımı debug_backtest.py::_print_bucket_threshold_calibration_
+        # diagnosis() ile incelenip gerekirse (örn. rota bazında çok
+        # gürültülü/az örnekli baseline çıkarsa) burada elle override edilebilir.
     )
     forecaster.fit(full_df)
 
