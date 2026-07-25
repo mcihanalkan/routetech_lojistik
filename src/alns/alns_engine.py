@@ -39,6 +39,9 @@ from src.alns.time_model import (
     arrival_day,
     ellecleme_tamamlanma_zamani,
     gecikme_saat,
+    ellecleme_suresi_dakika,
+    _ellecleme_dagilimi,
+    seyir_suresi_saat,
     next_dispatch_slot,
     sla_cezasi_tl,
     sla_deadline,
@@ -488,12 +491,29 @@ class State:
 
         self._arac_maliyeti_toplam += marjinal_maliyet
 
-        if not skip_src_handling:
-            self.handling_usage[(src, gun)] = self.handling_usage.get((src, gun), 0.0) + desi
-        varis_g = arrival_day(self.data.route_lookup, self.data.gunler, (src, dst), gun, slot, arac_turu)
-        if varis_g and not skip_dst_handling:
-            self.handling_usage[(dst, varis_g)] = self.handling_usage.get((dst, varis_g), 0.0) + desi
+        # if not skip_src_handling:
+        #     self.handling_usage[(src, gun)] = self.handling_usage.get((src, gun), 0.0) + desi
+        # varis_g = arrival_day(self.data.route_lookup, self.data.gunler, (src, dst), gun, slot, arac_turu)
+        # if varis_g and not skip_dst_handling:
+        #     self.handling_usage[(dst, varis_g)] = self.handling_usage.get((dst, varis_g), 0.0) + desi
 
+        cikis_zamani = slot_datetime(gun, slot)
+        # Yeni (oransal dağılım):
+        if not skip_src_handling:
+            sure_dk = ellecleme_suresi_dakika(desi, consolidation=False)
+            dagilim = _ellecleme_dagilimi(cikis_zamani, desi, sure_dk)
+            for gun_str, pay in dagilim.items():
+                self.handling_usage[(src, gun_str)] = self.handling_usage.get((src, gun_str), 0.0) + pay
+
+        # Varış elleçlemesi
+        seyir_saat = seyir_suresi_saat(self.data.route_lookup, src, dst, arac_turu)
+        varis_dt = varis_zamani(cikis_zamani, seyir_saat)
+        varis_g = arrival_day(self.data.route_lookup, self.data.gunler, (src, dst), gun, slot, arac_turu)
+        if not skip_dst_handling and varis_g is not None:
+            sure_dk = ellecleme_suresi_dakika(desi, consolidation=False)
+            dagilim = _ellecleme_dagilimi(varis_dt, desi, sure_dk)
+            for gun_str, pay in dagilim.items():
+                self.handling_usage[(dst, gun_str)] = self.handling_usage.get((dst, gun_str), 0.0) + pay
         return marjinal_maliyet
 
 
@@ -1063,11 +1083,28 @@ def evaluate_path(state, hat, gun, slot, desi, path, talep_id="",
                 if varis_g:
                     temp_tir[(leg_dst, varis_g)] = temp_tir.get((leg_dst, varis_g), 0) + delta_adet
 
+        # if not skip_src:
+        #     temp_handling[(leg_src, leg_gun)] = temp_handling.get((leg_src, leg_gun), 0.0) + tasinabilir
+        # varis_g = arrival_day(data.route_lookup, data.gunler, (leg_src, leg_dst), leg_gun, leg_slot, arac_turu)
+        # if varis_g and not skip_dst:
+        #     temp_handling[(leg_dst, varis_g)] = temp_handling.get((leg_dst, varis_g), 0.0) + tasinabilir
+        # Çıkış elleçlemesi
+        cikis_zamani = slot_datetime(leg_gun, leg_slot)
         if not skip_src:
-            temp_handling[(leg_src, leg_gun)] = temp_handling.get((leg_src, leg_gun), 0.0) + tasinabilir
+            sure_dk = ellecleme_suresi_dakika(tasinabilir, consolidation=False)
+            dagilim = _ellecleme_dagilimi(cikis_zamani, tasinabilir, sure_dk)
+            for gun_str, pay in dagilim.items():
+                temp_handling[(leg_src, gun_str)] = temp_handling.get((leg_src, gun_str), 0.0) + pay
+
+        # Varış elleçlemesi
+        seyir_saat = seyir_suresi_saat(data.route_lookup, leg_src, leg_dst, arac_turu)
+        varis_dt = varis_zamani(cikis_zamani, seyir_saat)
         varis_g = arrival_day(data.route_lookup, data.gunler, (leg_src, leg_dst), leg_gun, leg_slot, arac_turu)
         if varis_g and not skip_dst:
-            temp_handling[(leg_dst, varis_g)] = temp_handling.get((leg_dst, varis_g), 0.0) + tasinabilir
+            sure_dk = ellecleme_suresi_dakika(tasinabilir, consolidation=False)
+            dagilim = _ellecleme_dagilimi(varis_dt, tasinabilir, sure_dk)
+            for gun_str, pay in dagilim.items():
+                temp_handling[(leg_dst, gun_str)] = temp_handling.get((leg_dst, gun_str), 0.0) + pay
 
         legs.append(Leg(leg_src, leg_dst, leg_gun, leg_slot, arac_turu, is_kiralik))
 
@@ -1260,11 +1297,28 @@ def _remove_assignment(state: State, a: Assignment) -> None:
                 varis_g = arrival_day(state.data.route_lookup, state.data.gunler, (leg.src, leg.dst), leg.gun, leg.slot, leg.arac_turu)
                 if varis_g:
                     state.tir_usage[(leg.dst, varis_g)] = state.tir_usage.get((leg.dst, varis_g), 0) + delta
+        # if not skip_src_handling:
+        #     state.handling_usage[(leg.src, leg.gun)] = state.handling_usage.get((leg.src, leg.gun), 0.0) - a.desi
+        # varis_g = arrival_day(state.data.route_lookup, state.data.gunler, (leg.src, leg.dst), leg.gun, leg.slot, leg.arac_turu)
+        # if varis_g and not skip_dst_handling:
+        #     state.handling_usage[(leg.dst, varis_g)] = state.handling_usage.get((leg.dst, varis_g), 0.0) - a.desi
+        # Çıkış elleçlemesi geri alma
+        cikis_zamani = slot_datetime(leg.gun, leg.slot)
         if not skip_src_handling:
-            state.handling_usage[(leg.src, leg.gun)] = state.handling_usage.get((leg.src, leg.gun), 0.0) - a.desi
-        varis_g = arrival_day(state.data.route_lookup, state.data.gunler, (leg.src, leg.dst), leg.gun, leg.slot, leg.arac_turu)
-        if varis_g and not skip_dst_handling:
-            state.handling_usage[(leg.dst, varis_g)] = state.handling_usage.get((leg.dst, varis_g), 0.0) - a.desi
+            sure_dk = ellecleme_suresi_dakika(a.desi, consolidation=False)
+            dagilim = _ellecleme_dagilimi(cikis_zamani, a.desi, sure_dk)
+            for gun_str, pay in dagilim.items():
+                state.handling_usage[(leg.src, gun_str)] = state.handling_usage.get((leg.src, gun_str), 0.0) - pay
+
+        # Varış elleçlemesi geri alma
+        seyir_saat = state.data.route_lookup[(leg.src, leg.dst)][leg.arac_turu]
+        varis_dt = varis_zamani(cikis_zamani, seyir_saat)
+        varis_g = arrival_day(state.data.route_lookup, state.data.gunler, (leg.src, leg.dst), leg.gun, leg.slot, leg.       arac_turu)
+        if not skip_dst_handling and varis_g is not None:
+            sure_dk = ellecleme_suresi_dakika(a.desi, consolidation=False)
+            dagilim = _ellecleme_dagilimi(varis_dt, a.desi, sure_dk)
+            for gun_str, pay in dagilim.items():
+                state.handling_usage[(leg.dst, gun_str)] = state.handling_usage.get((leg.dst, gun_str), 0.0) - pay
     state.unassigned.append((a.demand_hat, a.demand_gun, a.demand_slot, a.desi, a.talep_id))
 
 
