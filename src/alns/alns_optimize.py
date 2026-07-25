@@ -616,6 +616,23 @@ for a in best.assignments:
         })
     else:
         ara_duraklar = " -> ".join(leg.dst for leg in a.legs[:-1])
+        # Uğrama (milk_run) zincirlerinde TÜM bacaklar aynı fiziksel araç olduğu
+        # için, ilk bacaktaki Araç_ID'yi (nadir durumda birden fazla araca
+        # bölünmüşse hepsini) SONRAKİ tüm bacaklarda da AYNEN gösteriyoruz -
+        # böylece çıktıda "aynı araç devam ediyor" iddiası Araç_ID'den de
+        # doğrudan izlenebilir olur (bkz. sohbet geçmişi). Maliyet/desi
+        # hesapları hâlâ her bacağın KENDİ (key,arac_index) değerlerinden
+        # hesaplanıyor - sadece GÖRÜNEN ID metni değişiyor.
+        milk_chain_arac_id = None
+        if a.milk_run:
+            key0 = _bucket_key(a.legs[0])
+            leg0_ids = sorted({
+                arac_id_kodu[(key0, arac_index)]
+                for (aa, ll, arac_index, pay_desi, ll_i) in bucket_dagilim[key0]
+                if aa is a
+            })
+            if leg0_ids:
+                milk_chain_arac_id = "+".join(leg0_ids)
         for i, leg in enumerate(a.legs):
 
             arac_tipi = "Kiralik" if leg.is_kiralik else "Spot"
@@ -650,7 +667,8 @@ for a in best.assignments:
                     rota_tipi_cok_bacakli = f"Aktarmalı/Konsolidasyonlu {i + 1}/{len(a.legs)} (via {ara_duraklar}, nihai varis: {nihai_varis})"
                 csv_records.append({
                     "Tarih": gercek_gun, "Slot": gercek_slot, "Arac_Tipi": arac_tipi, "Arac_Turu": leg.arac_turu, # BURASI GÜNCELLENDİ
-                    "Arac_ID": arac_id_kodu[(key, arac_index)],
+                    "Arac_ID": (milk_chain_arac_id if (a.milk_run and i > 0 and milk_chain_arac_id)
+                                else arac_id_kodu[(key, arac_index)]),
                     "Talep_ID": talep_id_goruntu.get(id(a), a.talep_id),
                     "Cikis_TM": leg.src, "Varis_TM": leg.dst,
                     "Yolculuk_Suresi_Dk": math.ceil(data.route_lookup[(leg.src, leg.dst)][leg.arac_turu] * 60),
