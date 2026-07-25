@@ -54,6 +54,17 @@ MAX_SPOT = 500
 MAX_RELAY_CANDIDATES = 4       # hat basina en fazla 1-aktarmali (2 bacak) aday sayisi
 MAX_2HOP_CANDIDATES = 3        # hat basina en fazla 2-aktarmali (3 bacak) aday sayisi
 KIRALIK_DISPATCH_SLOT = DEMAND_ARRIVAL_TIMES[0]
+MILK_RUN_ENABLED = True        # milk_run, ayni HUB bacagini paylasip farkli yonlere
+                                # ayrisan taleplerin her birini BAGIMSIZ degerlendirdigi
+                                # icin, fiziksel olarak imkansiz sekilde HEPSINDE HUB
+                                # elleclemesini sifirlayabiliyordu (capraz-talep yon
+                                # tutarliligi kontrolu yoktu). Artik State.milk_fwd/
+                                # milk_bwd kilidi (bkz. o alanlarin docstring'i,
+                                # evaluate_path._milk_junction_ok, commit_path,
+                                # _remove_assignment) bir HUB bacaginin AYNI ANDA
+                                # sadece TEK bir yone elleclenmeden devam etmesine izin
+                                # veriyor - yon celismesi olan durumlar milk_run adayligindan
+                                # otomatik elenir (gercek elleclemeye geri duser).
 
 # Spot arac icin minimum kalkis doluluk orani (CP-SAT'taki (src/optimization.py)
 # "%10 doluluk kurali" ile ayni mantik). Burada ALNS'te KESIN (hard, parasal
@@ -281,6 +292,16 @@ class State:
         self.leg_ellecleme_desi: dict = {}
         self.handling_usage: dict = {}     # (tm,gun) -> desi
         self.tir_usage: dict = {}          # (tm,gun) -> adet (spot kaynakli, kiralik ayrica sabit)
+        # UGRAMA (milk_run) YON-TUTARLILIGI KILIDI: bir spot_key = (src,dst,gun,slot,arac_turu)
+        # bacagi HUB'da elleclenmeden devam ediyorsa (skip_dst/skip_src), bu bacagin TEK bir
+        # sonraki/onceki bacakla eslenmesini zorunlu kilar. Boylece ayni HUB bacagini paylasan
+        # FARKLI taleplerin her biri BAGIMSIZ olarak "ayni arac benim yonume devam ediyor"
+        # diyip HUB elleclemesini sifirlayamaz - fiziksel olarak TEK bir arac ayni anda iki
+        # farkli yone devam edemeyeceginden, bir bacak zaten BASKA bir yone kilitliyse yeni bir
+        # yone milk_run ile devam etmek REDDEDILIR (bkz. evaluate_path/commit_path/_remove_assignment).
+        self.milk_fwd: dict = {}           # spot_key -> spot_key (bu bacak, HANGI sonraki bacaga elleclenmeden devam ediyor)
+        self.milk_bwd: dict = {}           # spot_key -> spot_key (bu bacak, HANGI onceki bacaktan elleclenmeden geldi)
+        self.milk_junction_desi: dict = {} # (spot_key, spot_key) -> bu J->K kilidine dayanan toplam desi (0'a inince kilit acilir)
         self._fixed_kiralik_cost = self._kiralik_bos_seyir_maliyeti()
         # Her bacagin GUNCEL arac maliyetinin (seyir+ellecleme) ARTIMLI takibi -
         # _commit_leg/force_insert eklerken, _remove_assignment cikarirken bunu
@@ -314,6 +335,9 @@ class State:
         new.leg_ellecleme_desi = dict(self.leg_ellecleme_desi)
         new.handling_usage = dict(self.handling_usage)
         new.tir_usage = dict(self.tir_usage)
+        new.milk_fwd = dict(self.milk_fwd)
+        new.milk_bwd = dict(self.milk_bwd)
+        new.milk_junction_desi = dict(self.milk_junction_desi)
         new._fixed_kiralik_cost = self._fixed_kiralik_cost
         new._arac_maliyeti_toplam = self._arac_maliyeti_toplam
         return new
@@ -737,7 +761,51 @@ def insertion_options(data: ProblemData, hat: tuple, gun: str, slot: str):
     yield ((), False)  # direkt
     for path in data.relay_candidates.get(hat, []):  # (r,) ya da (r1, r2) tuple'lari
         yield (path, False)
-        yield (path, True)
+        if MILK_RUN_ENABLED:
+            yield (path, True)
+
+
+def _kiralik_bekleme_secenegi(state, hat, aktif_gun, aktif_slot, gun, slot, kalan, talep_id):
+    """aktif_slot kiralık kalkış slotu (KIRALIK_DISPATCH_SLOT) DEĞİLSE, bir
+    sonraki kiralık kalkışını (ilk sonraki günün ilk slotu) bulup, kargoyu
+    ORAYA ERTELEYİP direkt kiralıkla göndermenin gerçek marjinal maliyetini
+    (elleçleme + ERTELEMENİN SLA cezası dahil) döndürür.
+
+    Sözleşmeli kiralık aracın seyir maliyeti zaten baştan (kullanılsa da
+    kullanılmasa da) ödendiği için (bkz. State._kiralik_bos_seyir_maliyeti),
+    bu kapasiteye erişebilen her kargo neredeyse her zaman spot'tan ucuzdur -
+    ama _insert_chunk kargoyu KENDİ oluşum slotunda HEMEN (genelde bol spot
+    kapasitesiyle) yerleştirdiği için, talep kiralığın SADECE kalktığı slotta
+    OLUŞMADIĞI sürece bu ucuz kapasiteye hiç sıra gelmiyordu (bkz. sohbet
+    geçmişi: İstanbul-Eskişehir/Yalova hatlarında talebin çoğu 17:00'de
+    oluşuyor, kiralık ise sadece 09:00'da kalkıyor - 2 sözleşmeli Tır'dan biri
+    hep boş kalıyordu). Bu fonksiyon o fırsatı AYRI bir aday olarak
+    değerlendirmeyi mümkün kılar - çağıran taraf (_insert_chunk) bunun birim
+    maliyetini normal (anlık) en iyi seçenekle karşılaştırıp gerçekten
+    ucuzsa kullanır, değilse yok sayar.
+
+    Sadece DİREKT yol (path=()) deneniyor - uğrama/aktarmalı adaylar bu
+    erteleme mantığına dahil değil (kapsam: en yaygın/basit kiralık kullanım
+    şekli). None döner: uygun bir sonraki kiralık slotu yoksa ya da o slotta
+    (kiralık dahil) hiç kapasite yoksa."""
+    if aktif_slot == KIRALIK_DISPATCH_SLOT:
+        return None
+    idx = state.data.zaman_sirali.index((aktif_gun, aktif_slot))
+    kiralik_zamani = None
+    for aday_gun, aday_slot in state.data.zaman_sirali[idx + 1:]:
+        if aday_slot == KIRALIK_DISPATCH_SLOT:
+            kiralik_zamani = (aday_gun, aday_slot)
+            break
+    if kiralik_zamani is None:
+        return None
+    kiralik_gun, kiralik_slot = kiralik_zamani
+    eval_sonuc = evaluate_path(
+        state, hat, kiralik_gun, kiralik_slot, kalan, (), talep_id,
+        demand_gun=gun, demand_slot=slot, milk_run=False,
+    )
+    if eval_sonuc is None or eval_sonuc['desi'] <= 1e-9:
+        return None
+    return eval_sonuc
 
 
 def _insert_chunk(state, hat, gun, slot, desi, rng, talep_id):
@@ -774,6 +842,20 @@ def _insert_chunk(state, hat, gun, slot, desi, rng, talep_id):
                     en_iyi_birim_maliyet = birim_maliyet
                     en_iyi_secenek = secenek
                     en_iyi_eval = eval_sonuc
+
+            # YENİ: bu an kiralığın kalkmadığı bir slotsa, ileride (bir sonraki
+            # kiralık kalkışında) DİREKT kiralıkla göndermenin normal en iyi
+            # seçenekten ucuza mı geldiğine bak - öyleyse (kiralığın izin
+            # verdiği kadarını) ONU kullan, kalanı normal akışa bırak.
+            kiralik_eval = _kiralik_bekleme_secenegi(state, hat, aktif_gun, aktif_slot, gun, slot, kalan, talep_id)
+            if kiralik_eval is not None:
+                kiralik_birim = kiralik_eval['maliyet'] / kiralik_eval['desi']
+                if en_iyi_secenek is None or kiralik_birim < en_iyi_birim_maliyet:
+                    sla_cost = kiralik_eval.get("sla_cost")
+                    commit_path(state, hat, kiralik_eval, talep_id,
+                                demand_gun=gun, demand_slot=slot, sla_cost=sla_cost)
+                    kalan -= kiralik_eval['desi']
+                    continue
 
             if en_iyi_secenek is None:
                 break
@@ -943,6 +1025,23 @@ def evaluate_path(state, hat, gun, slot, desi, path, talep_id="",
         # bkz. kural: "kiralık araçlarla uğrama yapılamaz"). Önce her aday araç
         # türü için TÜM bacaklarda pozitif kapasite olup olmadığını kontrol et,
         # sonra gerçek (dokunuş-farkındalıklı) marjinal maliyete göre en ucuzunu seç.
+        # YON-TUTARLILIGI KONTROLU: bu arac_turu ile HUB'daki her ara durak (junction),
+        # state.milk_fwd/milk_bwd'de HALIHAZIRDA BASKA bir bacakla kilitli olmamali -
+        # aksi halde ayni HUB bacagi, biri bu yone biri baska bir yone giden iki farkli
+        # "elleclenmeden devam eden" talep tarafindan paylasilmis olur ki bu fiziksel
+        # olarak imkansizdir (bkz. State.milk_fwd docstring'i).
+        def _milk_junction_ok(arac_turu):
+            for j in range(len(leg_pairs) - 1):
+                j_src, j_dst, j_gun, j_slot = leg_pairs[j]
+                k_src, k_dst, k_gun, k_slot = leg_pairs[j + 1]
+                bucket_j = (j_src, j_dst, j_gun, j_slot, arac_turu)
+                bucket_k = (k_src, k_dst, k_gun, k_slot, arac_turu)
+                if state.milk_fwd.get(bucket_j, bucket_k) != bucket_k:
+                    return False
+                if state.milk_bwd.get(bucket_k, bucket_j) != bucket_j:
+                    return False
+            return True
+
         ortak_adaylar = []
         for arac_turu in data.arac_turleri:
             p = data.arac_parametreleri[arac_turu]
@@ -955,6 +1054,8 @@ def evaluate_path(state, hat, gun, slot, desi, path, talep_id="",
                     break
                 miktarlar.append(miktar)
             if not uygun:
+                continue
+            if not _milk_junction_ok(arac_turu):
                 continue
             onerilen = min(desi, min(miktarlar))
             if onerilen <= 0:
@@ -1173,6 +1274,17 @@ def commit_path(state, hat, eval_result, talep_id, demand_gun, demand_slot, sla_
         vehicle_cost += cost
         legs.append(Leg(leg_src, leg_dst, leg_gun, leg_slot, arac_turu, is_kiralik))
 
+    if milk_run:
+        # HUB junction'larini yon-tutarliligi kilidine kaydet (bkz. State.milk_fwd
+        # docstring'i ve evaluate_path._milk_junction_ok) - _remove_assignment bu
+        # kilidi, assignment kaldirildiginda tam olarak geri alir.
+        for j in range(n_legs - 1):
+            bucket_j = (legs[j].src, legs[j].dst, legs[j].gun, legs[j].slot, legs[j].arac_turu)
+            bucket_k = (legs[j + 1].src, legs[j + 1].dst, legs[j + 1].gun, legs[j + 1].slot, legs[j + 1].arac_turu)
+            state.milk_fwd[bucket_j] = bucket_k
+            state.milk_bwd[bucket_k] = bucket_j
+            jk = (bucket_j, bucket_k)
+            state.milk_junction_desi[jk] = state.milk_junction_desi.get(jk, 0.0) + tasinabilir
 
     assignment = Assignment(
         demand_hat=hat, demand_gun=demand_gun, demand_slot=demand_slot,
@@ -1313,12 +1425,30 @@ def _remove_assignment(state: State, a: Assignment) -> None:
         # Varış elleçlemesi geri alma
         seyir_saat = state.data.route_lookup[(leg.src, leg.dst)][leg.arac_turu]
         varis_dt = varis_zamani(cikis_zamani, seyir_saat)
-        varis_g = arrival_day(state.data.route_lookup, state.data.gunler, (leg.src, leg.dst), leg.gun, leg.slot, leg.       arac_turu)
+        varis_g = arrival_day(state.data.route_lookup, state.data.gunler, (leg.src, leg.dst), leg.gun, leg.slot, leg.arac_turu)
         if not skip_dst_handling and varis_g is not None:
             sure_dk = ellecleme_suresi_dakika(a.desi, consolidation=False)
             dagilim = _ellecleme_dagilimi(varis_dt, a.desi, sure_dk)
             for gun_str, pay in dagilim.items():
                 state.handling_usage[(leg.dst, gun_str)] = state.handling_usage.get((leg.dst, gun_str), 0.0) - pay
+
+    if a.milk_run:
+        # commit_path'te kurulan yon-tutarliligi kilidini (State.milk_fwd/milk_bwd)
+        # tam olarak geri al - junction desi'si 0'a inince kilit tamamen acilir ki
+        # baska bir talep bu HUB bacagini FARKLI bir yone milk_run ile kullanabilsin.
+        for j in range(n_legs - 1):
+            bucket_j = (a.legs[j].src, a.legs[j].dst, a.legs[j].gun, a.legs[j].slot, a.legs[j].arac_turu)
+            bucket_k = (a.legs[j + 1].src, a.legs[j + 1].dst, a.legs[j + 1].gun, a.legs[j + 1].slot, a.legs[j + 1].arac_turu)
+            jk = (bucket_j, bucket_k)
+            kalan = state.milk_junction_desi.get(jk, 0.0) - a.desi
+            if kalan <= 1e-9:
+                state.milk_junction_desi.pop(jk, None)
+                if state.milk_fwd.get(bucket_j) == bucket_k:
+                    del state.milk_fwd[bucket_j]
+                if state.milk_bwd.get(bucket_k) == bucket_j:
+                    del state.milk_bwd[bucket_k]
+            else:
+                state.milk_junction_desi[jk] = kalan
     state.unassigned.append((a.demand_hat, a.demand_gun, a.demand_slot, a.desi, a.talep_id))
 
 

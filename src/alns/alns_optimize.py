@@ -60,7 +60,10 @@ from src.alns.alns_engine import (  # noqa: E402
     tm_overload_removal,
     worst_removal,
 )
-from src.alns.time_model import build_route_lookup, slot_datetime, varis_zamani, ellecleme_tamamlanma_zamani, ellecleme_suresi_dakika  # noqa: E402
+from src.alns.time_model import (  # noqa: E402
+    build_route_lookup, slot_datetime, varis_zamani, ellecleme_tamamlanma_zamani,
+    ellecleme_suresi_dakika, sla_deadline, gecikme_saat, sla_cezasi_tl,
+)
 
 # ============================================================================
 # 1. ORTAM DEĞİŞKENLERİ
@@ -563,6 +566,23 @@ def _bacak_arac_sayisi(leg) -> int:
     return spot_vehicle_count(bucket_toplam_desi[_bucket_key(leg)], kap, 10 ** 9)
 
 
+def _final_leg_sla_cezasi(varis_dt, pay_desi, demand_gun, demand_slot, hedef_gun):
+    """SLA cezasini, assignment ilk eklendigi anda DONMUS a.sla_cost yerine, bu
+    SPESIFIK satirin GUNCEL (Cozum A ile - o aracin GERCEK toplam yukune gore
+    yeniden hesaplanmis) varis anindan TAZE turetir - tipki arac maliyetinin
+    (arac_maliyeti) zaten yapildigi gibi.
+
+    Neden gerekli: a.sla_cost, evaluate_path icinde SADECE o parcanin KENDI
+    (o an kucuk olabilen) desisine gore hesaplanip donduruluyordu - ayni araca
+    ALNS aramasi ilerledikce SONRADAN baska yuk bindikce aracin GERCEK kalkisi
+    gecikebiliyordu ama donmus sla_cost bunu hic yakalamiyordu (bkz. sohbet
+    gecmisi: test_sla_cezasi.py::test_nihai_bacaklarda_sla_cezasi_dogru_hesaplanmis
+    bulgusu - 808 nihai bacakta SLA cezasi sistematik olarak az/sifir
+    raporlaniyordu, hepsinde Bacak_Toplam_Desi >> Bu_Talebin_Desisi)."""
+    tamamlanma = ellecleme_tamamlanma_zamani(varis_dt, pay_desi, consolidation=False)
+    deadline = sla_deadline(slot_datetime(demand_gun, demand_slot), hedef_gun)
+    gecikme = gecikme_saat(tamamlanma, deadline)
+    return sla_cezasi_tl(pay_desi, gecikme)
 
 
 
@@ -589,7 +609,9 @@ for a in best.assignments:
             varis_gun = varis_dt.strftime("%Y-%m-%d")
             varis_saat = varis_dt.strftime("%H:%M")
 
-            sla_cezasi = round(a.sla_cost * (pay_desi / a.desi), 2)
+            hedef_gun = data.route_lookup[(nihai_kaynak, nihai_varis)]["target_delivery_days"]
+            sla_cezasi_raw = _final_leg_sla_cezasi(varis_dt, round(pay_desi, 2), a.demand_gun, a.demand_slot, hedef_gun)
+            sla_cezasi = round(sla_cezasi_raw, 2)
             if sla_cezasi > 0:
                 sla_penalties.append((a.talep_id, sla_cezasi))
             csv_records.append({
@@ -608,7 +630,7 @@ for a in best.assignments:
                 "SLA_Cezasi_TL": sla_cezasi,
                 "Toplam_Maliyet_TL": round(
                     arac_maliyeti[(key, arac_index)] * (pay_desi / arac_toplam_yuk[(key, arac_index)])
-                    + a.sla_cost * (pay_desi / a.desi), 2
+                    + sla_cezasi_raw, 2
                 ),
                 "Rota_Tipi": rota_tipi, "Talep_Tarihi": a.demand_gun, "Talep_Slotu": a.demand_slot,
                 "Konsolide_Talep_Sayisi": bucket_konsolidasyon_sayisi[key],
@@ -616,6 +638,23 @@ for a in best.assignments:
         })
     else:
         ara_duraklar = " -> ".join(leg.dst for leg in a.legs[:-1])
+        # Uğrama (milk_run) zincirlerinde TÜM bacaklar aynı fiziksel araç olduğu
+        # için, ilk bacaktaki Araç_ID'yi (nadir durumda birden fazla araca
+        # bölünmüşse hepsini) SONRAKİ tüm bacaklarda da AYNEN gösteriyoruz -
+        # böylece çıktıda "aynı araç devam ediyor" iddiası Araç_ID'den de
+        # doğrudan izlenebilir olur (bkz. sohbet geçmişi). Maliyet/desi
+        # hesapları hâlâ her bacağın KENDİ (key,arac_index) değerlerinden
+        # hesaplanıyor - sadece GÖRÜNEN ID metni değişiyor.
+        milk_chain_arac_id = None
+        if a.milk_run:
+            key0 = _bucket_key(a.legs[0])
+            leg0_ids = sorted({
+                arac_id_kodu[(key0, arac_index)]
+                for (aa, ll, arac_index, pay_desi, ll_i) in bucket_dagilim[key0]
+                if aa is a
+            })
+            if leg0_ids:
+                milk_chain_arac_id = "+".join(leg0_ids)
         for i, leg in enumerate(a.legs):
 
             arac_tipi = "Kiralik" if leg.is_kiralik else "Spot"
@@ -633,7 +672,12 @@ for a in best.assignments:
                 gercek_slot = gercek_dt.strftime("%H:%M")
                 varis_gun = varis_dt.strftime("%Y-%m-%d")
                 varis_saat = varis_dt.strftime("%H:%M")
-                sla_cezasi = (round(a.sla_cost * (pay_desi / a.desi), 2) if i == len(a.legs) - 1 else 0)
+                if i == len(a.legs) - 1:
+                    hedef_gun = data.route_lookup[(nihai_kaynak, nihai_varis)]["target_delivery_days"]
+                    sla_cezasi_raw = _final_leg_sla_cezasi(varis_dt, round(pay_desi, 2), a.demand_gun, a.demand_slot, hedef_gun)
+                else:
+                    sla_cezasi_raw = 0.0
+                sla_cezasi = round(sla_cezasi_raw, 2)
                 if sla_cezasi > 0:
                     sla_penalties.append((a.talep_id, sla_cezasi))
                 if a.milk_run:
@@ -650,7 +694,8 @@ for a in best.assignments:
                     rota_tipi_cok_bacakli = f"Aktarmalı/Konsolidasyonlu {i + 1}/{len(a.legs)} (via {ara_duraklar}, nihai varis: {nihai_varis})"
                 csv_records.append({
                     "Tarih": gercek_gun, "Slot": gercek_slot, "Arac_Tipi": arac_tipi, "Arac_Turu": leg.arac_turu, # BURASI GÜNCELLENDİ
-                    "Arac_ID": arac_id_kodu[(key, arac_index)],
+                    "Arac_ID": (milk_chain_arac_id if (a.milk_run and i > 0 and milk_chain_arac_id)
+                                else arac_id_kodu[(key, arac_index)]),
                     "Talep_ID": talep_id_goruntu.get(id(a), a.talep_id),
                     "Cikis_TM": leg.src, "Varis_TM": leg.dst,
                     "Yolculuk_Suresi_Dk": math.ceil(data.route_lookup[(leg.src, leg.dst)][leg.arac_turu] * 60),
@@ -669,7 +714,7 @@ for a in best.assignments:
                     "SLA_Cezasi_TL": sla_cezasi,
                     "Toplam_Maliyet_TL": round(
                         arac_maliyeti[(key, arac_index)] * (pay_desi / arac_toplam_yuk[(key, arac_index)])
-                        + (a.sla_cost * (pay_desi / a.desi) if i == len(a.legs) - 1 else 0), 2
+                        + sla_cezasi_raw, 2
                     ),
                     "Rota_Tipi": rota_tipi_cok_bacakli,
                     "Konsolide_Talep_Sayisi": bucket_konsolidasyon_sayisi[key],
@@ -739,7 +784,11 @@ karma_arac_maliyeti = sum(arac_maliyeti.values())
 # Spot ve Kiralık maliyetleri birbirinden temizce ayırıyoruz
 spot_toplam_maliyet = karma_arac_maliyeti - kiralik_ellecleme_toplam
 kiralik_gercek_toplam = kiralik_sabit_toplam + kiralik_ellecleme_toplam
-sla_ceza_toplam = sum(a.sla_cost for a in best.assignments)
+# DUZELTME: artik best.assignments'in DONMUS a.sla_cost degerlerinden DEGIL,
+# csv_records'taki (yukarida, _final_leg_sla_cezasi ile TAZE hesaplanmis)
+# SLA_Cezasi_TL sutunundan topluyoruz - boylece ozet, raporlanan satirlarla
+# BIREBIR tutarli kalir (bkz. _final_leg_sla_cezasi docstring'i).
+sla_ceza_toplam = sum(r["SLA_Cezasi_TL"] for r in csv_records)
 
 # YENİ: Kapasite aşım cezalarını hesapla
 ellecleme_ceza_toplam = 0.0
