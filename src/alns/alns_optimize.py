@@ -174,7 +174,7 @@ rng = rnd.default_rng(42) # Neden 42 seedini veriyoruz generator'ü oluşturmak 
 initial_state = State(data) 
 initial_state = dummy_initial_builder(initial_state, rng) # Burada neden removal kullanmadan repair yapmış claude?
 initial_obj = initial_state.objective() # mevcut çözümün maliyeti
-print(f"Baslangic (greedy) cozum maliyeti: {initial_obj:,.0f} TL")
+print(f"Baslangic (dummy) cozum maliyeti: {initial_obj:,.0f} TL")
 
 # ============================================================================
 # 4. ALNS KURULUMU
@@ -223,7 +223,7 @@ def _yeni_en_iyi_bulundu(candidate_state, rng_):
     print(f"[{gecen_sn:7.1f} sn] Yeni en iyi #{_ilerleme_sayac['n']}: {candidate_state.objective():,.0f} TL")
 
 
-alns.on_best(_yeni_en_iyi_bulundu)# ALNS en iyi maliyeti bulunca bu callback fonksiyonu çağırsın diyoruz.
+alns.on_best(_yeni_en_iyi_bulundu) # ALNS en iyi maliyeti bulunca bu callback fonksiyonu çağırsın diyoruz.
 
 # ============================================================================
 # 4b. KALIBRASYON: gercek iterasyon hizini olcup SA sicaklik takvimini buna gore ayarla

@@ -93,8 +93,9 @@ def ellecleme_suresi_dakika(desi: float, consolidation: bool = False) -> float:
     sure = sure * 2 if consolidation else sure
     return math.ceil(sure)
 
-
-
+def seyir_suresi_saat(routeLookup: RouteLookup, src: str, dst: str, arac_turu: str):
+    entry = routeLookup.get((src,dst))
+    return entry[arac_turu] if entry else 0.0
 
 def varis_zamani(kalkis: datetime, seyir_saat: float) -> datetime:
     return kalkis + timedelta(hours=seyir_saat)
