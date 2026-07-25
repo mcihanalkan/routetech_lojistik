@@ -179,6 +179,9 @@ def add_campaign_features(
     group_column: Optional[str] = None,
     campaign_release_alpha: float = 5.25,
     campaign_max_release_days: int = 6,
+    target_column: Optional[str] = None,
+    baseline_column: Optional[str] = None,
+    baseline_window: int = 14,
 ) -> pl.DataFrame:
     """
     E-Ticaret kampanya günlerini, kampanya öncesi sipariş dönemini VE
@@ -207,9 +210,14 @@ def add_campaign_features(
     is_campaign_eve : Kampanya öncesi sipariş dönemi mi? (Int8, 0/1)
     accumulated_campaign_eve_days : Az önce sona eren "eve" bloğunun
         ağırlıklı uzunluğu (Float64) — kampanya biter bitmez (campaign_day
-        ve sonrası) dolu, eve döneminde 0.
+        ve sonrası) dolu, eve döneminde 0. target_column verilmezse bu
+        "ağırlık" salt ardışık gün SAYISIdır (v17); target_column verilirse
+        (v18) o dönem boyunca biriken GERÇEK HACİM toplamıdır.
     days_since_campaign_end : Kampanya bitiminden (eve sonu) itibaren geçen
         aktif gün sayısı (Int64, 1-indeksli). Eve döneminde -1.
+    campaign_severity_ratio : (Yalnızca target_column verilirse üretilir, v18)
+        accumulated_campaign_eve_days / baseline (Float64) — biriken
+        hacmin, o rotanın normal (baseline) hacmine oranı.
     campaign_release_index : Kampanya sonrası üstel sönümlü "release" sinyali
         (Float64) — campaign_release_alpha/max_campaign_release_days ile
         ayarlanır (varsayılan: alpha=5.25, 6 gün — holiday'in 1.4/4'ünden
@@ -222,13 +230,39 @@ def add_campaign_features(
         tekrar kalibre edilmeden production'a alınmamalıdır — aşırı büyük
         alpha, kampanya etkisi çoktan bitmiş günlerde de gereksiz yere
         yüksek tahmin üretebilir (overprediction riski diğer günlere
-        kayar).
+        kayar). target_column verilirse (v18) formül accumulated_
+        campaign_eve_days (ham hacim) yerine campaign_severity_ratio
+        (normalize edilmiş, baseline'a göreceli) kullanır — bkz.
+        campaign_severity_ratio.
+
+    v18 — Kampanya Şiddet Oranı (Severity Ratio):
+    add_holiday_features'daki AYNI v18 düzeltmesi burada da uygulanır:
+    target_column verilirse, accumulated_campaign_eve_days artık "eve"
+    süresi (gün sayısı) değil, o süre boyunca biriken GERÇEK HACİM
+    (weight_col=target_column) olur; campaign_severity_ratio =
+    accumulated_campaign_eve_days / baseline hesaplanır ve
+    campaign_release_index = campaign_severity_ratio * exp(-days_since_campaign_end / alpha)
+    olarak yeniden tanımlanır. target_column verilmezse eski (v17)
+    davranış (weight_col=None, gün sayısı bazlı) korunur.
 
     Parameters
     ----------
     group_column : str, optional
         _compute_streak_backlog_features için .over() grubu (rota bazında
         leakage'sız shift/cum_sum). add_holiday_features ile aynı desen.
+    target_column : str, optional
+        (v18) Gerçek/tahmini günlük hacim sütunu (wide-format'ta genelde
+        iki slotun TOPLAMI — kampanya her iki slotu da etkiliyor). Verilirse
+        weight_col olarak kullanılır ve campaign_severity_ratio +
+        ratio-bazlı campaign_release_index üretilir. add_holiday_features
+        ile birebir aynı desen.
+    baseline_column : str, optional
+        Hazır bir baseline sütunu. Verilmezse target_column üzerinden
+        shift(1).rolling_mean(baseline_window).over(group_column) ile
+        leakage'sız hesaplanır.
+    baseline_window : int
+        baseline_column verilmediğinde kullanılacak rolling pencere
+        boyutu (varsayılan: 14).
 
     Polars native pl.Date karşılaştırması kullanılır.
     Eski epoch-bölme yaklaşımı Polars'ın yeni mikrosaniye Datetime'ında
@@ -261,6 +295,13 @@ def add_campaign_features(
     # ⚠️ Bu değer ilgili backtest penceresine göre kalibre edildi — HPO
     # sonrası ve farklı veri setlerinde yeniden doğrulanmadan production'a
     # kalıcı olarak gömülmemeli.
+    # v18: add_holiday_features ile birebir aynı desen — target_column
+    # verilirse weight_col olarak geçilir → accumulated_campaign_eve_days
+    # artık "eve" gün SAYISI değil, o dönem boyunca biriken GERÇEK HACİM
+    # toplamı olur. Verilmezse eski (v17) davranış korunur.
+    _has_target = bool(target_column) and target_column in df.columns
+    weight_col_for_campaign = target_column if _has_target else None
+
     df = _compute_streak_backlog_features(
         df,
         flag_col="is_campaign_eve",
@@ -269,14 +310,52 @@ def add_campaign_features(
         accumulated_col="accumulated_campaign_eve_days",
         resumption_col="days_since_campaign_end",
         release_col="campaign_release_index",
-        weight_col=None,
+        weight_col=weight_col_for_campaign,
         max_release_days=campaign_max_release_days,
         tmp_prefix="_camp",
     )
 
+    # v18: campaign_severity_ratio + release_index'in ratio bazlı yeniden
+    # tanımı — add_holiday_features'daki backlog_severity_ratio ile aynı
+    # mekanizma, SADECE target_column verilmişse aktif.
+    if _has_target:
+        over_keys = [group_column] if group_column and group_column in df.columns else None
+        EPS = 1e-5
+
+        if baseline_column and baseline_column in df.columns:
+            df = df.with_columns([pl.col(baseline_column).alias("_campaign_baseline")])
+        else:
+            base_expr = (
+                pl.col(target_column)
+                .shift(1)
+                .rolling_mean(window_size=baseline_window, min_samples=1)
+            )
+            if over_keys:
+                base_expr = base_expr.over(over_keys)
+            df = df.with_columns([base_expr.alias("_campaign_baseline")])
+
+        df = df.with_columns([
+            (pl.col("accumulated_campaign_eve_days") / (pl.col("_campaign_baseline") + EPS))
+            .alias("campaign_severity_ratio")
+        ])
+
+        df = df.with_columns([
+            pl.when(
+                (pl.col("is_campaign_eve") == 0) &
+                (pl.col("days_since_campaign_end") >= 1) &
+                (pl.col("days_since_campaign_end") <= campaign_max_release_days)
+            )
+            .then(pl.col("campaign_severity_ratio") * (-pl.col("days_since_campaign_end") / campaign_release_alpha).exp())
+            .otherwise(0.0)
+            .alias("campaign_release_index")
+        ])
+
+        df = df.drop("_campaign_baseline")
+
     logger.debug(
         f"✅ Kampanya özellikleri eklendi "
-        f"({len(campaign_set)} ana gün, {lead_days} gün arife penceresi, Polars native)."
+        f"({len(campaign_set)} ana gün, {lead_days} gün arife penceresi, Polars native"
+        f"{', severity_ratio aktif' if _has_target else ''})."
     )
     return df
 
@@ -716,6 +795,14 @@ def add_holiday_features(
     # ama global model davranışı değişti). Kampanya tarafındaki KANITLANMIŞ
     # çifti (alpha=5.25 + max_release_days=6) burada da birebir eşliyoruz.
     backlog_max_release_days: int = 6,
+    target_column: Optional[str] = None,
+    baseline_column: Optional[str] = None,
+    baseline_window: int = 14,
+    # v19 BUG FIX (bkz. aşağıdaki KAPALI GÜN AĞIRLIK PROXY'Sİ notu):
+    # kapalı günün "kaçırdığı" hacmi tahmin etmek için SADECE açık
+    # günlerden hesaplanan rolling_median penceresi/min-örnek sayısı.
+    closed_weight_window: int = 28,
+    closed_weight_min_samples: int = 7,
 ) -> pl.DataFrame:
     """
     Türkiye resmi tatil ve dini bayram bayraklarını ekler.
@@ -740,12 +827,32 @@ def add_holiday_features(
                               sayısı (Int64). Kapalı günlerde -1.
     backlog_release_index   : Tatil dönüşü birikmiş kargonun üstel
                               sönümle dağıtım hızı (Float64).
-                              backlog_release_index =
-                                accumulated_closed_days.shift(1)
-                                * exp(-days_since_resumption / alpha)
-                              alpha≈1.4: TR lojistik ağının birikmiş
+                              target_column VERİLMEZSE (eski/legacy davranış):
+                                backlog_release_index =
+                                  accumulated_closed_days * exp(-days_since_resumption / alpha)
+                                (accumulated_closed_days burada salt ARDIŞIK
+                                GÜN SAYISI — weight_col=None.)
+                              target_column VERİLİRSE (v18):
+                                accumulated_closed_days artık gün sayısı değil,
+                                kapalı gün(ler) boyunca biriken GERÇEK HACİM
+                                (weight_col=target_column ile ağırlıklı toplam).
+                                Ayrıca backlog_severity_ratio = accumulated_closed_days
+                                / baseline (baseline: target_column'ın
+                                shift(1).rolling_mean(baseline_window) ile
+                                leakage'sız kendi ortalaması) hesaplanır ve
+                                backlog_release_index =
+                                  backlog_severity_ratio * exp(-days_since_resumption / alpha)
+                                olarak YENİDEN tanımlanır — yani artık "kaç gün
+                                kapalıydı" değil, "normal hacme kıyasla ne kadar
+                                büyük bir yük birikti" sinyalini taşır.
+                              alpha≈1.4-5.25: TR lojistik ağının birikmiş
                               yükü eritme hız sabiti (gün bazında).
-                              4 günden sonra etki sıfırlanır.
+                              backlog_max_release_days günden sonra etki sıfırlanır.
+    backlog_severity_ratio  : (Yalnızca target_column verilirse üretilir.)
+                              accumulated_closed_days / baseline (Float64) —
+                              biriken hacmin, o rotanın normal (baseline)
+                              hacmine oranı. >1 → normalin üzerinde bir yük
+                              birikmiş demektir.
 
     Parameters
     ----------
@@ -756,6 +863,71 @@ def add_holiday_features(
                     edilir (rotalar arası sızıntı riski oluşmaz).
     lead_days     : Tatil arifesi kaç gün önceden başlasın (varsayılan: 2)
     backlog_alpha : Birikim erime hız sabiti (varsayılan: 5.25 — bkz. yukarıdaki KÖK NEDEN DÜZELTMESİ notu)
+    target_column : (Opsiyonel, v18) Gerçek/tahmini günlük hacim sütunu
+                    (wide-format'ta genelde iki slotun TOPLAMI — kapanış
+                    her iki slotu da etkilediği için). Verilirse:
+                      (a) _compute_streak_backlog_features'a weight_col
+                          olarak geçilir → accumulated_closed_days artık
+                          gerçek hacim toplamı olur (gün sayısı değil),
+                      (b) baseline_column verilmemişse, bu sütun üzerinden
+                          shift(1).rolling_mean(baseline_window).over(group_column)
+                          ile leakage'sız bir baseline hesaplanır,
+                      (c) backlog_severity_ratio ve buna dayalı yeniden
+                          tanımlanmış backlog_release_index üretilir.
+                    Verilmezse eski (v17) davranış korunur: weight_col=None,
+                    accumulated_closed_days = ardışık gün sayısı.
+
+    ⚠️  v19 BUG FIX — KAPALI GÜN AĞIRLIK PROXY'Sİ:
+        v18'de weight_col olarak DOĞRUDAN target_column geçiriliyordu.
+        Ancak target_column (wide-format'ta dağıtılan hacim toplamı),
+        kapalı günlerde (is_closed=1: Pazar/tatil) YAPISAL olarak 0'dır
+        — load_dataset() rota×tarih×slot grid'ini kurarken eksik
+        (dağıtım hiç olmamış) kombinasyonları fillna(0.0) ile dolduruyor
+        ("o slotta gerçekten talep/dağıtım oluşmadı"). Sonuç: kapalı
+        streak boyunca weight_expr.cum_sum() hep 0 topluyordu →
+        accumulated_closed_days / backlog_severity_ratio /
+        backlog_release_index HER ZAMAN ≈0 çöküyordu — yani tam da
+        yakalanmak istenen tatil-sonrası backlog sinyali, güçlenmek
+        yerine tamamen sönümleniyordu.
+
+        Düzeltme: kapalı günün ağırlığı artık gerçek (yapısal-sıfır)
+        hacim değil, "bu gün kapalı olmasaydı normalde kaç desi
+        dağıtılırdı" sorusuna cevap veren bir BASELINE PROXY'dir:
+          1. target_column, SADECE is_closed==0 olan satırlarda tutulur
+             (kapalı günler NULL'a çevrilir — yapısal sıfırlar pencereye
+             hiç girmez).
+          2. Bu seri üzerinden shift(1) (leakage önleme) +
+             rolling_median(window=closed_weight_window,
+             min_samples=closed_weight_min_samples) hesaplanır.
+             rolling_mean yerine rolling_median tercih edildi — küçük
+             rotalardaki seyrek hacim spike'larına karşı daha dirençli.
+          3. Kalan NULL'lar (pencere henüz yeterli örnek biriktirmediyse
+             veya kapalı streak süresince) group içinde forward_fill
+             edilir; serinin en başında hâlâ NULL kalan durumlar için
+             son çare 0.0.
+        Bu proxy, weight_col olarak _compute_streak_backlog_features'a
+        geçirilir. streak_col zaten kapalı blok boyunca weight_expr'i
+        cum_sum ile topladığından (satır ~711-716), sonuç otomatik
+        olarak ≈ closed_days_count × baseline olur — yani "kaç gün
+        kapalıydı" değil, rotanın hacim seviyesiyle ölçeklenmiş gerçekçi
+        bir birikmiş-yük tahminidir. Aynı 3 günlük kapanış, büyük rotada
+        küçük rotaya göre daha büyük mutlak backlog üretir.
+    baseline_column : (Opsiyonel) Hazır bir baseline sütunu (örn.
+                    add_organic_backlog_features'ın ürettiği bir rolling
+                    ortalama). Verilirse kendi baseline'ı hesaplanmaz, bu
+                    sütun kullanılır. target_column verilmemişse etkisizdir.
+    baseline_window : target_column verilip baseline_column verilmediğinde
+                    kullanılacak rolling pencere boyutu (varsayılan: 14 —
+                    add_organic_backlog_features ile tutarlı).
+    closed_weight_window : (v19) Kapalı gün ağırlık proxy'si için, SADECE
+                    açık günlerden hesaplanan rolling_median penceresi
+                    (varsayılan: 28 — baseline_window'dan bilinçli olarak
+                    daha geniş, çünkü açık günler filtrelendiği için aynı
+                    takvim aralığında daha az örnek düşer).
+    closed_weight_min_samples : (v19) closed_weight_window içinde geçerli
+                    (açık gün) sayısı bu değerin altındaysa sonuç NULL
+                    kalır ve forward_fill/0.0 fallback'e düşer
+                    (varsayılan: 7).
 
     Returns
     -------
@@ -796,9 +968,66 @@ def add_holiday_features(
         ).then(1).otherwise(0).cast(pl.Int8).alias("is_closed")
     ])
 
-    # Streak → Birikim (weight=None → is_closed'ın kendisi, yani klasik
-    # ardışık gün SAYISI) → exp-decay Release mekanizması, paylaşılan
-    # çekirdek üzerinden (bkz. _compute_streak_backlog_features).
+    # v18: target_column verilirse weight_col olarak geçilir → accumulated_
+    # closed_days artık ardışık gün SAYISI değil, kapanış boyunca biriken
+    # GERÇEK HACİM toplamı olur. Verilmezse eski (v17) davranış (weight_col=
+    # None → klasik gün sayısı) korunur.
+    _has_target = bool(target_column) and target_column in df.columns
+    weight_col_for_backlog = None
+    _closed_weight_tmp_cols: list = []
+
+    if _has_target:
+        # v19 BUG FIX: target_column'ı OLDUĞU GİBİ weight_col yapmıyoruz —
+        # kapalı günlerde (is_closed=1) target_column YAPISAL olarak 0'dır
+        # (load_dataset(): dağıtım olmayan slot/gün kombinasyonları
+        # fillna(0.0) ile dolduruluyor). Bu, weight_expr.cum_sum()'ın
+        # kapalı streak boyunca hep 0 toplamasına ve accumulated_closed_days/
+        # backlog_severity_ratio/backlog_release_index'in HER ZAMAN ≈0
+        # çökmesine yol açıyordu (bkz. yukarıdaki KAPALI GÜN AĞIRLIK
+        # PROXY'Sİ notu). Onun yerine, SADECE açık günlerden (is_closed==0)
+        # hesaplanan bir rolling_median baseline'ı kullanıyoruz: "bu gün
+        # kapalı olmasaydı normalde kaç desi dağıtılırdı" tahmini.
+        _over_keys_w = [group_column] if group_column and group_column in df.columns else None
+
+        _open_only_col = "_closed_weight_open_only"
+        _proxy_col = "_closed_weight_proxy"
+        _closed_weight_tmp_cols = [_open_only_col, _proxy_col]
+
+        # 1) Kapalı günleri NULL'a çevir — yapısal sıfırlar pencereye
+        #    hiç girmesin (aksi halde rolling_median de sıfırlarla kirlenir).
+        df = df.with_columns([
+            pl.when(pl.col("is_closed") == 0)
+              .then(pl.col(target_column))
+              .otherwise(None)
+              .alias(_open_only_col)
+        ])
+
+        # 2) shift(1) ile leakage önlenir; rolling_median (rolling_mean
+        #    yerine) küçük rotalardaki seyrek hacim spike'larına karşı
+        #    daha dirençli. min_samples yetersizse NULL döner.
+        _proxy_expr = (
+            pl.col(_open_only_col)
+              .shift(1)
+              .rolling_median(window_size=closed_weight_window, min_samples=closed_weight_min_samples)
+        )
+        if _over_keys_w:
+            _proxy_expr = _proxy_expr.over(_over_keys_w)
+        df = df.with_columns([_proxy_expr.alias(_proxy_col)])
+
+        # 3) Kalan NULL'lar (pencere henüz dolmadıysa ya da kapalı streak
+        #    süresince) grup içinde forward_fill edilir; serinin en
+        #    başında hâlâ NULL kalanlar için son çare 0.0.
+        _ffill_expr = pl.col(_proxy_col).forward_fill()
+        if _over_keys_w:
+            _ffill_expr = _ffill_expr.over(_over_keys_w)
+        df = df.with_columns([_ffill_expr.fill_null(0.0).alias(_proxy_col)])
+
+        weight_col_for_backlog = _proxy_col
+
+    # Streak → Birikim (weight_col=None ise klasik ardışık gün SAYISI,
+    # weight_col=_closed_weight_proxy ise ağırlıklı baseline-tahminli hacim)
+    # → exp-decay Release mekanizması, paylaşılan çekirdek üzerinden
+    # (bkz. _compute_streak_backlog_features).
     df = _compute_streak_backlog_features(
         df,
         flag_col="is_closed",
@@ -807,14 +1036,78 @@ def add_holiday_features(
         accumulated_col="accumulated_closed_days",
         resumption_col="days_since_resumption",
         release_col="backlog_release_index",
-        weight_col=None,
+        weight_col=weight_col_for_backlog,
         max_release_days=backlog_max_release_days,
         tmp_prefix="_closed",
     )
 
+    # v18: backlog_severity_ratio + release_index'in ratio bazlı yeniden
+    # tanımı — SADECE target_column verilmişse (geriye dönük uyumluluk için
+    # eski davranış target_column=None iken hiç dokunulmadan korunur).
+    if _has_target:
+        over_keys = [group_column] if group_column and group_column in df.columns else None
+        EPS = 1e-5
+
+        if baseline_column and baseline_column in df.columns:
+            df = df.with_columns([pl.col(baseline_column).alias("_holiday_baseline")])
+        else:
+            # v19 BUG FIX (tutarlılık): paydadaki baseline da aynı
+            # yapısal-sıfır kirlenmesine maruzdu — target_column üzerinden
+            # doğrudan rolling_mean alınırsa, pencere (varsayılan 14 gün)
+            # neredeyse her zaman 1-2 Pazar/tatil (=0 hacim) içerir ve
+            # baseline'ı olduğundan düşük gösterir → backlog_severity_ratio
+            # yapay olarak şişer. Yukarıda ağırlık proxy'si için ürettiğimiz
+            # _closed_weight_open_only (SADECE is_closed==0 satırlar) sütununu
+            # burada da kullanıyoruz — kapalı günlerin sıfırları paydaya
+            # hiç karışmıyor.
+            _base_source = (
+                pl.col(_open_only_col) if _has_target and _open_only_col in df.columns
+                else pl.col(target_column)
+            )
+            base_expr = (
+                _base_source
+                .shift(1)
+                .rolling_mean(window_size=baseline_window, min_samples=1)
+            )
+            if over_keys:
+                base_expr = base_expr.over(over_keys)
+            df = df.with_columns([base_expr.alias("_holiday_baseline")])
+
+            # Serinin en başında (henüz hiç açık gün gözlemlenmemişken)
+            # NULL kalabilir — grup içinde forward_fill, son çare 0.0.
+            _bf_expr = pl.col("_holiday_baseline").forward_fill()
+            if over_keys:
+                _bf_expr = _bf_expr.over(over_keys)
+            df = df.with_columns([_bf_expr.fill_null(0.0).alias("_holiday_baseline")])
+
+        df = df.with_columns([
+            (pl.col("accumulated_closed_days") / (pl.col("_holiday_baseline") + EPS))
+            .alias("backlog_severity_ratio")
+        ])
+
+        # backlog_release_index'i ARTIK ham accumulated_closed_days (hacim)
+        # yerine, normalize edilmiş backlog_severity_ratio üzerinden
+        # yeniden tanımlıyoruz: ratio × üstel sönüm ağırlığı.
+        df = df.with_columns([
+            pl.when(
+                (pl.col("is_closed") == 0) &
+                (pl.col("days_since_resumption") >= 1) &
+                (pl.col("days_since_resumption") <= backlog_max_release_days)
+            )
+            .then(pl.col("backlog_severity_ratio") * (-pl.col("days_since_resumption") / backlog_alpha).exp())
+            .otherwise(0.0)
+            .alias("backlog_release_index")
+        ])
+
+        df = df.drop("_holiday_baseline")
+
+    if _closed_weight_tmp_cols:
+        df = df.drop([c for c in _closed_weight_tmp_cols if c in df.columns])
+
     logger.debug(
         f"✅ Tatil özellikleri eklendi ({len(holiday_set)} tatil günü, "
-        f"Polars native, BAI alpha={backlog_alpha})."
+        f"Polars native, BAI alpha={backlog_alpha}"
+        f"{', severity_ratio aktif' if _has_target else ''})."
     )
     return df
 
@@ -2284,6 +2577,14 @@ def build_feature_matrix(
     # bkz. add_holiday_features'daki backlog_max_release_days notu —
     # campaign_release_alpha/campaign_max_release_days ile AYNI eşleştirme.
     backlog_max_release_days: int = 6,
+    # v18: add_holiday_features/add_campaign_features artık kendi baseline'ını
+    # (shift(1).rolling_mean(baseline_window).over(group_column)) hesaplayarak
+    # backlog_severity_ratio/campaign_severity_ratio üretiyor — bkz. ilgili
+    # fonksiyonların docstring'i. Varsayılan (14), add_organic_backlog_
+    # features ile tutarlıdır ve genelde yeterlidir; HPO/kalibrasyon için
+    # dışarıya açık bırakıldı (zorunlu override DEĞİL).
+    backlog_baseline_window: int = 14,
+    campaign_baseline_window: int = 14,
     enable_target_scaling: bool = False,
     target_scale_window_days: int = DEFAULT_TARGET_SCALE_WINDOW_DAYS,
     target_scale_min: float = DEFAULT_TARGET_SCALE_MIN,
@@ -2479,8 +2780,29 @@ def build_feature_matrix(
     # --- Adım 2: Zaman özellikleri ---
     pl_df = add_time_features(pl_df, date_column)
 
+    # --- Adım 2.5: Toplam Günlük Hacim (Tatil/Kampanya backlog'u için) ---
+    # v18: add_holiday_features/add_campaign_features artık kapanış/eve
+    # süresini salt gün SAYISI değil, gerçek biriken HACİM olarak ölçebiliyor
+    # (weight_col=target_column) — bunun için wide-format'taki tüm hedef
+    # sütunların (09:00 + 17:00) TOPLAMını tek bir sütunda hazırlıyoruz;
+    # kapanış/kampanya her iki slotu da etkilediği için toplam hacim en
+    # doğru ölçü. add_lag_features/add_rolling_features'dan (Adım 5/6)
+    # ÖNCE, ama Adım 1.5'teki unconstrain_censored_demand'dan SONRA
+    # çalıştığı için sansürsüzleştirilmiş (gerçek) hacimleri kullanır.
+    _total_volume_col = "_total_daily_volume"
+    if len(target_cols) > 1:
+        pl_df = pl_df.with_columns(
+            pl.sum_horizontal([pl.col(c) for c in target_cols]).alias(_total_volume_col)
+        )
+    else:
+        pl_df = pl_df.with_columns(pl.col(target_cols[0]).alias(_total_volume_col))
+
     # --- Adım 3: Tatil özellikleri ---
-    pl_df = add_holiday_features(pl_df, date_column, group_column=group_column, lead_days=holiday_lead_days, backlog_alpha=backlog_alpha, backlog_max_release_days=backlog_max_release_days)
+    pl_df = add_holiday_features(
+        pl_df, date_column, group_column=group_column, lead_days=holiday_lead_days,
+        backlog_alpha=backlog_alpha, backlog_max_release_days=backlog_max_release_days,
+        target_column=_total_volume_col, baseline_window=backlog_baseline_window,
+    )
 
     # --- Adım 3.5: Kampanya (E-ticaret) özellikleri ---
     # lead_days=3: Anneler Günü gibi kampanyalarda 5 günlük arife
@@ -2493,7 +2815,13 @@ def build_feature_matrix(
         group_column=group_column,
         campaign_release_alpha=campaign_release_alpha,
         campaign_max_release_days=campaign_max_release_days,
+        target_column=_total_volume_col,
+        baseline_window=campaign_baseline_window,
     )
+
+    # _total_daily_volume sadece backlog/kampanya baseline hesapları için
+    # geçici bir yardımcı sütundu — nihai feature matrisine sızmasın.
+    pl_df = pl_df.drop(_total_volume_col)
 
     # --- Adım 3.6: Gecikmeli Kampanya Etkisi (Lag Matrisi + Kategorik Etkileşim) ---
     # is_campaign_day (Adım 3.5) ve weekday (Adım 2) sütunlarına bağımlı,
