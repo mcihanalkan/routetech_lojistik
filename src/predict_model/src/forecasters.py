@@ -570,7 +570,7 @@ def suggest_bucket_event_threshold(
     -------
     dict: {
         "distribution": {col: {"min":.., "p50":.., "p75":.., "p90":.., "p95":.., "max":..}, ...},
-        "bucket_counts_by_threshold": {threshold: {"sunday": n, "event": n, "normal": n}, ...},
+        "bucket_counts_by_threshold": {threshold: {"sunday_closed": n, "sunday_event": n, "event": n, "normal": n}, ...},
     }
     Bu sözlüğü print ederek/loglayarak BUCKET_EVENT_CONTINUOUS_THRESHOLD
     için yeni bir sayı seçin; bu fonksiyon sabiti KENDİSİ değiştirmez.
@@ -604,9 +604,17 @@ def suggest_bucket_event_threshold(
         for col in cols:
             vals = pd.to_numeric(X[col], errors="coerce").fillna(0.0).to_numpy()
             event_mask |= (vals > th)
-        bucket = np.where(is_sunday, "sunday", np.where(event_mask, "event", "normal"))
+        # REJİM AYRIMI: Pazar artık "sunday_closed" (event yok) ve
+        # "sunday_event" (event aktif — backlog/kampanya boşalması) olarak
+        # ikiye ayrılıyor; bkz. _learn_route_bucket_bias_correction.
+        bucket = np.where(
+            is_sunday & event_mask, "sunday_event",
+            np.where(is_sunday & ~event_mask, "sunday_closed",
+                     np.where(event_mask, "event", "normal")),
+        )
         bucket_counts_by_threshold[th] = {
-            "sunday": int((bucket == "sunday").sum()),
+            "sunday_closed": int((bucket == "sunday_closed").sum()),
+            "sunday_event": int((bucket == "sunday_event").sum()),
             "event": int((bucket == "event").sum()),
             "normal": int((bucket == "normal").sum()),
         }
@@ -1533,14 +1541,21 @@ class DemandForecaster(BaseForecaster):
         # yorumu) — sebep, Yalova tipi bias'ın rotanın HER gününe değil,
         # ya takvimsel (Pazar) ya da olay-bazlı (backlog/kampanya sonrası)
         # belirli günlerine özgü olmasıydı; flat bir çarpan bunu ayırt
-        # edemeyip normal günleri bozuyordu. Bu katman üç bucket'a ayırır:
-        #   "sunday" : weekday == 6 (Pazar'ın takvimsel/yapısal düşük hacim
-        #              etkisi — 17:00 slotundaki sistematik FAZLA tahminin
-        #              kaynağı; bkz. debug_backtest çıktısı).
-        #   "event"  : SURGE_BINARY_TRIGGER_COLUMNS / SURGE_CONTINUOUS_
-        #              TRIGGER_COLUMNS'tan herhangi biri aktif (kampanya/
-        #              tatil-sonrası/backlog boşalması) — Yalova tipi
-        #              rejim-değişikliği bias'ının kaynağı.
+        # edemeyip normal günleri bozuyordu. Bu katman DÖRT bucket'a ayırır
+        # (2026-07-26 revizyonu — Pazar artık TEK bucket değil, çünkü aynı
+        # gün içinde iki zıt rejim bir arada yaşanabiliyordu: kapanma/pasiflik
+        # nedeniyle çöken talep VE aynı anda backlog boşalması nedeniyle
+        # sıçrayan talep. Tek çarpan bu ikisini aynı anda doğru yapamıyordu):
+        #   "sunday_closed" : weekday == 6 VE event YOK — Pazar'ın takvimsel/
+        #              yapısal düşük hacim etkisi (17:00 slotundaki sistematik
+        #              FAZLA tahminin kaynağı; bkz. debug_backtest çıktısı).
+        #   "sunday_event"  : weekday == 6 VE event AKTİF — Pazar'a denk
+        #              gelen backlog/kampanya boşalması (ihtiyaç genelde
+        #              YUKARI, "event" ile aynı geniş cap aralığını kullanır).
+        #   "event"  : (Pazar olmayan günlerde) SURGE_BINARY_TRIGGER_COLUMNS /
+        #              SURGE_CONTINUOUS_TRIGGER_COLUMNS'tan herhangi biri
+        #              aktif (kampanya/tatil-sonrası/backlog boşalması) —
+        #              Yalova tipi rejim-değişikliği bias'ının kaynağı.
         #   "normal" : diğer tüm günler.
         # Bir rota-bucket kombinasyonunda yeterli efektif OOF ağırlığı
         # (eff_n) yoksa o kombinasyon ATLANIR — predict() tarafında flat
@@ -1548,32 +1563,54 @@ class DemandForecaster(BaseForecaster):
         # fallback, bkz. _lookup_bias_correction).
         self._learn_route_bucket_bias_correction(
             half_life_days=half_life_days,
-            min_eff_n_sunday=1.8,   # düzeltme: 4 hafta walk-forward OOF'ta 1 rota için tipik eff_n≈2.6 (4 ham Pazar, half_life=21g ile decay) — eski 4.0 hiçbir rotanın geçemeyeceği bir bar'dı (bkz. gerçek log: sunday=0)
+            # --- REJİM AYRIMI (2026-07-26 revizyonu) ---
+            # Eski tek "sunday" bucket'ı, Pazar'ın iki farklı fiziksel
+            # rejimini (kapalı/pasif TM → yapısal düşük hacim VS.
+            # backlog/kampanya boşalması → ani sıçrama) tek bir çarpanda
+            # eritiyordu. is_sunday her zaman event_mask'ten önce
+            # değerlendirildiği için, bir Pazar günü hem "Pazar" hem
+            # "event" olsa bile sadece "sunday" bucket'ına düşüyordu —
+            # bu da iki zıt yönlü ihtiyacı (aşağı vs yukarı düzeltme)
+            # aynı öğrenilmiş orana zorluyordu (bkz. debug_backtest günlüğü:
+            # ×0.55 tabanı bazı rotalarda yetersiz, bazılarında fazla).
+            # Artık dört bucket var: "sunday_closed" (Pazar, event YOK —
+            # eski "sunday" davranışı/cap'leri) ve "sunday_event" (Pazar,
+            # event AKTİF — backlog/kampanya boşalması, "event" bucket'ıyla
+            # aynı geniş cap aralığını kullanır çünkü ihtiyaç YUKARI olabilir).
+            min_eff_n_sunday_closed=1.8,   # düzeltme: 4 hafta walk-forward OOF'ta 1 rota için tipik eff_n≈2.6 (4 ham Pazar, half_life=21g ile decay) — eski 4.0 hiçbir rotanın geçemeyeceği bir bar'dı (bkz. gerçek log: sunday=0)
+            min_eff_n_sunday_event=3.0,    # event ile aynı seviyede tutulmuyor çünkü Pazar+event kombinasyonu daha seyrek görülür; event'ten (4.0) biraz daha gevşek
             min_eff_n_event=4.0,
             min_eff_n_normal=4.0,
-            cap_low_sunday=0.30,     # Pazar'ın gözlenen ~0.55x ihtiyacına izin ver
-            cap_high_sunday=1.2,     # Pazar'da YUKARI düzeltme nadiren gerekir, dar tut
+            cap_low_sunday_closed=0.30,     # Pazar'ın (kapalı/pasif rejim) gözlenen ~0.55x ihtiyacına izin ver
+            cap_high_sunday_closed=1.2,     # bu rejimde YUKARI düzeltme nadiren gerekir, dar tut
+            cap_low_sunday_event=0.5,       # backlog/kampanya rejiminde event bucket'ıyla aynı geniş aralık — burada ihtiyaç genelde YUKARI
+            cap_high_sunday_event=2.5,
             cap_low_event=0.5,
             cap_high_event=2.5,      # Yalova tipi backlog patlamaları büyük YUKARI düzeltme isteyebilir
             cap_low_normal=0.7,
             cap_high_normal=1.8,     # flat sürümle aynı (mevcut, denenmiş sınırlar)
-            smoothing_eff_rows_sunday=0.4,  # DÜZELTME: 2.5 idi — eff_n≈2.6 ile neredeyse yarı yarıya "düzeltme yok"a (ratio→1.0) seyrelticiydi; Pazar'ın sistematik bias'ı zaten çoklu backtestlerle doğrulanmış güçlü bir sinyal, gürültü değil — az smoothing + cap[0.30,1.2] güvenlik ağı yeterli
+            smoothing_eff_rows_sunday_closed=0.4,  # DÜZELTME: 2.5 idi — eff_n≈2.6 ile neredeyse yarı yarıya "düzeltme yok"a (ratio→1.0) seyrelticiydi; Pazar'ın (kapalı rejim) sistematik bias'ı zaten çoklu backtestlerle doğrulanmış güçlü bir sinyal, gürültü değil — az smoothing + cap[0.30,1.2] güvenlik ağı yeterli
+            smoothing_eff_rows_sunday_event=6.0,   # backlog rejiminde event ile aynı smoothing — bu kombinasyon nadir görüldüğü için aşırı güvenmemek gerek
             smoothing_eff_rows_default=6.0,  # event/normal için (daha fazla ham gözlem var)
         )
 
     def _learn_route_bucket_bias_correction(
         self,
         half_life_days: float = 21.0,
-        min_eff_n_sunday: float = 1.8,
+        min_eff_n_sunday_closed: float = 1.8,
+        min_eff_n_sunday_event: float = 3.0,
         min_eff_n_event: float = 4.0,
         min_eff_n_normal: float = 4.0,
-        cap_low_sunday: float = 0.30,
-        cap_high_sunday: float = 1.2,
+        cap_low_sunday_closed: float = 0.30,
+        cap_high_sunday_closed: float = 1.2,
+        cap_low_sunday_event: float = 0.5,
+        cap_high_sunday_event: float = 2.5,
         cap_low_event: float = 0.5,
         cap_high_event: float = 2.5,
         cap_low_normal: float = 0.7,
         cap_high_normal: float = 1.8,
-        smoothing_eff_rows_sunday: float = 0.4,
+        smoothing_eff_rows_sunday_closed: float = 0.4,
+        smoothing_eff_rows_sunday_event: float = 6.0,
         smoothing_eff_rows_default: float = 6.0,
     ) -> None:
         """
@@ -1644,19 +1681,30 @@ class DemandForecaster(BaseForecaster):
                     > BUCKET_EVENT_CONTINUOUS_THRESHOLD
                 ).to_numpy()
 
-        bucket = np.where(is_sunday, "sunday", np.where(event_mask, "event", "normal"))
+        # REJİM AYRIMI: Pazar + event aktifse "sunday_event" (backlog/kampanya
+        # boşalması — ihtiyaç genelde YUKARI), Pazar + event yoksa
+        # "sunday_closed" (kapalı/pasif TM — ihtiyaç genelde AŞAĞI). Bu ikisi
+        # artık AYNI öğrenilmiş orana zorlanmıyor.
+        bucket = np.where(
+            is_sunday & event_mask, "sunday_event",
+            np.where(is_sunday & ~event_mask, "sunday_closed",
+                     np.where(event_mask, "event", "normal")),
+        )
         cap_map = {
-            "sunday": (cap_low_sunday, cap_high_sunday),
+            "sunday_closed": (cap_low_sunday_closed, cap_high_sunday_closed),
+            "sunday_event":  (cap_low_sunday_event, cap_high_sunday_event),
             "event":  (cap_low_event, cap_high_event),
             "normal": (cap_low_normal, cap_high_normal),
         }
         min_eff_n_map = {
-            "sunday": min_eff_n_sunday,
+            "sunday_closed": min_eff_n_sunday_closed,
+            "sunday_event": min_eff_n_sunday_event,
             "event": min_eff_n_event,
             "normal": min_eff_n_normal,
         }
         smoothing_map = {
-            "sunday": smoothing_eff_rows_sunday,
+            "sunday_closed": smoothing_eff_rows_sunday_closed,
+            "sunday_event": smoothing_eff_rows_sunday_event,
             "event": smoothing_eff_rows_default,
             "normal": smoothing_eff_rows_default,
         }
@@ -1671,7 +1719,7 @@ class DemandForecaster(BaseForecaster):
 
         combo_keys = list(zip(groups.tolist(), bucket.tolist()))
         combo_arr = np.array(combo_keys, dtype=object)
-        n_learned = {"sunday": 0, "event": 0, "normal": 0}
+        n_learned = {"sunday_closed": 0, "sunday_event": 0, "event": 0, "normal": 0}
         n_skipped = 0
 
         for combo in dict.fromkeys(combo_keys):   # sıra korunan benzersizleştirme
@@ -1698,11 +1746,14 @@ class DemandForecaster(BaseForecaster):
         if self.logging_enabled:
             n_total = sum(n_learned.values())
             logger.info(
-                f"   🎯 Rota×Gün-Türü OOF Bias Düzeltmesi Öğrenildi (Öneri A): "
+                f"   🎯 Rota×Gün-Türü OOF Bias Düzeltmesi Öğrenildi (Öneri A, rejim-ayrımlı): "
                 f"{n_total} (rota,bucket) kombinasyonu — "
-                f"sunday={n_learned['sunday']}, event={n_learned['event']}, "
+                f"sunday_closed={n_learned['sunday_closed']}, "
+                f"sunday_event={n_learned['sunday_event']}, "
+                f"event={n_learned['event']}, "
                 f"normal={n_learned['normal']} "
-                f"(min_eff_n: sunday={min_eff_n_sunday}/event={min_eff_n_event}/normal={min_eff_n_normal}, "
+                f"(min_eff_n: sunday_closed={min_eff_n_sunday_closed}/"
+                f"sunday_event={min_eff_n_sunday_event}/event={min_eff_n_event}/normal={min_eff_n_normal}, "
                 f"event_threshold={BUCKET_EVENT_CONTINUOUS_THRESHOLD}, "
                 f"{n_skipped} kombinasyon yetersiz efektif ağırlık nedeniyle atlandı; "
                 f"eksik kombinasyonlar predict() sırasında flat rota-bazlı "
@@ -1717,11 +1768,19 @@ class DemandForecaster(BaseForecaster):
         predict()/eval() içinde satır bazında çağrılır. weekday=None veya
         NaN gelirse (ör. sütun eksikse) doğrudan "normal" bucket varsayılır
         — Pazar'a yanlışlıkla atama YAPILMAZ (güvenli varsayılan).
+
+        REJİM AYRIMI: Pazar artık tek bucket değil — event_active'e göre
+        "sunday_closed" (kapalı/pasif rejim) veya "sunday_event" (backlog/
+        kampanya boşalması rejimi) olarak ikiye ayrılır (bkz.
+        _learn_route_bucket_bias_correction docstring'i).
         """
         bucket_map = getattr(self, "route_bucket_bias_correction_", None)
         if bucket_map:
             is_sunday = (weekday is not None) and (not pd.isna(weekday)) and (int(weekday) == 6)
-            bucket = "sunday" if is_sunday else ("event" if event_active else "normal")
+            if is_sunday:
+                bucket = "sunday_event" if event_active else "sunday_closed"
+            else:
+                bucket = "event" if event_active else "normal"
             key = (route, bucket)
             if key in bucket_map:
                 return bucket_map[key]
@@ -3472,21 +3531,42 @@ class DemandForecaster(BaseForecaster):
             wd_vals = X_pred["weekday"].to_numpy()
             sunday_mask = (wd_vals == 6)
 
+            # --- REJİM AYRIMI (2026-07-26): bu güvenlik tabanı SADECE
+            # "sunday_closed" (kapalı/pasif TM, event YOK) rejimi için
+            # tasarlandı — backlog/kampanya boşalması nedeniyle talebin
+            # gerçekten YÜKSEK olması beklenen "sunday_event" satırlarını
+            # ×0.55 ile aşağı bastırmak yanlış yönde bir müdahale olurdu.
+            # Bu yüzden event_active'i burada (Adım 2 bloğundan ÖNCE, yerel
+            # olarak) hesaplayıp sadece event'siz Pazar satırlarını
+            # kapsıyoruz; event aktif Pazar satırları bu tabandan tamamen
+            # muaf.
+            event_active_sunday = np.zeros(len(X_pred), dtype=bool)
+            for _col in SURGE_BINARY_TRIGGER_COLUMNS:
+                if _col in X_pred.columns:
+                    event_active_sunday |= (pd.to_numeric(X_pred[_col], errors="coerce").fillna(0.0) > 0).values
+            for _col in SURGE_CONTINUOUS_TRIGGER_COLUMNS:
+                if _col in X_pred.columns:
+                    event_active_sunday |= (
+                        pd.to_numeric(X_pred[_col], errors="coerce").fillna(0.0) > BUCKET_EVENT_CONTINUOUS_THRESHOLD
+                    ).values
+
+            sunday_closed_mask = sunday_mask & ~event_active_sunday
+
             bucket_map_sunday = getattr(self, "route_bucket_bias_correction_", None)
             already_covered = np.zeros(len(X_pred), dtype=bool)
             if (
-                sunday_mask.any()
+                sunday_closed_mask.any()
                 and getattr(self, "route_bias_correction_enabled_", False)
                 and bucket_map_sunday
                 and self.group_column in X_pred.columns
             ):
                 route_vals_sd = X_pred[self.group_column].values
                 already_covered = np.array([
-                    (r, "sunday") in bucket_map_sunday for r in route_vals_sd
+                    (r, "sunday_closed") in bucket_map_sunday for r in route_vals_sd
                 ])
 
-            uncovered_sunday_mask = sunday_mask & ~already_covered
-            covered_sunday_mask = sunday_mask & already_covered
+            uncovered_sunday_mask = sunday_closed_mask & ~already_covered
+            covered_sunday_mask = sunday_closed_mask & already_covered
 
             if np.any(covered_sunday_mask):
                 scale = self._SUNDAY_POST_PROCESS_MULTIPLIER
@@ -3494,10 +3574,12 @@ class DemandForecaster(BaseForecaster):
                 sunday_floor_vals = q50_vals[sunday_floor_idx] * scale
                 if self.logging_enabled:
                     logger.info(
-                        f"   📅 [DENEYSEL] Pazar güvenlik TABANI (×{scale}) "
+                        f"   📅 [DENEYSEL] Pazar (kapalı/pasif rejim) güvenlik TABANI (×{scale}) "
                         f"{len(sunday_floor_idx)} Öneri-A-kapsamlı satır için "
                         f"hesaplandı — Öneri A kendi düzeltmesini uyguladıktan "
-                        f"SONRA ikisinden düşük olan kazanacak (çifte düzeltme değil)."
+                        f"SONRA ikisinden düşük olan kazanacak (çifte düzeltme değil). "
+                        f"'sunday_event' (backlog/kampanya boşalması) rejimindeki satırlar "
+                        f"bu tabandan muaf tutuldu."
                     )
 
             if np.any(uncovered_sunday_mask):
@@ -3508,7 +3590,7 @@ class DemandForecaster(BaseForecaster):
 
                 if self.logging_enabled:
                     logger.info(
-                        f"   📅 [DENEYSEL] Pazar post-process çarpımsal düzeltmesi "
+                        f"   📅 [DENEYSEL] Pazar (kapalı/pasif rejim) post-process çarpımsal düzeltmesi "
                         f"(güvenlik ağı — Öneri A tarafından kapsanmayan rotalar) "
                         f"uygulandı: {int(np.sum(uncovered_sunday_mask))} satır × {scale}x "
                         f"(kaynak=2026-06-14→06-20 penceresi, leakage'lı — "
@@ -3586,9 +3668,13 @@ class DemandForecaster(BaseForecaster):
                 q90_vals = np.maximum(q90_vals, 0)
 
                 if self.logging_enabled:
+                    def _bucket_of(wd, ev):
+                        is_sun = (not pd.isna(wd)) and (int(wd) == 6)
+                        if is_sun:
+                            return "sunday_event" if ev else "sunday_closed"
+                        return "event" if ev else "normal"
                     n_bucket_hits = int(np.sum(
-                        [(r, "sunday" if (not pd.isna(wd) and int(wd) == 6) else ("event" if ev else "normal"))
-                         in getattr(self, "route_bucket_bias_correction_", {})
+                        [(r, _bucket_of(wd, ev)) in getattr(self, "route_bucket_bias_correction_", {})
                          for r, wd, ev in zip(route_vals_bias, weekday_vals_bias, event_active_bias)]
                     ))
                     logger.info(
@@ -3621,10 +3707,11 @@ class DemandForecaster(BaseForecaster):
 
                 if self.logging_enabled:
                     logger.info(
-                        f"   📅 [DENEYSEL] Pazar güvenlik TABANI devreye girdi: "
+                        f"   📅 [DENEYSEL] Pazar (kapalı/pasif rejim) güvenlik TABANI devreye girdi: "
                         f"{int(needs_floor.sum())}/{len(sunday_floor_idx)} Öneri-A-kapsamlı "
-                        f"Pazar satırında bucket düzeltmesi (0.789x gibi) yetersiz kaldı, "
-                        f"×{self._SUNDAY_POST_PROCESS_MULTIPLIER} tabanına çekildi."
+                        f"'sunday_closed' satırında bucket düzeltmesi yetersiz kaldı, "
+                        f"×{self._SUNDAY_POST_PROCESS_MULTIPLIER} tabanına çekildi "
+                        f"('sunday_event' satırları bu blokta hiç yer almıyor)."
                     )
 
         # --- In-memory JSON Oluşturma (ALNS formatı) ---

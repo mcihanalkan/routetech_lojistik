@@ -325,11 +325,18 @@ def _print_bucket_correction_diagnosis(fc, tracked_routes, label):
     # ÇAĞRISINDAKİ (fit() içi) sabit kwarg'lardan elle kopyalanmıştır — o
     # çağrı değişirse burası da güncellenmeli (introspect edilemiyor, aynı
     # FOLD_DATES senkron notu gibi).
-    _CAPS = {"sunday": (0.30, 1.2), "event": (0.5, 2.5), "normal": (0.7, 1.8)}
+    # REJİM AYRIMI (2026-07-26): "sunday" → "sunday_closed" (kapalı/pasif,
+    # event yok) + "sunday_event" (backlog/kampanya boşalması, event aktif).
+    _CAPS = {
+        "sunday_closed": (0.30, 1.2),
+        "sunday_event": (0.5, 2.5),
+        "event": (0.5, 2.5),
+        "normal": (0.7, 1.8),
+    }
 
     print(f"\n🔎 [{label}] Öneri A (rota,bucket) Düzeltme Teşhisi — {tracked_routes}:")
     for route in tracked_routes:
-        for bucket in ("sunday", "event", "normal"):
+        for bucket in ("sunday_closed", "sunday_event", "event", "normal"):
             key = (route, bucket)
             if key in bucket_map:
                 ratio = bucket_map[key]
@@ -339,12 +346,12 @@ def _print_bucket_correction_diagnosis(fc, tracked_routes, label):
                     at_cap = "  ⚠️ ÜST CAP'E YAPIŞMIŞ (daha fazlası mümkün değil, mevcut mekanizmayla)"
                 elif ratio <= lo + 1e-6:
                     at_cap = "  ⚠️ ALT CAP'E YAPIŞMIŞ"
-                print(f"   {route:22s} | bucket={bucket:7s} | öğrenilmiş çarpan={ratio:.3f}x{at_cap}")
+                print(f"   {route:22s} | bucket={bucket:13s} | öğrenilmiş çarpan={ratio:.3f}x{at_cap}")
             else:
                 flat_val = flat_map.get(route)
                 fallback_desc = f"flat rota-bazlı={flat_val:.3f}x" if flat_val is not None else "flat de yok → 1.0x (no-op)"
                 print(
-                    f"   {route:22s} | bucket={bucket:7s} | (rota,bucket) YOK "
+                    f"   {route:22s} | bucket={bucket:13s} | (rota,bucket) YOK "
                     f"(eff_n yetersiz kaldı) → {fallback_desc}"
                 )
 
@@ -420,7 +427,13 @@ def _print_oof_bucket_raw_diagnosis(fc, tracked_routes, label, half_life_days: f
             event_mask |= (
                 pd.to_numeric(X_oof[col], errors="coerce").fillna(0.0) > BUCKET_EVENT_CONTINUOUS_THRESHOLD
             ).to_numpy()
-    bucket = np.where(is_sunday, "sunday", np.where(event_mask, "event", "normal"))
+    # REJİM AYRIMI (2026-07-26): "sunday" → "sunday_closed" (kapalı/pasif,
+    # event yok) + "sunday_event" (backlog/kampanya boşalması, event aktif).
+    bucket = np.where(
+        is_sunday & event_mask, "sunday_event",
+        np.where(is_sunday & ~event_mask, "sunday_closed",
+                 np.where(event_mask, "event", "normal")),
+    )
 
     w_pred = weights * base_pred
     w_true = weights * y_true
@@ -428,9 +441,14 @@ def _print_oof_bucket_raw_diagnosis(fc, tracked_routes, label, half_life_days: f
 
     # ⚠️ fit() çağrısındaki (forecasters.py::_learn_route_bucket_bias_correction
     # varsayılan kwarg'ları) İLE BİREBİR SENKRON tutulmalı.
-    MIN_EFF_N = {"sunday": 1.8, "event": 4.0, "normal": 4.0}
-    CAP = {"sunday": (0.30, 1.2), "event": (0.5, 2.5), "normal": (0.7, 1.8)}
-    SMOOTHING = {"sunday": 0.4, "event": 6.0, "normal": 6.0}
+    MIN_EFF_N = {"sunday_closed": 1.8, "sunday_event": 3.0, "event": 4.0, "normal": 4.0}
+    CAP = {
+        "sunday_closed": (0.30, 1.2),
+        "sunday_event": (0.5, 2.5),
+        "event": (0.5, 2.5),
+        "normal": (0.7, 1.8),
+    }
+    SMOOTHING = {"sunday_closed": 0.4, "sunday_event": 6.0, "event": 6.0, "normal": 6.0}
 
     print(f"\n🔬 [{label}] OOF Ham Veri Teşhisi (Adım 6) — global_w_mean_pred={global_w_mean_pred:,.2f}:")
     for route in tracked_routes:
@@ -438,11 +456,11 @@ def _print_oof_bucket_raw_diagnosis(fc, tracked_routes, label, half_life_days: f
         if not route_mask.any():
             print(f"   {route:22s} | OOF'ta bu rota YOK")
             continue
-        for b in ("sunday", "event", "normal"):
+        for b in ("sunday_closed", "sunday_event", "event", "normal"):
             combo_mask = route_mask & (bucket == b)
             n_rows = int(combo_mask.sum())
             if n_rows == 0:
-                print(f"   {route:22s} | bucket={b:7s} | OOF satırı YOK")
+                print(f"   {route:22s} | bucket={b:13s} | OOF satırı YOK")
                 continue
             eff_n = float(weights[combo_mask].sum())
             sum_pred_c = float(w_pred[combo_mask].sum())
@@ -455,7 +473,7 @@ def _print_oof_bucket_raw_diagnosis(fc, tracked_routes, label, half_life_days: f
             ratio = max(lo, min(raw_ratio, hi)) if smoothed_pred > 0 else float("nan")
             ham_oran = (sum_true_c / sum_pred_c) if sum_pred_c > 0 else float("nan")
             print(
-                f"   {route:22s} | bucket={b:7s} | n={n_rows:3d} | eff_n={eff_n:6.2f} "
+                f"   {route:22s} | bucket={b:13s} | n={n_rows:3d} | eff_n={eff_n:6.2f} "
                 f"(min={MIN_EFF_N[b]}) | ham_oran(smoothing'siz)={ham_oran:.3f}x | "
                 f"smoothing×{sm}×global_mean → raw_ratio(cap öncesi)={raw_ratio:.3f}x | "
                 f"NİHAİ={ratio:.3f}x"
@@ -475,8 +493,8 @@ def _print_bucket_threshold_calibration_diagnosis(fc, label):
     üzerinde çalıştırıp:
       1. backlog_release_index/campaign_release_index'in gerçek
          dağılımını (p50/p75/p90/p95/max),
-      2. bir aday eşik grid'i için "sunday/event/normal" bucket
-         dağılımını
+      2. bir aday eşik grid'i için "sunday_closed/sunday_event/event/normal"
+         bucket dağılımını
     yazdırır — nihai BUCKET_EVENT_CONTINUOUS_THRESHOLD seçimi (forecasters.py
     içinde elle güncellenir) bu rapora bakılarak yapılır; bu fonksiyon
     otomatik atama yapmaz, sadece ölçer.
@@ -497,10 +515,13 @@ def _print_bucket_threshold_calibration_diagnosis(fc, label):
             f"   {col:24s} | p50={stats['p50']:.3f} p75={stats['p75']:.3f} "
             f"p90={stats['p90']:.3f} p95={stats['p95']:.3f} max={stats['max']:.3f}"
         )
-    print(f"   {'eşik':>8s} | {'sunday':>8s} | {'event':>8s} | {'normal':>8s}")
+    print(f"   {'eşik':>8s} | {'sun_closed':>10s} | {'sun_event':>10s} | {'event':>8s} | {'normal':>8s}")
     for th, counts in report["bucket_counts_by_threshold"].items():
         marker = "  ← mevcut sabit" if abs(th - BUCKET_EVENT_CONTINUOUS_THRESHOLD) < 1e-9 else ""
-        print(f"   {th:8.2f} | {counts['sunday']:8d} | {counts['event']:8d} | {counts['normal']:8d}{marker}")
+        print(
+            f"   {th:8.2f} | {counts['sunday_closed']:10d} | {counts['sunday_event']:10d} | "
+            f"{counts['event']:8d} | {counts['normal']:8d}{marker}"
+        )
     print(
         "   ℹ️ Sağlıklı bir eşik: 'normal' bucket'ı sıfırlanmamalı VE 'event' "
         "haftanın neredeyse tamamına eşdeğer olmamalı (bkz. forecasters.py "
