@@ -45,6 +45,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.alns.cost_model import spot_vehicle_count, vehicle_leg_cost, ellecleme_maliyet_hesapla  # noqa: E402
 from src.alns.alns_engine import (  # noqa: E402
     MIN_SPOT_DOLULUK_ORANI,
+    KIRALIK_DISPATCH_SLOT,
     ProblemData,
     State,
     dogrula_min_spot_doluluk,
@@ -61,7 +62,7 @@ from src.alns.alns_engine import (  # noqa: E402
     worst_removal,
 )
 from src.alns.time_model import (  # noqa: E402
-    build_route_lookup, slot_datetime, varis_zamani, ellecleme_tamamlanma_zamani,
+    build_route_lookup, slot_datetime, varis_zamani, ellecleme_tamamlanma_zamani,seyir_suresi_saat,
     ellecleme_suresi_dakika, sla_deadline, gecikme_saat, sla_cezasi_tl,
 )
 
@@ -467,6 +468,10 @@ arac_id_kodu: dict = {
     for sira, arac_key in enumerate(_siralanmis_arac_keyler)
 }
 
+# Bu satırın altına ekleyin:
+_bos_id_counter = max(arac_id_kodu.values(), default="V0000")[1:]  # "0001" gibi
+_bos_id_counter = int(_bos_id_counter) + 1 if _bos_id_counter else 1
+
 # Bu FİZİKSEL aracı (bucket_key, arac_index) paylaşan farklı taleplerin HER
 # BİRİNİN kendi elleçleme "dokunuş" sayısı (0/1/2) farklı olabilir - bir talep
 # buradan uğrayarak (milk_run) geçiyorsa dokunuş 0/1, gerçekten iniyor/biniyorsa
@@ -590,6 +595,8 @@ def _final_leg_sla_cezasi(varis_dt, pay_desi, demand_gun, demand_slot, hedef_gun
 
 sla_penalties = [] # talepID -> ceza
 csv_records = []
+
+
 for a in best.assignments:
     nihai_kaynak, nihai_varis = a.demand_hat
     if len(a.legs) == 1:
@@ -643,43 +650,41 @@ for a in best.assignments:
         })
     else:
         ara_duraklar = " -> ".join(leg.dst for leg in a.legs[:-1])
-        # Uğrama (milk_run) zincirlerinde TÜM bacaklar aynı fiziksel araç olduğu
-        # için, ilk bacaktaki Araç_ID'yi (nadir durumda birden fazla araca
-        # bölünmüşse hepsini) SONRAKİ tüm bacaklarda da AYNEN gösteriyoruz -
-        # böylece çıktıda "aynı araç devam ediyor" iddiası Araç_ID'den de
-        # doğrudan izlenebilir olur (bkz. sohbet geçmişi). Maliyet/desi
-        # hesapları hâlâ her bacağın KENDİ (key,arac_index) değerlerinden
-        # hesaplanıyor - sadece GÖRÜNEN ID metni değişiyor.
-        milk_chain_arac_id = None
-        if a.milk_run:
-            key0 = _bucket_key(a.legs[0])
-            leg0_ids = sorted({
-                arac_id_kodu[(key0, arac_index)]
-                for (aa, ll, arac_index, pay_desi, ll_i) in bucket_dagilim[key0]
-                if aa is a
-            })
-            if leg0_ids:
-                milk_chain_arac_id = "+".join(leg0_ids)
+        
         for i, leg in enumerate(a.legs):
-
             arac_tipi = "Kiralik" if leg.is_kiralik else "Spot"
             key = _bucket_key(leg)
+            
+            # YENİ: Uğrama (milk-run) ise, ikinci bacakta olsak bile 
+            # kargonun İLK bacaktaki dağılım oranlarını ve Araç ID'lerini baz alıyoruz.
+            if a.milk_run:
+                key_referans = _bucket_key(a.legs[0])
+            else:
+                key_referans = key
+                
             bu_sevkiyatin_paylari = []
-            for (aa, ll, arac_index, pay_desi, ll_i) in bucket_dagilim[key]:
+            for (aa, ll, arac_index, pay_desi, ll_i) in bucket_dagilim[key_referans]:
                 if aa is a:
                     bu_sevkiyatin_paylari.append((arac_index, pay_desi))
 
             _base_talep_id = talep_id_goruntu.get(id(a), a.talep_id)
             _coklu_arac = len(bu_sevkiyatin_paylari) > 1
+            
             for _sira, (arac_index, pay_desi) in enumerate(bu_sevkiyatin_paylari, start=1):
                 talep_id_gosterim = f"{_base_talep_id}-{_sira}" if _coklu_arac else _base_talep_id
-                # YENİ DEĞİŞİKLİK (Cozum A): kalkis/varis artik bu SPESIFIK aracin
-                # TOPLAM yukune gore hesaplaniyor, bu talebin kendi desisine gore degil.
-                gercek_dt, varis_dt = arac_zamanlari[(key, arac_index)]
+                
+                # ZAMAN HESAPLAMASI
+                if a.milk_run and i > 0:
+                    # Uğrama yapan araç durmadığı için kendi orijinal zaman çizelgesini kullanır
+                    gercek_dt, varis_dt = assignment_cizelgeleri[id(a)][i]
+                else:
+                    gercek_dt, varis_dt = arac_zamanlari[(key_referans, arac_index)]
+                    
                 gercek_gun = gercek_dt.strftime("%Y-%m-%d")
                 gercek_slot = gercek_dt.strftime("%H:%M")
                 varis_gun = varis_dt.strftime("%Y-%m-%d")
                 varis_saat = varis_dt.strftime("%H:%M")
+                
                 if i == len(a.legs) - 1:
                     hedef_gun = data.route_lookup[(nihai_kaynak, nihai_varis)]["target_delivery_days"]
                     sla_cezasi_raw = _final_leg_sla_cezasi(varis_dt, round(pay_desi, 2), a.demand_gun, a.demand_slot, hedef_gun)
@@ -688,9 +693,8 @@ for a in best.assignments:
                 sla_cezasi = round(sla_cezasi_raw, 2)
                 if sla_cezasi > 0:
                     sla_penalties.append((a.talep_id, sla_cezasi))
+                
                 if a.milk_run:
-                    # Uğrama: aynı fiziksel araç ara durakta hiç elleçlenmez (pass-through) -
-                    # sadece zincirin gerçek uçlarında (ilk çıkış / son varış) elleçleme olur.
                     skip_src = i > 0
                     skip_dst = i < len(a.legs) - 1
                     cikis_ellec_dk = 0 if skip_src else math.ceil(ellecleme_suresi_dakika(pay_desi, consolidation=False))
@@ -700,10 +704,20 @@ for a in best.assignments:
                     cikis_ellec_dk = math.ceil(ellecleme_suresi_dakika(pay_desi, consolidation=(i > 0)))
                     varis_ellec_dk = math.ceil(ellecleme_suresi_dakika(pay_desi, consolidation=(i < len(a.legs) - 1)))
                     rota_tipi_cok_bacakli = f"Aktarmalı/Konsolidasyonlu {i + 1}/{len(a.legs)} (via {ara_duraklar}, nihai varis: {nihai_varis})"
+                
+                # MALİYET HESABI
+                if a.milk_run and i > 0:
+                    # Uğrama devam bacağında, o anki genel rotanın ortalama maliyetini baz alıyoruz
+                    bacak_toplam_maliyet = sum(v for k, v in arac_maliyeti.items() if k[0] == key)
+                    bacak_birim = bacak_toplam_maliyet / bucket_toplam_desi[key] if bucket_toplam_desi[key] > 0 else 0
+                    arac_maliyeti_payi = pay_desi * bacak_birim
+                else:
+                    arac_maliyeti_payi = arac_maliyeti[(key_referans, arac_index)] * (pay_desi / arac_toplam_yuk[(key_referans, arac_index)])
+
                 csv_records.append({
-                    "Tarih": gercek_gun, "Slot": gercek_slot, "Arac_Tipi": arac_tipi, "Arac_Turu": leg.arac_turu, # BURASI GÜNCELLENDİ
-                    "Arac_ID": (milk_chain_arac_id if (a.milk_run and i > 0 and milk_chain_arac_id)
-                                else arac_id_kodu[(key, arac_index)]),
+                    "Tarih": gercek_gun, "Slot": gercek_slot, "Arac_Tipi": arac_tipi, "Arac_Turu": leg.arac_turu,
+                    # YENİ: Artık '+' yok. Doğrudan İlk bacağın tertemiz Araç ID'si kopyalanıyor.
+                    "Arac_ID": arac_id_kodu[(key_referans, arac_index)],
                     "Talep_ID": talep_id_gosterim,
                     "Cikis_TM": leg.src, "Varis_TM": leg.dst,
                     "Yolculuk_Suresi_Dk": math.ceil(data.route_lookup[(leg.src, leg.dst)][leg.arac_turu] * 60),
@@ -713,22 +727,86 @@ for a in best.assignments:
                     "Bacaktaki_Arac_Sayisi": _bacak_arac_sayisi(leg),
                     "Bu_Talebin_Desisi": round(pay_desi, 2),
                     "Bacak_Toplam_Desi": round(bucket_toplam_desi[key], 2),
-                    # NOT: Maliyet_TL artik HER bacakta yaziliyor (eskiden sadece son
-                    # bacakta yaziliyordu, cunku maliyet assignment bazliydi) - simdi
-                    # arac bazli hesaplandigi icin her bacagin KENDI aracinin gercek
-                    # payi kendi satirinda gosteriliyor. SLA cezasi ise teslimat anina
-                    # bagli bir kavram oldugu icin hala SADECE son bacakta yaziliyor.
-                    "Maliyet_TL": round(arac_maliyeti[(key, arac_index)] * (pay_desi / arac_toplam_yuk[(key, arac_index)]), 2),
+                    "Maliyet_TL": round(arac_maliyeti_payi, 2),
                     "SLA_Cezasi_TL": sla_cezasi,
-                    "Toplam_Maliyet_TL": round(
-                        arac_maliyeti[(key, arac_index)] * (pay_desi / arac_toplam_yuk[(key, arac_index)])
-                        + sla_cezasi_raw, 2
-                    ),
+                    "Toplam_Maliyet_TL": round(arac_maliyeti_payi + sla_cezasi_raw, 2),
                     "Rota_Tipi": rota_tipi_cok_bacakli,
                     "Konsolide_Talep_Sayisi": bucket_konsolidasyon_sayisi[key],
                     "Talep_Tarihi": a.demand_gun, "Talep_Slotu": a.demand_slot,
                     "Varis_Tarihi": varis_gun, "Varis_Saati": varis_saat,
                 })
+dispatch_records = []
+for (hat, arac_turu), stok in kiralik_stok_gunluk.items():
+    if stok <= 0:
+        continue
+    src, dst = hat
+    kap = arac_parametreleri[arac_turu]["kapasite_desi"]
+    p = arac_parametreleri[arac_turu]
+    entry = route_lookup.get(hat)
+    if not entry:
+        continue
+    seyir_saat = entry[arac_turu]
+    dist = entry["distance_km"]
+    birim_bos_maliyet = (seyir_saat * p["rental_hourly"]) + (dist * p["rental_km"])
+
+    for gun in gunler:
+        key = (src, dst, gun, KIRALIK_DISPATCH_SLOT, arac_turu)
+        kullanilan_desi = best.leg_kiralik_desi.get(key, 0.0)
+        kullanilan_adet = min(stok, math.ceil(kullanilan_desi / kap) if kullanilan_desi > 0 else 0)
+        bos_adet = stok - kullanilan_adet
+
+        if bos_adet <= 0:
+            continue
+
+        kalkis_zamani = slot_datetime(gun, KIRALIK_DISPATCH_SLOT)
+        varis_dt = varis_zamani(kalkis_zamani, seyir_saat)
+        varis_gun = varis_dt.strftime("%Y-%m-%d")
+        varis_saat = varis_dt.strftime("%H:%M")
+
+        for _ in range(int(bos_adet)):
+            arac_id = f"V{_bos_id_counter:04d}"
+            _bos_id_counter += 1
+
+            csv_records.append({
+                "Tarih": gun,
+                "Slot": KIRALIK_DISPATCH_SLOT,
+                "Arac_Tipi": "Kiralik",
+                "Arac_Turu": arac_turu,
+                "Arac_ID": arac_id,
+                "Talep_ID": "",
+                "Cikis_TM": src,
+                "Varis_TM": dst,
+                "Yolculuk_Suresi_Dk": math.ceil(seyir_saat * 60),
+                "Cikis_Ellecleme_Dk": 0,
+                "Varis_Ellecleme_Dk": 0,
+                "Nihai_Kaynak": src,
+                "Nihai_Varis": dst,
+                "Bacaktaki_Arac_Sayisi": 1,
+                "Bu_Talebin_Desisi": 0,
+                "Bacak_Toplam_Desi": 0,
+                "Maliyet_TL": round(birim_bos_maliyet, 2),
+                "SLA_Cezasi_TL": 0,
+                "Toplam_Maliyet_TL": round(birim_bos_maliyet, 2),
+                "Rota_Tipi": "Kiralık (Boş Sefer)",
+                "Talep_Tarihi": "",
+                "Talep_Slotu": "",
+                "Konsolide_Talep_Sayisi": 0,
+                "Varis_Tarihi": varis_gun,
+                "Varis_Saati": varis_saat,
+            })
+
+            # dispatch_records’a da aynı aracı ekle (özet tablo için)
+            dispatch_records.append({
+                "Tarih": gun,
+                "Slot": KIRALIK_DISPATCH_SLOT,
+                "Cikis_TM": src,
+                "Varis_TM": dst,
+                "Arac_Tipi": "Kiralik " + arac_turu,
+                "Arac_Sayisi": 1,
+                "Toplam_Desi": 0,
+                "Kapasite": kap,
+                "Doluluk_Yuzde": 0.0,
+            })
 
 csv_records.sort(key=lambda r: (r["Tarih"], r["Slot"], r["Cikis_TM"], r["Varis_TM"], r["Talep_Tarihi"], r["Talep_Slotu"]))
 
@@ -753,7 +831,7 @@ if data.tir_arac_turu is not None:
             })
 
 # ---- Arac sevkiyat ozeti (her fiziksel bacak icin TEK satir, dogru arac sayisiyla) ----
-dispatch_records = []
+
 for key, toplam_desi in sorted(bucket_toplam_desi.items()):
     src, dst, gun, slot, arac_turu, is_kiralik = key
     gercek_dt = bucket_gercek_kalkis[key]
