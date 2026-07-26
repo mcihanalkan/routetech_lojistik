@@ -187,6 +187,10 @@ def load_results(path: Path) -> pd.DataFrame:
     missing = [c for c in REQUIRED_RESULT_COLS if c not in df.columns]
     if missing:
         raise ValueError(f"optimization_results.csv beklenen kolonlari icermiyor: {missing}")
+    # Bos Talep_ID'li satirlar gercek bir talebe ait degildir (zorunlu ama
+    # yuksuz kiralik seferlerin bilgilendirme satirlari) - SLA dogrulamasi
+    # disinda tutulur.
+    df = df[df["Talep_ID"].notna() & (df["Talep_ID"].astype(str).str.strip() != "")]
     return df
 
 

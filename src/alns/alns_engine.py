@@ -304,6 +304,11 @@ class State:
         self.milk_junction_desi: dict = {} # (spot_key, spot_key) -> bu J->K kilidine dayanan toplam desi (0'a inince kilit acilir)
         self.tir_usage_in: dict = {}    # (tm,gun) -> varış yapan spot tır adet
         self.tir_usage_out: dict = {}   # (tm,gun) -> çıkış yapan spot tır adet
+        # Gercek-zaman kapasite dogrulamasi icin: bu ucta GERCEKTEN elleclenen
+        # (skip_src/skip_dst olmayan) desi - leg_ellecleme_desi'nin dokunus_sayisi=1
+        # durumunda cikis/varis ayrimini kaybetmesinden farkli olarak ayri tutulur.
+        self.cikis_ellecleme_desi: dict = {}  # (src,dst,gun,slot,arac_turu,is_kiralik) -> desi
+        self.varis_ellecleme_desi: dict = {}  # (src,dst,gun,slot,arac_turu,is_kiralik) -> desi
         self._fixed_kiralik_cost = self._kiralik_bos_seyir_maliyeti()
         # Her bacagin GUNCEL arac maliyetinin (seyir+ellecleme) ARTIMLI takibi -
         # _commit_leg/force_insert eklerken, _remove_assignment cikarirken bunu
@@ -342,6 +347,8 @@ class State:
         new.milk_junction_desi = dict(self.milk_junction_desi)
         new.tir_usage_in = dict(self.tir_usage_in)
         new.tir_usage_out = dict(self.tir_usage_out)
+        new.cikis_ellecleme_desi = dict(self.cikis_ellecleme_desi)
+        new.varis_ellecleme_desi = dict(self.varis_ellecleme_desi)
         new._fixed_kiralik_cost = self._fixed_kiralik_cost
         new._arac_maliyeti_toplam = self._arac_maliyeti_toplam
         return new
@@ -560,6 +567,13 @@ class State:
             dagilim = _ellecleme_dagilimi(varis_dt, desi, sure_dk)
             for gun_str, pay in dagilim.items():
                 self.handling_usage[(dst, gun_str)] = self.handling_usage.get((dst, gun_str), 0.0) + pay
+
+        real_key = key + (is_kiralik,)
+        if not skip_src_handling:
+            self.cikis_ellecleme_desi[real_key] = self.cikis_ellecleme_desi.get(real_key, 0.0) + desi
+        if not skip_dst_handling:
+            self.varis_ellecleme_desi[real_key] = self.varis_ellecleme_desi.get(real_key, 0.0) + desi
+
         return marjinal_maliyet
 
 
@@ -1502,6 +1516,12 @@ def _remove_assignment(state: State, a: Assignment) -> None:
             for gun_str, pay in dagilim.items():
                 state.handling_usage[(leg.dst, gun_str)] = state.handling_usage.get((leg.dst, gun_str), 0.0) - pay
 
+        real_key = key + (leg.is_kiralik,)
+        if not skip_src_handling:
+            state.cikis_ellecleme_desi[real_key] = max(0.0, state.cikis_ellecleme_desi.get(real_key, 0.0) - a.desi)
+        if not skip_dst_handling:
+            state.varis_ellecleme_desi[real_key] = max(0.0, state.varis_ellecleme_desi.get(real_key, 0.0) - a.desi)
+
     if a.milk_run:
         # commit_path'te kurulan yon-tutarliligi kilidini (State.milk_fwd/milk_bwd)
         # tam olarak geri al - junction desi'si 0'a inince kilit tamamen acilir ki
@@ -1677,6 +1697,7 @@ def enforce_min_spot_occupancy(state: "State", rng) -> "State":
                 if (leg.src, leg.dst, leg.gun, leg.slot, leg.arac_turu) in ihlal_keyleri and not leg.is_kiralik
             )
             zorunlu_idx = min(zorunlu_idx, len(zamanlar) - 1)
+            print(f"DEBUG minspot bump: {a.talep_id} eski=({a.legs[0].gun},{a.legs[0].slot}) yeni_min_idx={zorunlu_idx} ({zamanlar[zorunlu_idx]}) desi={a.desi:.0f}")
             kalan = _insert_chunk_from(
                 state, a.demand_hat, zorunlu_idx, a.desi, rng, a.talep_id,
                 a.demand_gun, a.demand_slot,
@@ -1701,6 +1722,300 @@ def enforce_min_spot_occupancy(state: "State", rng) -> "State":
             f"UYARI: {len(kalan_ihlaller)} spot arac grubu {tur_limiti} zorunlu turdan sonra "
             f"HALA MIN_SPOT_DOLULUK_ORANI (%{MIN_SPOT_DOLULUK_ORANI*100:.0f}) altinda - "
             "bkz. dogrula_min_spot_doluluk()."
+        )
+    return state
+
+
+# ============================================================================
+# Gercek (elleçleme dahil) kapasite dogrulamasi ve zorunlu duzeltme
+# ============================================================================
+# arrival_day() (time_model.py) kapasiteyi nominal kalkis saati + yol suresine
+# gore gune yaziyor, cikis elleçleme suresini atliyor - buyuk yuklerde bu sure
+# gece yarisini asinca arac gercekte ertesi gune dusuyor ama arama sirasindaki
+# kapasite takibi bunu yakalayamiyor. Asagidaki fonksiyonlar, State.cikis_
+# ellecleme_desi/varis_ellecleme_desi'yi (milk-run dokunus ayrimini koruyan,
+# bucket TOPLAMindan farkli sozlukler) kullanarak ALNS bittikten sonra gercek
+# zamana gore kapasiteyi yeniden dogrular ve ihlalleri zorla erteler - arama
+# mantigina dokunmaz (bkz. enforce_min_spot_occupancy ile ayni desen).
+def _gercek_bacak_zamanlari(data: "ProblemData", key5: tuple, cikis_desi: float) -> tuple:
+    """key5 = (src,dst,gun,slot,arac_turu). Kalkis, cikis_desi'nin (milk-run
+    skip_src disarida) elleçleme suresi kadar gecikir; 0 ise gecikmez."""
+    src, dst, gun, slot, arac_turu = key5
+    slot_zamani = slot_datetime(gun, slot)
+    if cikis_desi > 1e-9:
+        kalkis = ellecleme_tamamlanma_zamani(slot_zamani, cikis_desi, consolidation=False)
+    else:
+        kalkis = slot_zamani
+    seyir = seyir_suresi_saat(data.route_lookup, src, dst, arac_turu)
+    varis = varis_zamani(kalkis, seyir)
+    return kalkis, varis
+
+
+def gercek_kapasite_kullanimlari(state: "State") -> tuple[dict, dict, dict]:
+    """Gercek (elleçleme dahil) zamana gore elleçleme/tir kapasitesi kullanimini
+    hesaplar. Dönüş: (handling_real, tir_real, bucket_zaman) - ucuncusu
+    real_key -> (kalkis, varis), enforce_real_capacity_limits icin."""
+    data = state.data
+    handling_real: dict = {}
+    tir_real: dict = {}
+    bucket_zaman: dict = {}
+
+    tum_keyler = (
+        set(state.cikis_ellecleme_desi) | set(state.varis_ellecleme_desi)
+        | {k + (False,) for k in state.leg_spot_desi if state.leg_spot_desi[k] > 1e-9}
+        | {k + (True,) for k in state.leg_kiralik_desi if state.leg_kiralik_desi[k] > 1e-9}
+    )
+
+    for real_key in tum_keyler:
+        src, dst, gun, slot, arac_turu, is_kiralik = real_key
+        key5 = (src, dst, gun, slot, arac_turu)
+        cikis_desi = state.cikis_ellecleme_desi.get(real_key, 0.0)
+        varis_desi = state.varis_ellecleme_desi.get(real_key, 0.0)
+        kalkis, varis = _gercek_bacak_zamanlari(data, key5, cikis_desi)
+        bucket_zaman[real_key] = (kalkis, varis)
+
+        if cikis_desi > 1e-9:
+            slot_zamani = slot_datetime(gun, slot)
+            cikis_sure_dk = (kalkis - slot_zamani).total_seconds() / 60.0
+            for gun_str, pay in _ellecleme_dagilimi(slot_zamani, cikis_desi, cikis_sure_dk).items():
+                handling_real[(src, gun_str)] = handling_real.get((src, gun_str), 0.0) + pay
+        if varis_desi > 1e-9:
+            varis_sure_dk = ellecleme_suresi_dakika(varis_desi, consolidation=False)
+            for gun_str, pay in _ellecleme_dagilimi(varis, varis_desi, varis_sure_dk).items():
+                handling_real[(dst, gun_str)] = handling_real.get((dst, gun_str), 0.0) + pay
+
+        if arac_turu != data.tir_arac_turu:
+            continue
+        if is_kiralik:
+            adet = data.kiralik_stok_gunluk.get(((src, dst), arac_turu), 0)
+        else:
+            bucket_desi = state.leg_spot_desi.get(key5, 0.0)
+            if bucket_desi <= 1e-9:
+                continue
+            kap = data.arac_parametreleri[arac_turu]["kapasite_desi"]
+            adet = spot_vehicle_count(bucket_desi, kap, MAX_SPOT)
+        if adet <= 0:
+            continue
+        tir_real[(src, kalkis.date().isoformat())] = tir_real.get((src, kalkis.date().isoformat()), 0) + adet
+        tir_real[(dst, varis.date().isoformat())] = tir_real.get((dst, varis.date().isoformat()), 0) + adet
+
+    # Kiralik zorunlu her gun kalkar - o gun desi=0 olsa da tir kapasitesi tuketir.
+    if data.tir_arac_turu is not None:
+        for (hat, arac_turu), stok in data.kiralik_stok_gunluk.items():
+            if arac_turu != data.tir_arac_turu or stok <= 0:
+                continue
+            src, dst = hat
+            for gun in data.gunler:
+                real_key = (src, dst, gun, KIRALIK_DISPATCH_SLOT, arac_turu, True)
+                if real_key in tum_keyler:
+                    continue  # yukarida zaten islendi
+                kalkis = slot_datetime(gun, KIRALIK_DISPATCH_SLOT)
+                seyir = seyir_suresi_saat(data.route_lookup, src, dst, arac_turu)
+                varis = varis_zamani(kalkis, seyir)
+                bucket_zaman[real_key] = (kalkis, varis)
+                tir_real[(src, kalkis.date().isoformat())] = tir_real.get((src, kalkis.date().isoformat()), 0) + stok
+                tir_real[(dst, varis.date().isoformat())] = tir_real.get((dst, varis.date().isoformat()), 0) + stok
+
+    return handling_real, tir_real, bucket_zaman
+
+
+def dogrula_gercek_kapasite(state: "State") -> dict:
+    """gercek_kapasite_kullanimlari()'ni kapasite limitleriyle karsilastirip
+    ihlal eden (tm, gun) ciftlerini dondurur: {"handling": [...], "tir": [...]}."""
+    data = state.data
+    handling_real, tir_real, _ = gercek_kapasite_kullanimlari(state)
+    handling_ihlal = [
+        {"tm": tm, "gun": gun, "kullanim": kullanim, "kapasite": data.handling_capacity[tm]}
+        for (tm, gun), kullanim in handling_real.items()
+        if tm in data.handling_capacity and kullanim > data.handling_capacity[tm] + 1e-6
+    ]
+    tir_ihlal = [
+        {"tm": tm, "gun": gun, "kullanim": kullanim, "kapasite": data.tir_capacity[tm]}
+        for (tm, gun), kullanim in tir_real.items()
+        if tm in data.tir_capacity and kullanim > data.tir_capacity[tm] + 1e-6
+    ]
+    return {"handling": handling_ihlal, "tir": tir_ihlal}
+
+
+def _yeni_atama_ihlal_cezasi(state: "State", yeni_atamalar: list, handling_asim: dict, tir_asim: dict) -> float:
+    """yeni_atamalar (bu adayda YENİ eklenen Assignment'lar) icin, HER bacagin
+    GERCEK cikis/varis gununun, TURUN BASINDA olculen ihlal kumesine
+    (handling_asim/tir_asim) denk gelip gelmedigini kontrol edip objective()'in
+    nominal kapasite asimlarina uyguladigi AYNI olcekte (x1000/x50000)
+    cezalandirir. SADECE bu adayin KENDI (genelde 1-3) bacagina baktigi icin,
+    tum state'i yeniden tarayan gercek_kapasite_kullanimlari()'ndan COK daha
+    ucuzdur (performans: butun buketleri her adayda yeniden taramak 400s+
+    butceyi asiyordu)."""
+    if not handling_asim and not tir_asim:
+        return 0.0
+    ceza = 0.0
+    data = state.data
+    for a in yeni_atamalar:
+        n = len(a.legs)
+        for i, leg in enumerate(a.legs):
+            if leg.is_kiralik:
+                continue
+            real_key = (leg.src, leg.dst, leg.gun, leg.slot, leg.arac_turu, False)
+            cikis_desi = state.cikis_ellecleme_desi.get(real_key, 0.0)
+            key5 = (leg.src, leg.dst, leg.gun, leg.slot, leg.arac_turu)
+            kalkis, varis = _gercek_bacak_zamanlari(data, key5, cikis_desi)
+            skip_src = a.milk_run and i > 0
+            skip_dst = a.milk_run and i < n - 1
+            cikis_gun = kalkis.date().isoformat()
+            varis_gun = varis.date().isoformat()
+            if not skip_src and (leg.src, cikis_gun) in handling_asim:
+                ceza += a.desi * 1000.0
+            if not skip_dst and (leg.dst, varis_gun) in handling_asim:
+                ceza += a.desi * 1000.0
+            if leg.arac_turu == data.tir_arac_turu:
+                if (leg.src, cikis_gun) in tir_asim:
+                    ceza += 50000.0
+                if (leg.dst, varis_gun) in tir_asim:
+                    ceza += 50000.0
+    return ceza
+
+
+def _yeniden_yerlestirme_maliyet_ekle(
+    state: "State", a: Assignment, idx: int, rng, handling_asim: dict, tir_asim: dict
+) -> float:
+    """`a`yi idx'ten itibaren state UZERINDE (kopyasiz) yeniden yerlestirir,
+    eklenen marjinal maliyeti (yeni atamalarin arac+SLA maliyeti + GERCEK
+    ihlal cezasi, yerlesemezse agir sanal ceza) dondurur. Cagiran taraf secim
+    icin KENDI kopyasini vermelidir."""
+    onceki_sayisi = len(state.assignments)
+    kalan = _insert_chunk_from(state, a.demand_hat, idx, a.desi, rng, a.talep_id, a.demand_gun, a.demand_slot)
+    if kalan > 1e-6:
+        kalan = _insert_chunk(state, a.demand_hat, a.demand_gun, a.demand_slot, kalan, rng, a.talep_id)
+    maliyet = 0.0
+    if kalan > 1e-6:
+        state.unassigned.append((a.demand_hat, a.demand_gun, a.demand_slot, kalan, a.talep_id))
+        maliyet += sla_cezasi_tl(kalan, 24 * 30)
+    yeni_atamalar = state.assignments[onceki_sayisi:]
+    for yeni in yeni_atamalar:
+        maliyet += yeni.vehicle_cost + _fresh_sla_cost(state, yeni)
+    maliyet += _yeni_atama_ihlal_cezasi(state, yeni_atamalar, handling_asim, tir_asim)
+    return maliyet
+
+
+def _en_iyi_yeniden_yerlestirme(
+    state: "State", a: Assignment, zorunlu_idx: int, zamanlar: list, rng, handling_asim: dict, tir_asim: dict
+) -> "State":
+    """`a`yi zorunlu_idx'ten itibaren birkac FARKLI baslangic noktasindan
+    yeniden yerlestirmeyi dener - hemen sonraki slot her zaman en ucuz
+    olmuyor (sikisik bir hub'a tekrar tekrar yonlendirme riski), biraz daha
+    ileri bir zaman cok daha ucuza gelebilir. Marjinal maliyeti (bu turun
+    ihlal kumesini yeniden yaratan bir adayi elemek icin GERCEK ihlal cezasi
+    dahil) en dusuk olan denemeyi kalici state olarak dondurur."""
+    adaylar_idx = sorted({min(zorunlu_idx + adim, len(zamanlar) - 1) for adim in (0, 1, 2, 4)})
+    en_iyi_state = None
+    en_iyi_maliyet = float("inf")
+    for idx in adaylar_idx:
+        deneme = state.copy()
+        maliyet = _yeniden_yerlestirme_maliyet_ekle(deneme, a, idx, rng, handling_asim, tir_asim)
+        if maliyet < en_iyi_maliyet:
+            en_iyi_maliyet = maliyet
+            en_iyi_state = deneme
+    return en_iyi_state
+
+
+def enforce_real_capacity_limits(state: "State", rng) -> "State":
+    """Gercek (elleçleme dahil) zamana gore ihlal eden TM/gun'lari bulur ve
+    sadece asimi kapatmaya yetecek kadar spot atamayi - kucukten buyuge secerek,
+    gereksiz sevkiyat ertelemesini onlemek icin - soker (kiralik zorunlu/sabit
+    oldugundan sokulemez); enforce_min_spot_occupancy ile ayni ileri-zorlama
+    mantigiyla bir sonraki uygun slottan itibaren yeniden yerlestirir.
+
+    Saf kiralik kaynakli ihlaller (sokulecek spot atama yoksa) veri setindeki
+    cozulemez bir celiskiyi isaret eder - sadece raporlanir, zorla duzeltilmez."""
+    zamanlar = state.data.zaman_sirali
+    zaman_index = {gs: i for i, gs in enumerate(zamanlar)}
+    tur_limiti = len(zamanlar)
+    data = state.data
+
+    for _ in range(tur_limiti):
+        handling_real, tir_real, bucket_zaman = gercek_kapasite_kullanimlari(state)
+        handling_asim = {
+            (tm, gun): kullanim - data.handling_capacity[tm]
+            for (tm, gun), kullanim in handling_real.items()
+            if tm in data.handling_capacity and kullanim > data.handling_capacity[tm] + 1e-6
+        }
+        tir_asim = {
+            (tm, gun): kullanim - data.tir_capacity[tm]
+            for (tm, gun), kullanim in tir_real.items()
+            if tm in data.tir_capacity and kullanim > data.tir_capacity[tm] + 1e-6
+        }
+        if not handling_asim and not tir_asim:
+            break
+
+        etkilenen_map: dict = {}  # (tur,tm,gun) -> {id(a): a}
+        for a in state.assignments:
+            n = len(a.legs)
+            for i, leg in enumerate(a.legs):
+                if leg.is_kiralik:
+                    continue  # kiralik zorunlu/sabit - sokulemez
+                real_key = (leg.src, leg.dst, leg.gun, leg.slot, leg.arac_turu, False)
+                kalkis, varis = bucket_zaman.get(real_key, (None, None))
+                if kalkis is None:
+                    continue
+                skip_src = a.milk_run and i > 0
+                skip_dst = a.milk_run and i < n - 1
+                cikis_gun = kalkis.date().isoformat()
+                varis_gun = varis.date().isoformat()
+                if not skip_src and (leg.src, cikis_gun) in handling_asim:
+                    etkilenen_map.setdefault(("h", leg.src, cikis_gun), {})[id(a)] = a
+                if not skip_dst and (leg.dst, varis_gun) in handling_asim:
+                    etkilenen_map.setdefault(("h", leg.dst, varis_gun), {})[id(a)] = a
+                if leg.arac_turu == data.tir_arac_turu:
+                    if (leg.src, cikis_gun) in tir_asim:
+                        etkilenen_map.setdefault(("t", leg.src, cikis_gun), {})[id(a)] = a
+                    if (leg.dst, varis_gun) in tir_asim:
+                        etkilenen_map.setdefault(("t", leg.dst, varis_gun), {})[id(a)] = a
+
+        # Her ihlal icin kucukten buyuge, asimi kapatmaya yetecek kadar sok.
+        sokulecek: dict = {}
+        asim_hepsi = [("h", tm, gun, deger) for (tm, gun), deger in handling_asim.items()]
+        asim_hepsi += [("t", tm, gun, deger) for (tm, gun), deger in tir_asim.items()]
+        for tur, tm, gun, asim_deger in asim_hepsi:
+            adaylar = etkilenen_map.get((tur, tm, gun), {})
+            if not adaylar:
+                continue
+            kalan_asim = asim_deger
+            for aid, a in adaylar.items():
+                if aid in sokulecek:
+                    kalan_asim -= (a.desi if tur == "h" else 1)
+            if kalan_asim <= 1e-9:
+                continue
+            kalan_adaylar = sorted(
+                (a for aid, a in adaylar.items() if aid not in sokulecek),
+                key=lambda a: a.desi,
+            )
+            for a in kalan_adaylar:
+                if kalan_asim <= 1e-9:
+                    break
+                sokulecek[id(a)] = a
+                kalan_asim -= (a.desi if tur == "h" else 1)
+
+        if not sokulecek:
+            break  # kalan ihlaller sadece kiralik kaynakli - sokulup duzeltilemez
+
+        etkilenen = list(sokulecek.values())
+        state.assignments = [a for a in state.assignments if id(a) not in sokulecek]
+        for a in etkilenen:
+            _remove_assignment(state, a)
+        del state.unassigned[-len(etkilenen):]
+
+        for a in etkilenen:
+            zorunlu_idx = min(zaman_index[(a.demand_gun, a.demand_slot)] + 1, len(zamanlar) - 1)
+            for leg in a.legs:
+                zorunlu_idx = max(zorunlu_idx, min(zaman_index.get((leg.gun, leg.slot), 0) + 1, len(zamanlar) - 1))
+            state = _en_iyi_yeniden_yerlestirme(state, a, zorunlu_idx, zamanlar, rng, handling_asim, tir_asim)
+
+    kalan_ihlaller = dogrula_gercek_kapasite(state)
+    if kalan_ihlaller["handling"] or kalan_ihlaller["tir"]:
+        print(
+            f"UYARI: gercek-zaman dogrulamasi sonrasi hala {len(kalan_ihlaller['handling'])} elleçleme "
+            f"+ {len(kalan_ihlaller['tir'])} tir ihlali var (muhtemelen zorunlu kiralik kaynakli, "
+            "veri setinde cozulemez bir celiski olabilir - bkz. dogrula_gercek_kapasite())."
         )
     return state
 
@@ -1929,7 +2244,6 @@ def tm_overload_removal(state: State, rng: rnd.Generator, **kwargs) -> State:
     for a in to_remove:
         _remove_assignment(state, a)
     return state
-
 
 
 def regret_repair(state: State, rng: rnd.Generator, **kwargs) -> State:

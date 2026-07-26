@@ -45,12 +45,15 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.alns.cost_model import spot_vehicle_count, vehicle_leg_cost, ellecleme_maliyet_hesapla  # noqa: E402
 from src.alns.alns_engine import (  # noqa: E402
     MIN_SPOT_DOLULUK_ORANI,
+    Assignment,
     KIRALIK_DISPATCH_SLOT,
     ProblemData,
     State,
+    dogrula_gercek_kapasite,
     dogrula_min_spot_doluluk,
     dummy_initial_builder,
     enforce_min_spot_occupancy,
+    enforce_real_capacity_limits,
     cpsat_hat_repair,
     greedy_repair,
     leg_zaman_cizelgesi,
@@ -185,7 +188,7 @@ print(f"Baslangic (dummy) cozum maliyeti: {initial_obj:,.0f} TL")
 # ============================================================================
 alns = ALNS(rng) # ALNS'yi generator ile kurduk
 # Destroy ve repair operatorleri olarak fonksiyonları atıyoruz.
-alns.add_destroy_operator(random_removal, "random_removal") 
+alns.add_destroy_operator(random_removal, "random_removal")
 alns.add_destroy_operator(worst_removal, "worst_removal")
 alns.add_destroy_operator(tm_overload_removal, "tm_overload_removal")
 alns.add_destroy_operator(low_occupancy_removal, "low_occupancy_removal")
@@ -315,6 +318,69 @@ if _dogrulama_sonrasi:
 else:
     print(f"DOGRULAMA GECTI: son (gun,slot) haric hicbir spot arac grubu %{MIN_SPOT_DOLULUK_ORANI*100:.0f} altinda degil.")
 
+# Gercek (elleçleme dahil) zamana gore tir/elleçleme kapasitesi dogrulamasi -
+# bkz. alns_engine.enforce_real_capacity_limits docstring.
+print("Gercek-zaman kapasite dogrulamasi uygulaniyor...")
+_gercek_dogrulama_oncesi = dogrula_gercek_kapasite(best)
+best = enforce_real_capacity_limits(best, rng)
+_gercek_dogrulama_sonrasi = dogrula_gercek_kapasite(best)
+print(
+    f"Gercek-zaman kapasite dogrulamasi: "
+    f"{len(_gercek_dogrulama_oncesi['handling'])} elleçleme + {len(_gercek_dogrulama_oncesi['tir'])} tir ihlali -> "
+    f"{len(_gercek_dogrulama_sonrasi['handling'])} elleçleme + {len(_gercek_dogrulama_sonrasi['tir'])} tir ihlali. "
+    f"Uygulama sonrasi maliyet: {best.objective():,.0f} TL"
+)
+if _gercek_dogrulama_sonrasi["tir"] or _gercek_dogrulama_sonrasi["handling"]:
+    print("UYARI: gercek-zamanda hala kapasite asan TM/gun'lar var (muhtemelen zorunlu kiralik kaynakli):")
+    for v in (_gercek_dogrulama_sonrasi["tir"] + _gercek_dogrulama_sonrasi["handling"])[:20]:
+        print(f"  {v['tm']} {v['gun']}: {v['kullanim']:.1f} / {v['kapasite']:.1f}")
+else:
+    print("DOGRULAMA GECTI: gercek zamana gore hicbir TM/gun tir/elleçleme kapasitesini asmiyor.")
+
+def _merge_duplicate_route_assignments(assignments):
+    """Ayni talebe (talep_id) ait, TAMAMEN ayni fiziksel rotayi (ayni bacak
+    dizisi + ayni milk_run modu) kullanan birden fazla Assignment parcasini
+    TEK bir parcada birlestirir.
+
+    ALNS destroy/repair dongusu ayni talebi defalarca sokup ayni bacaga yeniden
+    ekleyebiliyor - kargo kaybi yok ama rapor onlarca neredeyse ozdes mini
+    parcaya bolunuyor, her parcanin bagimsiz round(...,2) yuvarlanmasi kucuk
+    bir toplam sapmaya yol aciyordu. Sadece raporlama icindir, maliyet/kapasite
+    muhasebesini degistirmez; farkli rotaya/araca/gune giden parcalar asla
+    birlestirilmez."""
+    merged: dict = {}
+    order: list = []
+    for a in assignments:
+        route_key = (
+            a.talep_id, a.demand_hat, a.demand_gun, a.demand_slot, a.milk_run,
+            tuple(
+                (leg.src, leg.dst, leg.gun, leg.slot, leg.arac_turu, leg.is_kiralik)
+                for leg in a.legs
+            ),
+        )
+        if route_key not in merged:
+            merged[route_key] = a
+            order.append(route_key)
+        else:
+            existing = merged[route_key]
+            merged[route_key] = Assignment(
+                demand_hat=existing.demand_hat, demand_gun=existing.demand_gun,
+                demand_slot=existing.demand_slot, desi=existing.desi + a.desi,
+                legs=existing.legs, sla_cost=existing.sla_cost + a.sla_cost,
+                vehicle_cost=existing.vehicle_cost + a.vehicle_cost,
+                talep_id=existing.talep_id, milk_run=existing.milk_run,
+            )
+    return [merged[k] for k in order]
+
+
+_oncesi_assignment_sayisi = len(best.assignments)
+best.assignments = _merge_duplicate_route_assignments(best.assignments)
+print(
+    f"Raporlama birlestirmesi: {_oncesi_assignment_sayisi} atama parcasi -> "
+    f"{len(best.assignments)} (ayni rotayi paylasan tekrarlar birlestirildi)."
+)
+
+
 def _talep_id_goruntule():
     """Nihai cozumdeki her Assignment'in hangi ID ile gorunecegini hesaplar.
     Bir talep birden fazla parcaya bolunmusse -1,-2... eki eklenir; tek
@@ -346,7 +412,12 @@ for tm, cap in data.handling_capacity.items():
             print(f"UYARI: elleceleme kapasitesi asildi: {tm} {gun} kullanim={kullanim:.1f} > kap={cap:.1f}")
 for tm, cap in data.tir_capacity.items():
     for gun in data.gunler:
-        kullanim = best.tir_usage.get((tm, gun), 0) + data.fixed_kiralik_tir_usage.get((tm, gun), 0)
+        # best.tir_usage hep bos kalan olu bir sozluktu; gercek spot kullanimi
+        # tir_usage_in/tir_usage_out'ta tutuluyor.
+        kullanim = (
+            best.tir_usage_in.get((tm, gun), 0) + best.tir_usage_out.get((tm, gun), 0)
+            + data.fixed_kiralik_tir_usage.get((tm, gun), 0)
+        )
         if kullanim > cap + 1e-6:
             ihlal_sayisi += 1
             print(f"UYARI: tir kapasitesi asildi: {tm} {gun} kullanim={kullanim} > kap={cap}")
@@ -823,7 +894,10 @@ for tm, cap in sorted(data.handling_capacity.items()):
 if data.tir_arac_turu is not None:
     for tm, cap in sorted(data.tir_capacity.items()):
         for gun in data.gunler:
-            kullanim = best.tir_usage.get((tm, gun), 0) + data.fixed_kiralik_tir_usage.get((tm, gun), 0)
+            kullanim = (
+                best.tir_usage_in.get((tm, gun), 0) + best.tir_usage_out.get((tm, gun), 0)
+                + data.fixed_kiralik_tir_usage.get((tm, gun), 0)
+            )
             capacity_records.append({
                 "TM": tm, "Tarih": gun, "Tur": "Tir (adet)",
                 "Kullanim": kullanim, "Kapasite": cap,
@@ -888,7 +962,10 @@ tir_ceza_toplam = 0.0
 if data.tir_arac_turu is not None:
     for tm, cap in data.tir_capacity.items():
         for gun in data.gunler:
-            kullanim = best.tir_usage.get((tm, gun), 0) + data.fixed_kiralik_tir_usage.get((tm, gun), 0)
+            kullanim = (
+                best.tir_usage_in.get((tm, gun), 0) + best.tir_usage_out.get((tm, gun), 0)
+                + data.fixed_kiralik_tir_usage.get((tm, gun), 0)
+            )
             asim = kullanim - cap
             if asim > 0:
                 tir_ceza_toplam += asim * 50000.0

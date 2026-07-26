@@ -47,26 +47,21 @@ def test_tir_kapasitesi_asimi():
             varis_tm = str(row['Varis TM']).strip()
             cikis_gun = str(row['Tarih'])
             varis_gun = str(row['Varis Tarihi'])
-            arac_sayisi = int(row['Bacaktaki Arac Sayisi'])
-            
+            # 'Bacaktaki Arac Sayisi' bacagin TOPLAM arac ihtiyacidir, tek
+            # aracin payi degil - Arac ID'ye gore grupladigimiz icin bu
+            # aracin katkisi hep 1'dir (eski kod N arac icin N*N sayiyordu).
+            arac_sayisi = 1
+
             if not events:
-                # İlk kalkış ve varış olayını ekle
                 events.append(((cikis_gun, cikis_tm), arac_sayisi))
                 events.append(((varis_gun, varis_tm), arac_sayisi))
             else:
-                (last_gun, last_tm), last_arac_sayisi = events[-1]
-                
-                # MILK RUN KONTROLÜ: Tarih değişse bile araç aynı TM'de kalıp hareket etmediyse (1 birim kuralı)
+                (last_gun, last_tm), _ = events[-1]
+                # MILK RUN KONTROLÜ: tarih degissede ayni TM'de kalip hareket
+                # etmediyse (coklu gun devami dahil) cikista yeni tuketim yok.
                 if last_tm == cikis_tm:
-                    # Konvoya ek araç eklendiyse (örn: 1 geldi, 2 çıkıyor), aradaki fark kadar ek kapasite düş
-                    ekstra_arac = max(0, arac_sayisi - last_arac_sayisi)
-                    if ekstra_arac > 0:
-                        events.append(((cikis_gun, cikis_tm), ekstra_arac))
-                        
-                    # Varış noktasını ekle
                     events.append(((varis_gun, varis_tm), arac_sayisi))
                 else:
-                    # FARKLI SEFER / DÖNÜŞ KONTROLÜ: Araç başka TM'den geliyorsa ayrı bir birim daha tüketir
                     events.append(((cikis_gun, cikis_tm), arac_sayisi))
                     events.append(((varis_gun, varis_tm), arac_sayisi))
 
