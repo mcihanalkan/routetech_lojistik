@@ -69,6 +69,26 @@ from src.alns.time_model import (  # noqa: E402
     ellecleme_suresi_dakika, sla_deadline, gecikme_saat, sla_cezasi_tl,
 )
 
+
+# 0. Darboğaz kontrolü fonksiyonu
+def ham_talep_kapasite_raporu(demands, handling_capacity, gunler):
+    """ALNS calismadan ONCE, her TM icin o gunun HAM (gecikme/backlog olmadan)
+    gelen+giden talep toplamini kapasiteyle karsilastirir. Bu, motorun cozum
+    SONRASI kontrolunden (best.handling_usage) FARKLI bir soruya cevap verir:
+    'bu gunun kendi talebi tek basina sigar mi?' - motor ne kadar iyi calisirsa
+    calissin, bu rapor >%100 gosteriyorsa erteleme/SLA cezasi KACINILMAZDIR."""
+    gunluk_ham_talep = {}
+    for (hat, gun, slot, desi, _tid) in demands:
+        src, dst = hat
+        gunluk_ham_talep[(src, gun)] = gunluk_ham_talep.get((src, gun), 0.0) + desi
+        gunluk_ham_talep[(dst, gun)] = gunluk_ham_talep.get((dst, gun), 0.0) + desi
+    for tm, cap in handling_capacity.items():
+        for gun in gunler:
+            talep = gunluk_ham_talep.get((tm, gun), 0.0)
+            if talep > cap:
+                print(f"YAPISAL DARBOGAZ: {tm} {gun} ham talep={talep:.0f} > kapasite={cap:.0f} "
+                      f"(%{100*talep/cap:.0f}) - erteleme/ceza kacinilmaz")
+
 # ============================================================================
 # 1. ORTAM DEĞİŞKENLERİ
 # ============================================================================
@@ -175,6 +195,10 @@ data = ProblemData(
     merkezler=merkezler,
     demands=demands,
 )
+
+# ========== YAPISAL DARBOGAZ RAPORU (ALNS öncesi) ==========
+ham_talep_kapasite_raporu(data.demands, data.handling_capacity, data.gunler)
+# ===========================================================
 
 rng = rnd.default_rng(42) # Neden 42 seedini veriyoruz generator'ü oluşturmak için?
 
@@ -490,9 +514,10 @@ def _bacak_arac_dagilimi(bucket_key, parcalar):
 
     for (a, leg, desi, leg_i) in parcalar:
         kalan = desi
-        while kalan > 1e-9:
+        # DÜZELTME: 1e-9 yerine 0.001 (1 gram hassasiyet) yapıyoruz
+        while kalan > 0.001: 
             bos_yer = kap - mevcut_doluluk
-            if bos_yer <= 1e-9:
+            if bos_yer <= 0.001: # DÜZELTME: 1e-9 yerine 0.001
                 arac_index = arac_index + 1
                 mevcut_doluluk = 0.0
                 bos_yer = kap
@@ -676,8 +701,9 @@ for a in best.assignments:
         arac_tipi = "Kiralik" if leg.is_kiralik else "Spot"
         key = _bucket_key(leg)
         bu_sevkiyatin_paylari = []
-        for (aa, ll, arac_index, pay_desi, ll_i) in bucket_dagilim[key]:
-            if aa is a:
+        for (aa, ll, arac_index, pay_desi, ll_i) in bucket_dagilim[key_referans]:
+            # YENİ: pay_desi > 0.01 şartı ile 0 çıkan hayalet satırları engelliyoruz
+            if aa is a and pay_desi > 0.01:
                 bu_sevkiyatin_paylari.append((arac_index, pay_desi))
 
         _base_talep_id = talep_id_goruntu.get(id(a), a.talep_id)
