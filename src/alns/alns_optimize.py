@@ -177,7 +177,7 @@ rng = rnd.default_rng(42) # Neden 42 seedini veriyoruz generator'ü oluşturmak 
 initial_state = State(data) 
 initial_state = dummy_initial_builder(initial_state, rng) # Burada neden removal kullanmadan repair yapmış claude?
 initial_obj = initial_state.objective() # mevcut çözümün maliyeti
-print(f"Baslangic (greedy) cozum maliyeti: {initial_obj:,.0f} TL")
+print(f"Baslangic (dummy) cozum maliyeti: {initial_obj:,.0f} TL")
 
 # ============================================================================
 # 4. ALNS KURULUMU
@@ -226,7 +226,7 @@ def _yeni_en_iyi_bulundu(candidate_state, rng_):
     print(f"[{gecen_sn:7.1f} sn] Yeni en iyi #{_ilerleme_sayac['n']}: {candidate_state.objective():,.0f} TL")
 
 
-alns.on_best(_yeni_en_iyi_bulundu)# ALNS en iyi maliyeti bulunca bu callback fonksiyonu çağırsın diyoruz.
+alns.on_best(_yeni_en_iyi_bulundu) # ALNS en iyi maliyeti bulunca bu callback fonksiyonu çağırsın diyoruz.
 
 # ============================================================================
 # 4b. KALIBRASYON: gercek iterasyon hizini olcup SA sicaklik takvimini buna gore ayarla
@@ -624,9 +624,9 @@ for a in best.assignments:
                 "Arac_ID": arac_id_kodu[(key, arac_index)],
                 "Talep_ID": talep_id_gosterim,
                 "Cikis_TM": leg.src, "Varis_TM": leg.dst,
-                "Yolculuk_Suresi_Dk": math.ceil(data.route_lookup[(leg.src, leg.dst)][leg.arac_turu] * 60),
-                "Cikis_Ellecleme_Dk": math.ceil(ellecleme_suresi_dakika(pay_desi, consolidation=False)),
-                "Varis_Ellecleme_Dk": math.ceil(ellecleme_suresi_dakika(pay_desi, consolidation=False)),
+                "Yolculuk_Suresi_Dk": data.route_lookup[(leg.src, leg.dst)][leg.arac_turu] * 60,
+                "Cikis_Ellecleme_Dk": ellecleme_suresi_dakika(pay_desi, consolidation=False),
+                "Varis_Ellecleme_Dk": ellecleme_suresi_dakika(pay_desi, consolidation=False),
                 "Nihai_Kaynak": nihai_kaynak, "Nihai_Varis": nihai_varis,
                 "Bacaktaki_Arac_Sayisi": _bacak_arac_sayisi(leg),
                 "Bu_Talebin_Desisi": round(pay_desi, 2),
