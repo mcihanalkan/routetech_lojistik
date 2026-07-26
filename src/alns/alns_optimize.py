@@ -272,7 +272,9 @@ kalibrasyon_iter_sayisi = max(1, len(kalibrasyon_sonuc.statistics.objectives) - 
 kalibrasyon_suresi = kalibrasyon_sonuc.statistics.total_runtime
 gercek_iterasyon_hizi = kalibrasyon_suresi / kalibrasyon_iter_sayisi
 kalan_sure = max(1.0, ENV_MAX_TIME - kalibrasyon_suresi)
-tahmini_iterasyon = max(20, int(kalan_sure / max(gercek_iterasyon_hizi, 0.05)))
+# Gercek hiz genelde kalibrasyondan sonra artiyor (bkz. sohbet gecmisi); tahmini
+# iterasyonu paylayip SA'nin zamanindan once sogumasini (aramanin erken kilitlenmesini) onluyoruz.
+tahmini_iterasyon = max(20, int(1.75 * kalan_sure / max(gercek_iterasyon_hizi, 0.05)))
 print(
     f"Kalibrasyon tamamlandi: {kalibrasyon_iter_sayisi} iterasyon / {kalibrasyon_suresi:.1f} sn "
     f"-> ~{gercek_iterasyon_hizi:.2f} sn/iterasyon -> kalan {kalan_sure:.0f} sn icin tahmini {tahmini_iterasyon} iterasyon"
