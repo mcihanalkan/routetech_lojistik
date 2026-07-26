@@ -476,88 +476,82 @@ class State:
         her çağrıda ikisi de False - davranış tamamen değişmeden kalır."""
         key = (src, dst, gun, slot, arac_turu)
         p = self.data.arac_parametreleri[arac_turu]
-
+    
         # 1. Kiralık ve Spot saatlik/km ücretlerini belirle
         hourly_rate = p["rental_hourly"] if is_kiralik else p["spot_hourly"]
         km_rate = p["rental_km"] if is_kiralik else p["spot_km"]
-
-        # dokunus_sayisi: bu SPESIFIK atamanin bu bacakta faturalandiracagi elleçleme
-        # ucu sayisi (0,1,2). leg_ellecleme_desi'de AYRI (dokunus_sayisi'ne gore) bir
-        # alt-kovada tutuluyor ki ayni fiziksel bacagi (ayni TM cifti/gun/slot/arac
-        # turu) FARKLI dokunus sayisiyla kullanan atamalar (normal 2x, ugramadan gecen
-        # 0x/1x) birbirinin elleçleme maliyetini KARISTIRMASIN - araç sayisi/kapasite
-        # icin kullanilan leg_spot_desi/leg_kiralik_desi ise HER ZAMAN TOPLAM (dokunustan
-        # bagimsiz) fiziksel desiyi tutar, çünkü kapasite/araç sayısı dokunuşa bakmaz.
+    
         dokunus_sayisi = (0 if skip_src_handling else 1) + (0 if skip_dst_handling else 1)
         ellec_key = key + (dokunus_sayisi,)
-
-        # 2. O bacağın o anki TOPLAM faturasını hesaplayan yerel formül
+    
+        marjinal_maliyet = 0.0  # <-- garanti başlangıç
+    
         def bacak_toplam_maliyeti(mevcut_arac_sayisi, mevcut_ellec_desi):
             birim = vehicle_leg_cost(self.data.route_lookup, (src,dst) , arac_turu, hourly_rate, km_rate)
             seyir_faturasi = mevcut_arac_sayisi * birim
             ellecleme_faturasi = ellecleme_maliyet_hesapla(mevcut_ellec_desi, hourly_rate, dokunus_sayisi)
             return seyir_faturasi + ellecleme_faturasi
-
+    
         eski_ellec_desi = self.leg_ellecleme_desi.get(ellec_key, 0.0)
         yeni_ellec_desi = eski_ellec_desi + desi
         self.leg_ellecleme_desi[ellec_key] = yeni_ellec_desi
-
+    
         if is_kiralik:
             eski_desi = self.leg_kiralik_desi.get(key, 0.0)
             yeni_desi = eski_desi + desi
             self.leg_kiralik_desi[key] = yeni_desi
-
-            # Kiralık aracın seyir maliyeti baştan ödendi!
-            # Bize sadece bu desiyi yüklemek/indirmek için harcanan zamanın maliyeti yansır.
-
+    
             eski_ellecleme = ellecleme_maliyet_hesapla(eski_ellec_desi, p["rental_hourly"], dokunus_sayisi)
             yeni_ellecleme = ellecleme_maliyet_hesapla(yeni_ellec_desi, p["rental_hourly"], dokunus_sayisi)
             marjinal_maliyet = yeni_ellecleme - eski_ellecleme
-
+    
         else:
             eski_desi = self.leg_spot_desi.get(key, 0.0)
             kap = p["kapasite_desi"]
             eski_adet = spot_vehicle_count(eski_desi, kap, MAX_SPOT)
-
+    
             yeni_desi = eski_desi + desi
             yeni_adet = spot_vehicle_count(yeni_desi, kap, MAX_SPOT)
             self.leg_spot_desi[key] = yeni_desi
-
-            # Spot aracta hem araç sayısı (seyir) hem de desi (elleçleme) artabilir.
-            # İkisinin de yarattığı fiyat artışı kusursuzca yakalanır.
+    
             eski_maliyet = bacak_toplam_maliyeti(eski_adet, eski_ellec_desi)
             yeni_maliyet = bacak_toplam_maliyeti(yeni_adet, yeni_ellec_desi)
             marjinal_maliyet = yeni_maliyet - eski_maliyet
-
+    
             if arac_turu == self.data.tir_arac_turu:
                 delta_adet = yeni_adet - eski_adet
-                # KISITLAR.md madde 22: ayni aracin ayni TM'de hareket etmeden
-                # devam etmesi (milk_run) 1 birim sayilir - bu bacak bir onceki
-                # bacaktan (skip_src_handling) devam ediyorsa, o TM'nin "giden"
-                # tarafi zaten onceki bacagin "gelen"iyle karsilanmis demektir,
-                # burada AYRICA saymiyoruz.
+                # ---- GERÇEK ZAMANLI TIR PARKI (KISITLAR.md madde 21-22) ----
+                # Kalkış anı, elleçleme tamamlandıktan sonradır.
+                slot_zamani = slot_datetime(gun, slot)
                 if not skip_src_handling:
-                    self.tir_usage_out[(src, gun)] = self.tir_usage_out.get((src, gun), 0) + delta_adet
-                varis_g = arrival_day(self.data.route_lookup, self.data.gunler, (src, dst), gun, slot, arac_turu)
-                if varis_g:
-                    self.tir_usage_in[(dst, varis_g)] = self.tir_usage_in.get((dst, varis_g), 0) + delta_adet
-
+                    # Gerçek kalkış anı: slot + elleçleme süresi (toplam yüke göre)
+                    # Bu bacaktaki toplam yük, az önce güncellediğimiz yeni_desi'dir.
+                    gercek_kalkis = ellecleme_tamamlanma_zamani(slot_zamani, yeni_desi, consolidation=False)
+                else:
+                    # milk‑run ara durak, elleçleme yok, araç hemen devam eder (veya slotu bekler).
+                    gercek_kalkis = slot_zamani
+    
+                kalkis_gun = gercek_kalkis.date().isoformat()
+                if not skip_src_handling:
+                    # Aynı aracın devamı (milk‑run) 1 birim sayılır; kaynağa yazılmaz.
+                    self.tir_usage_out[(src, kalkis_gun)] = self.tir_usage_out.get((src, kalkis_gun), 0) +  delta_adet
+    
+                # Varış günü: gerçek kalkışa seyir süresini ekle
+                seyir_saat = seyir_suresi_saat(self.data.route_lookup, src, dst, arac_turu)
+                varis_dt = varis_zamani(gercek_kalkis, seyir_saat)
+                varis_gun = varis_dt.date().isoformat()
+                self.tir_usage_in[(dst, varis_gun)] = self.tir_usage_in.get((dst, varis_gun), 0) + delta_adet
+    
         self._arac_maliyeti_toplam += marjinal_maliyet
-
-        # if not skip_src_handling:
-        #     self.handling_usage[(src, gun)] = self.handling_usage.get((src, gun), 0.0) + desi
-        # varis_g = arrival_day(self.data.route_lookup, self.data.gunler, (src, dst), gun, slot, arac_turu)
-        # if varis_g and not skip_dst_handling:
-        #     self.handling_usage[(dst, varis_g)] = self.handling_usage.get((dst, varis_g), 0.0) + desi
-
+    
+        # ---- ELLECLEME KAPASİTESİ (oransal dağılımlı, başlangıç zamanına göre) ----
         cikis_zamani = slot_datetime(gun, slot)
-        # Yeni (oransal dağılım):
         if not skip_src_handling:
             sure_dk = ellecleme_suresi_dakika(desi, consolidation=False)
             dagilim = _ellecleme_dagilimi(cikis_zamani, desi, sure_dk)
             for gun_str, pay in dagilim.items():
                 self.handling_usage[(src, gun_str)] = self.handling_usage.get((src, gun_str), 0.0) + pay
-
+    
         # Varış elleçlemesi
         seyir_saat = seyir_suresi_saat(self.data.route_lookup, src, dst, arac_turu)
         varis_dt = varis_zamani(cikis_zamani, seyir_saat)
@@ -567,13 +561,14 @@ class State:
             dagilim = _ellecleme_dagilimi(varis_dt, desi, sure_dk)
             for gun_str, pay in dagilim.items():
                 self.handling_usage[(dst, gun_str)] = self.handling_usage.get((dst, gun_str), 0.0) + pay
-
+    
+        # Gerçek elleçleme desisi takibi (cikis/varis ayrimiyla)
         real_key = key + (is_kiralik,)
         if not skip_src_handling:
             self.cikis_ellecleme_desi[real_key] = self.cikis_ellecleme_desi.get(real_key, 0.0) + desi
         if not skip_dst_handling:
             self.varis_ellecleme_desi[real_key] = self.varis_ellecleme_desi.get(real_key, 0.0) + desi
-
+    
         return marjinal_maliyet
 
 
@@ -1038,7 +1033,7 @@ def evaluate_path(state, hat, gun, slot, desi, path, talep_id="",
     temp_leg_kiralik = dict(state.leg_kiralik_desi)
     temp_leg_ellecleme = dict(state.leg_ellecleme_desi)
     temp_handling = dict(state.handling_usage)
-    # temp_tir = dict(state.tir_usage) if data.tir_arac_turu else {}
+    # GERÇEK ZAMANLI takip için IN/OUT sözlüklerini kopyala
     temp_tir_in = dict(state.tir_usage_in) if data.tir_arac_turu else {}
     temp_tir_out = dict(state.tir_usage_out) if data.tir_arac_turu else {}
 
@@ -1069,12 +1064,12 @@ def evaluate_path(state, hat, gun, slot, desi, path, talep_id="",
         if cap is None:
             return float("inf")
         fixed = data.fixed_kiralik_tir_usage.get((tm, gun), 0)
-        
+        # GERÇEK ZAMANLI: IN ve OUT toplanır (KISITLAR.md madde 21)
         spot_in = temp_tir_in.get((tm, gun), 0)
         spot_out = temp_tir_out.get((tm, gun), 0)
         return max(0.0, cap - fixed - (spot_in + spot_out))
 
-    def temp_max_addable_on_leg(src, dst, gun, slot, arac_turu, is_kiralik,skip_src_tir = False):
+    def temp_max_addable_on_leg(src, dst, gun, slot, arac_turu, is_kiralik, skip_src_tir=False):
         if is_kiralik:
             limit = temp_kiralik_available((src, dst), gun, arac_turu)
         else:
@@ -1088,9 +1083,8 @@ def evaluate_path(state, hat, gun, slot, desi, path, talep_id="",
             kap = data.arac_parametreleri[arac_turu]["kapasite_desi"]
             mevcut_desi = temp_leg_spot.get((src, dst, gun, slot, arac_turu), 0.0)
             mevcut_adet = spot_vehicle_count(mevcut_desi, kap, MAX_SPOT)
-            
-            # YENİ: skip_src_tir mantığı tamamen temizlendi, doğrudan çağrılıyor
-            departure_room = temp_tir_available(src, gun) 
+            # GERÇEK ZAMANLI: tır park kapasitesi IN+OUT toplanarak kontrol edilir
+            departure_room = temp_tir_available(src, gun)
             arrival_room = temp_tir_available(dst, varis_g)
             adet_limiti = min(departure_room, arrival_room)
             max_adet = mevcut_adet + adet_limiti
@@ -1104,11 +1098,6 @@ def evaluate_path(state, hat, gun, slot, desi, path, talep_id="",
         # bkz. kural: "kiralık araçlarla uğrama yapılamaz"). Önce her aday araç
         # türü için TÜM bacaklarda pozitif kapasite olup olmadığını kontrol et,
         # sonra gerçek (dokunuş-farkındalıklı) marjinal maliyete göre en ucuzunu seç.
-        # YON-TUTARLILIGI KONTROLU: bu arac_turu ile HUB'daki her ara durak (junction),
-        # state.milk_fwd/milk_bwd'de HALIHAZIRDA BASKA bir bacakla kilitli olmamali -
-        # aksi halde ayni HUB bacagi, biri bu yone biri baska bir yone giden iki farkli
-        # "elleclenmeden devam eden" talep tarafindan paylasilmis olur ki bu fiziksel
-        # olarak imkansizdir (bkz. State.milk_fwd docstring'i).
         def _milk_junction_ok(arac_turu):
             for j in range(len(leg_pairs) - 1):
                 j_src, j_dst, j_gun, j_slot = leg_pairs[j]
@@ -1123,12 +1112,10 @@ def evaluate_path(state, hat, gun, slot, desi, path, talep_id="",
 
         ortak_adaylar = []
         for arac_turu in data.arac_turleri:
-            
             p = data.arac_parametreleri[arac_turu]
             miktarlar = []
             uygun = True
             for idx, (leg_src, leg_dst, leg_gun, leg_slot) in enumerate(leg_pairs):
-                # skip_src_tir = i > 0
                 miktar = temp_max_addable_on_leg(leg_src, leg_dst, leg_gun, leg_slot, arac_turu, False)
                 if miktar <= 0:
                     uygun = False
@@ -1168,7 +1155,7 @@ def evaluate_path(state, hat, gun, slot, desi, path, talep_id="",
             for (leg_src, leg_dst, leg_gun, leg_slot) in leg_pairs
         ]
     else:
-        for idx,(leg_src, leg_dst, leg_gun, leg_slot) in enumerate(leg_pairs):
+        for idx, (leg_src, leg_dst, leg_gun, leg_slot) in enumerate(leg_pairs):
             best = None
             if leg_slot == KIRALIK_DISPATCH_SLOT:
                 for arac_turu in data.arac_turleri:
@@ -1182,7 +1169,6 @@ def evaluate_path(state, hat, gun, slot, desi, path, talep_id="",
                     miktar = temp_max_addable_on_leg(leg_src, leg_dst, leg_gun, leg_slot, arac_turu, False)
                     if miktar <= 0:
                         continue
-                    # Marinal maliyet hesapla (mevcut desiye göre)
                     p = data.arac_parametreleri[arac_turu]
                     kap = p["kapasite_desi"]
                     mevcut = temp_leg_spot.get((leg_src, leg_dst, leg_gun, leg_slot, arac_turu), 0.0)
@@ -1223,17 +1209,18 @@ def evaluate_path(state, hat, gun, slot, desi, path, talep_id="",
         if tasinabilir <= 1e-6:
             return None
 
-    # 5. Geçici olarak bacak desilerini güncelle ve maliyet hesapla
+    # 5. Geçici olarak bacak desilerini güncelle ve maliyet hesapla (GERÇEK ZAMANLI)
     toplam_vehicle_cost = 0.0
     legs = []
     for i, (leg_src, leg_dst, leg_gun, leg_slot, _miktar, arac_turu, is_kiralik) in enumerate(leg_plans):
         skip_src = skip_src_per_leg[i]
         skip_dst = skip_dst_per_leg[i]
         dokunus = (0 if skip_src else 1) + (0 if skip_dst else 1)
-        # Geçici dict'leri güncelle (böylece sonraki bacaklar etkilenir)
         key = (leg_src, leg_dst, leg_gun, leg_slot, arac_turu)
         ellec_key = key + (dokunus,)
         p = data.arac_parametreleri[arac_turu]
+
+        # --- Araç maliyeti ve geçici yük güncellemeleri (mevcut) ---
         if is_kiralik:
             eski = temp_leg_kiralik.get(key, 0.0)
             yeni = eski + tasinabilir
@@ -1258,21 +1245,30 @@ def evaluate_path(state, hat, gun, slot, desi, path, talep_id="",
             eski_maliyet = eski_adet * birim + ellecleme_maliyet_hesapla(eski_ellec_desi, p["spot_hourly"], dokunus)
             yeni_maliyet = yeni_adet * birim + ellecleme_maliyet_hesapla(yeni_ellec_desi, p["spot_hourly"], dokunus)
             toplam_vehicle_cost += (yeni_maliyet - eski_maliyet)
+
+            # --- TIR PARKI (GERÇEK ZAMANLI) ---
             if arac_turu == data.tir_arac_turu:
                 delta_adet = yeni_adet - eski_adet
-                # _commit_leg'deki skip_src mantığinin ayni: milk_run devaminda
-                # bu bacagin cikisi ayrica sayilmaz (bkz. KISITLAR.md madde 22).
+                # GERÇEK kalkış zamanını hesapla (elleçleme süresi eklenir)
+                slot_zamani = slot_datetime(leg_gun, leg_slot)
                 if not skip_src:
-                    temp_tir_out[(leg_src, leg_gun)] = temp_tir_out.get((leg_src, leg_gun), 0) + delta_adet
-                varis_g = arrival_day(data.route_lookup, data.gunler, (leg_src, leg_dst), leg_gun, leg_slot, arac_turu)
-                if varis_g:
-                    temp_tir_in[(leg_dst, varis_g)] = temp_tir_in.get((leg_dst, varis_g), 0) + delta_adet
-        # if not skip_src:
-        #     temp_handling[(leg_src, leg_gun)] = temp_handling.get((leg_src, leg_gun), 0.0) + tasinabilir
-        # varis_g = arrival_day(data.route_lookup, data.gunler, (leg_src, leg_dst), leg_gun, leg_slot, arac_turu)
-        # if varis_g and not skip_dst:
-        #     temp_handling[(leg_dst, varis_g)] = temp_handling.get((leg_dst, varis_g), 0.0) + tasinabilir
-        # Çıkış elleçlemesi
+                    # Bu bacaktaki güncel toplam yüke göre elleçleme tamamlanma anı
+                    cikis_desi_temp = temp_leg_spot.get(key, 0.0)  # güncellenmiş toplam
+                    gercek_kalkis = ellecleme_tamamlanma_zamani(slot_zamani, cikis_desi_temp, consolidation=False)
+                else:
+                    gercek_kalkis = slot_zamani  # uğrama ara durak, elleçleme yok
+
+                kalkis_gun = gercek_kalkis.date().isoformat()
+                if not skip_src:
+                    temp_tir_out[(leg_src, kalkis_gun)] = temp_tir_out.get((leg_src, kalkis_gun), 0) + delta_adet
+
+                # Varış gününü de GERÇEK kalkışa göre hesapla
+                seyir_saat = seyir_suresi_saat(data.route_lookup, leg_src, leg_dst, arac_turu)
+                varis_dt = varis_zamani(gercek_kalkis, seyir_saat)
+                varis_gun = varis_dt.date().isoformat()
+                temp_tir_in[(leg_dst, varis_gun)] = temp_tir_in.get((leg_dst, varis_gun), 0) + delta_adet
+
+        # --- ELLECLEME KAPASİTESİ (oransal dağılımlı, başlangıç zamanına göre) ---
         cikis_zamani = slot_datetime(leg_gun, leg_slot)
         if not skip_src:
             sure_dk = ellecleme_suresi_dakika(tasinabilir, consolidation=False)
@@ -1301,11 +1297,11 @@ def evaluate_path(state, hat, gun, slot, desi, path, talep_id="",
     return {
         'desi': tasinabilir,
         'maliyet': toplam_vehicle_cost + sla_cost,
-        'leg_plans': leg_plans,  # bacak planlarını da döndür ki commit_path kullanabilsin
+        'leg_plans': leg_plans,
         'legs': legs,
         'sla_cost': sla_cost,
         'vehicle_cost': toplam_vehicle_cost,
-        'milk_run': milk_run,  # commit_path'in ayni skip/dokunus mantigini tekrar uretmesi icin
+        'milk_run': milk_run,
     }
 
 def commit_path(state, hat, eval_result, talep_id, demand_gun, demand_slot, sla_cost):
@@ -1398,35 +1394,10 @@ def dummy_initial_builder(state, rng, **kwargs):
     
     for item in unassigned_items:
         hat, orj_gun, orj_slot, orj_desi, talep_id = item
-        kalan_desi = orj_desi
         
-        # Bu kargonun zaman çizelgesinde geldiği (başladığı) indeksi bul
-        baslangic_idx = 0
-        for idx, (g, s) in enumerate(zamanlar):
-            if g == orj_gun and s == orj_slot:
-                baslangic_idx = idx
-                break
-                
-        # 2. Kargoyu yerleştirene kadar zaman çizelgesinde GELECEĞE doğru ilerle
-        for idx in range(baslangic_idx, len(zamanlar)):
-            aktif_gun, aktif_slot = zamanlar[idx]
-            
-            # _insert_chunk fonksiyonu, kargoyu 'aktif' zamana yasal sınırlar içinde yerleştirmeyi dener.
-            # Yerleşen kısımlar araçlara/merkezlere atanır, FİZİKSEL OLARAK SIĞMAYAN miktar geri döner.
-            kalan_desi = _insert_chunk(
-                state, 
-                hat, 
-                aktif_gun, 
-                aktif_slot, 
-                kalan_desi, 
-                rng, 
-                talep_id
-            )
-            
-            # Eğer tüm desi başarılı bir şekilde yerleştiyse (kalan < 0.000001)
-            # Bu kargo için döngüyü kır ve sıradaki kargoya geç.
-            if kalan_desi <= 1e-6:
-                break
+        kalan_desi = _insert_chunk(
+            state, hat, orj_gun, orj_slot, orj_desi, rng, talep_id
+        )
                 
         # 3. KORUMA AĞI: Haftanın Sonuna Geldik ve Hâlâ Sığmadıysa
         if kalan_desi > 1e-6:
@@ -1445,9 +1416,6 @@ def dummy_initial_builder(state, rng, **kwargs):
 def _remove_assignment(state: State, a: Assignment) -> None:
     n_legs = len(a.legs)
     for i, leg in enumerate(a.legs):
-        # _commit_leg ile AYNI dokunus mantigi (bkz. o fonksiyonun docstring'i) -
-        # ugramasiz (a.milk_run=False) atamalarda skip_src/skip_dst hep False,
-        # yani dokunus_sayisi hep 2 (mevcut davranis degismez).
         skip_src_handling = a.milk_run and i > 0
         skip_dst_handling = a.milk_run and i < n_legs - 1
         dokunus_sayisi = (0 if skip_src_handling else 1) + (0 if skip_dst_handling else 1)
@@ -1461,16 +1429,13 @@ def _remove_assignment(state: State, a: Assignment) -> None:
         state.leg_ellecleme_desi[ellec_key] = yeni_ellec_desi
 
         if leg.is_kiralik:
-            # DUZELTME: silme sirasinda da (ekleme sirasindaki gibi) GERCEK
-            # maliyet farkini _arac_maliyeti_toplam'dan dusuyoruz - aksi halde
-            # kalan taleplerin maliyeti BAYATLASIR (bkz. sohbet gecmisi).
             eski_desi = state.leg_kiralik_desi.get(key, 0.0)
             yeni_desi = max(0.0, eski_desi - a.desi)
             state.leg_kiralik_desi[key] = yeni_desi
             old_cost = ellecleme_maliyet_hesapla(eski_ellec_desi, p["rental_hourly"], dokunus_sayisi)
             new_cost = ellecleme_maliyet_hesapla(yeni_ellec_desi, p["rental_hourly"], dokunus_sayisi)
-            delta_handling = new_cost - old_cost # Buradaki değer negatif çıkar. çünkü yeni elleçleme maliyetimiz, desi azaldığından dolayı eskisinden az
-            state._arac_maliyeti_toplam += delta_handling # Araç maliyeti negatif deger ile toplandığı için azalır.
+            delta_handling = new_cost - old_cost
+            state._arac_maliyeti_toplam += delta_handling
         else:
             eski = state.leg_spot_desi.get(key, 0.0)
             kap = p["kapasite_desi"]
@@ -1482,23 +1447,30 @@ def _remove_assignment(state: State, a: Assignment) -> None:
             birim = vehicle_leg_cost(state.data.route_lookup, (leg.src, leg.dst), leg.arac_turu, p["spot_hourly"], p["spot_km"])
             old_cost = eski_adet * birim + ellecleme_maliyet_hesapla(eski_ellec_desi, p["spot_hourly"], dokunus_sayisi)
             new_cost = yeni_adet * birim + ellecleme_maliyet_hesapla(yeni_ellec_desi, p["spot_hourly"], dokunus_sayisi)
-            delta_cost = new_cost-old_cost
+            delta_cost = new_cost - old_cost
             state._arac_maliyeti_toplam += delta_cost
 
             if leg.arac_turu == state.data.tir_arac_turu:
-                delta = yeni_adet - eski_adet # Bu negatiftir
-                # _commit_leg'deki skip_src_handling atlamasinin simetrik geri alinisi.
+                delta = yeni_adet - eski_adet  # Negatiftir.
+                # ---- GERÇEK ZAMANLI TIR PARKI GERİ ALMA (KISITLAR.md madde 21-22) ----
+                slot_zamani = slot_datetime(leg.gun, leg.slot)
                 if not skip_src_handling:
-                    state.tir_usage_out[(leg.src, leg.gun)] = state.tir_usage_out.get((leg.src, leg.gun), 0) + delta
-                varis_g = arrival_day(state.data.route_lookup, state.data.gunler, (leg.src, leg.dst), leg.gun, leg.slot, leg.arac_turu)
-                if varis_g:
-                    state.tir_usage_in[(leg.dst, varis_g)] = state.tir_usage_in.get((leg.dst, varis_g), 0) + delta
-        # if not skip_src_handling:
-        #     state.handling_usage[(leg.src, leg.gun)] = state.handling_usage.get((leg.src, leg.gun), 0.0) - a.desi
-        # varis_g = arrival_day(state.data.route_lookup, state.data.gunler, (leg.src, leg.dst), leg.gun, leg.slot, leg.arac_turu)
-        # if varis_g and not skip_dst_handling:
-        #     state.handling_usage[(leg.dst, varis_g)] = state.handling_usage.get((leg.dst, varis_g), 0.0) - a.desi
-        # Çıkış elleçlemesi geri alma
+                    # Silinmeden ÖNCEKİ toplam yüke göre gerçek kalkış anı.
+                    mevcut_toplam = state.leg_spot_desi.get(key, 0.0) + a.desi  # henüz silinmediği için ekliyoruz
+                    gercek_kalkis = ellecleme_tamamlanma_zamani(slot_zamani, mevcut_toplam, consolidation=False)
+                else:
+                    gercek_kalkis = slot_zamani
+
+                kalkis_gun = gercek_kalkis.date().isoformat()
+                if not skip_src_handling:
+                    state.tir_usage_out[(leg.src, kalkis_gun)] = state.tir_usage_out.get((leg.src, kalkis_gun), 0) + delta
+
+                seyir_saat = state.data.route_lookup[(leg.src, leg.dst)][leg.arac_turu]
+                varis_dt = varis_zamani(gercek_kalkis, seyir_saat)
+                varis_gun = varis_dt.date().isoformat()
+                state.tir_usage_in[(leg.dst, varis_gun)] = state.tir_usage_in.get((leg.dst, varis_gun), 0) + delta
+
+        # ---- ELLECLEME KAPASİTESİ GERİ ALMA (oransal dağılımlı) ----
         cikis_zamani = slot_datetime(leg.gun, leg.slot)
         if not skip_src_handling:
             sure_dk = ellecleme_suresi_dakika(a.desi, consolidation=False)
@@ -1506,7 +1478,6 @@ def _remove_assignment(state: State, a: Assignment) -> None:
             for gun_str, pay in dagilim.items():
                 state.handling_usage[(leg.src, gun_str)] = state.handling_usage.get((leg.src, gun_str), 0.0) - pay
 
-        # Varış elleçlemesi geri alma
         seyir_saat = state.data.route_lookup[(leg.src, leg.dst)][leg.arac_turu]
         varis_dt = varis_zamani(cikis_zamani, seyir_saat)
         varis_g = arrival_day(state.data.route_lookup, state.data.gunler, (leg.src, leg.dst), leg.gun, leg.slot, leg.arac_turu)
@@ -1516,6 +1487,7 @@ def _remove_assignment(state: State, a: Assignment) -> None:
             for gun_str, pay in dagilim.items():
                 state.handling_usage[(leg.dst, gun_str)] = state.handling_usage.get((leg.dst, gun_str), 0.0) - pay
 
+        # Gerçek elleçleme desisi takibini geri al
         real_key = key + (leg.is_kiralik,)
         if not skip_src_handling:
             state.cikis_ellecleme_desi[real_key] = max(0.0, state.cikis_ellecleme_desi.get(real_key, 0.0) - a.desi)
@@ -1523,9 +1495,7 @@ def _remove_assignment(state: State, a: Assignment) -> None:
             state.varis_ellecleme_desi[real_key] = max(0.0, state.varis_ellecleme_desi.get(real_key, 0.0) - a.desi)
 
     if a.milk_run:
-        # commit_path'te kurulan yon-tutarliligi kilidini (State.milk_fwd/milk_bwd)
-        # tam olarak geri al - junction desi'si 0'a inince kilit tamamen acilir ki
-        # baska bir talep bu HUB bacagini FARKLI bir yone milk_run ile kullanabilsin.
+        # commit_path'te kurulan yon-tutarliligi kilidini geri al
         for j in range(n_legs - 1):
             bucket_j = (a.legs[j].src, a.legs[j].dst, a.legs[j].gun, a.legs[j].slot, a.legs[j].arac_turu)
             bucket_k = (a.legs[j + 1].src, a.legs[j + 1].dst, a.legs[j + 1].gun, a.legs[j + 1].slot, a.legs[j + 1].arac_turu)
@@ -1932,7 +1902,7 @@ def enforce_real_capacity_limits(state: "State", rng) -> "State":
     tur_limiti = len(zamanlar)
     data = state.data
 
-    for _ in range(tur_limiti):
+    for tur_no in range(tur_limiti):
         handling_real, tir_real, bucket_zaman = gercek_kapasite_kullanimlari(state)
         handling_asim = {
             (tm, gun): kullanim - data.handling_capacity[tm]
@@ -2328,15 +2298,10 @@ def regret_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
     
     for score, item, baslangic_idx in regret_scores:
         hat, orj_gun, orj_slot, orj_desi, talep_id = item
-        kalan_desi = orj_desi
-        
-        for idx in range(baslangic_idx, len(zamanlar)):
-            aktif_gun, aktif_slot = zamanlar[idx]
-            kalan_desi = _insert_chunk(
-                state, hat, aktif_gun, aktif_slot, kalan_desi, rng, talep_id
-            )
-            if kalan_desi <= 1e-6:
-                break
+        # GEREKSİZ ZAMAN DÖNGÜSÜ SİLİNDİ!
+        kalan_desi = _insert_chunk(
+            state, hat, orj_gun, orj_slot, orj_desi, rng, talep_id
+        )
                 
         if kalan_desi > 1e-6:
             state.unassigned.append((hat, orj_gun, orj_slot, kalan_desi, talep_id))
@@ -2344,45 +2309,22 @@ def regret_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
     return state
 
 def greedy_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
-    """
-    Kapasite ihlali KESİNLİKLE yapmayan, sığmayan kargoları zamanda ileri 
-    kaydıran ve hâlâ sığmıyorsa havuzda (unassigned) bırakan yeni onarıcı.
-    """
     state = state.copy()
     items = list(state.unassigned)
     state.unassigned = []
     
-    # Kargo sırasını rastgele karıştır ki her iterasyonda farklı bir rota ağacı oluşsun
     order = rng.permutation(len(items)) if items else [] 
-    zamanlar = state.data.zaman_sirali
     
     for i in order:
         hat, orj_gun, orj_slot, orj_desi, talep_id = items[i]
-        kalan_desi = orj_desi
         
-        # Orijinal kalkış anının indeksini bul
-        baslangic_idx = 0
-        for idx, (g, s) in enumerate(zamanlar):
-            if g == orj_gun and s == orj_slot:
-                baslangic_idx = idx
-                break
+        # GEREKSİZ ZAMAN DÖNGÜSÜ SİLİNDİ!
+        # _insert_chunk orijinal tarihi unutmadan ileriye doğru yerleşimi otomatik yapar.
+        kalan_desi = _insert_chunk(
+            state, hat, orj_gun, orj_slot, orj_desi, rng, talep_id
+        )
                 
-        # Zaman çizelgesinde geleceğe doğru boşluk ara
-        for idx in range(baslangic_idx, len(zamanlar)):
-            aktif_gun, aktif_slot = zamanlar[idx]
-            
-            kalan_desi = _insert_chunk(
-                state, hat, aktif_gun, aktif_slot, kalan_desi, rng, talep_id
-            )
-            
-            # Kargo tamamen yerleştiyse aramayı bırak
-            if kalan_desi <= 1e-6:
-                break
-                
-        # Tüm haftayı taradık ama hâlâ sığmadıysa
         if kalan_desi > 1e-6:
-            # DİKKAT: force_insert İPTAL EDİLDİ! 
-            # Bunun yerine kargo "atanamadı" olarak havuzda kalır.
             state.unassigned.append((hat, orj_gun, orj_slot, kalan_desi, talep_id))
             
     return state
