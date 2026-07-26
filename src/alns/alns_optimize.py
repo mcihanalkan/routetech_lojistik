@@ -602,7 +602,10 @@ for a in best.assignments:
             if aa is a:
                 bu_sevkiyatin_paylari.append((arac_index, pay_desi))
 
-        for arac_index, pay_desi in bu_sevkiyatin_paylari:
+        _base_talep_id = talep_id_goruntu.get(id(a), a.talep_id)
+        _coklu_arac = len(bu_sevkiyatin_paylari) > 1
+        for _sira, (arac_index, pay_desi) in enumerate(bu_sevkiyatin_paylari, start=1):
+            talep_id_gosterim = f"{_base_talep_id}-{_sira}" if _coklu_arac else _base_talep_id
             # YENİ DEĞİŞİKLİK (Cozum A): kalkis/varis artik bu SPESIFIK aracin
             # TOPLAM yukune gore hesaplaniyor, bu talebin kendi desisine gore degil.
             gercek_dt, varis_dt = arac_zamanlari[(key, arac_index)]
@@ -619,7 +622,7 @@ for a in best.assignments:
             csv_records.append({
                 "Tarih": gercek_gun, "Slot": gercek_slot, "Arac_Tipi": arac_tipi, "Arac_Turu": leg.arac_turu,
                 "Arac_ID": arac_id_kodu[(key, arac_index)],
-                "Talep_ID": talep_id_goruntu.get(id(a), a.talep_id),
+                "Talep_ID": talep_id_gosterim,
                 "Cikis_TM": leg.src, "Varis_TM": leg.dst,
                 "Yolculuk_Suresi_Dk": math.ceil(data.route_lookup[(leg.src, leg.dst)][leg.arac_turu] * 60),
                 "Cikis_Ellecleme_Dk": math.ceil(ellecleme_suresi_dakika(pay_desi, consolidation=False)),
@@ -666,7 +669,10 @@ for a in best.assignments:
                 if aa is a:
                     bu_sevkiyatin_paylari.append((arac_index, pay_desi))
 
-            for arac_index, pay_desi in bu_sevkiyatin_paylari:
+            _base_talep_id = talep_id_goruntu.get(id(a), a.talep_id)
+            _coklu_arac = len(bu_sevkiyatin_paylari) > 1
+            for _sira, (arac_index, pay_desi) in enumerate(bu_sevkiyatin_paylari, start=1):
+                talep_id_gosterim = f"{_base_talep_id}-{_sira}" if _coklu_arac else _base_talep_id
                 # YENİ DEĞİŞİKLİK (Cozum A): kalkis/varis artik bu SPESIFIK aracin
                 # TOPLAM yukune gore hesaplaniyor, bu talebin kendi desisine gore degil.
                 gercek_dt, varis_dt = arac_zamanlari[(key, arac_index)]
@@ -698,7 +704,7 @@ for a in best.assignments:
                     "Tarih": gercek_gun, "Slot": gercek_slot, "Arac_Tipi": arac_tipi, "Arac_Turu": leg.arac_turu, # BURASI GÜNCELLENDİ
                     "Arac_ID": (milk_chain_arac_id if (a.milk_run and i > 0 and milk_chain_arac_id)
                                 else arac_id_kodu[(key, arac_index)]),
-                    "Talep_ID": talep_id_goruntu.get(id(a), a.talep_id),
+                    "Talep_ID": talep_id_gosterim,
                     "Cikis_TM": leg.src, "Varis_TM": leg.dst,
                     "Yolculuk_Suresi_Dk": math.ceil(data.route_lookup[(leg.src, leg.dst)][leg.arac_turu] * 60),
                     "Cikis_Ellecleme_Dk": cikis_ellec_dk,
