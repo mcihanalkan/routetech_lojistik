@@ -357,8 +357,11 @@ class State:
         # artimli takibe gecildi: hem dogru hem O(1).
         total = self._fixed_kiralik_cost + self._arac_maliyeti_toplam
 
+        # DUZELTME: a.sla_cost (donmus) yerine _fresh_sla_cost - bkz. o
+        # fonksiyonun docstring'i. Boylece arama, ayni bacaga sonradan
+        # binen yukun gecikmeyi buyuttugu durumlari da gorebiliyor.
         for a in self.assignments:
-            total += a.sla_cost
+            total += _fresh_sla_cost(self, a)
         if self.unassigned:
             # Guvenlik agi: "tum desiler teslim edilmeli" sert bir gereksinim (bkz.
             # plan/PDF). Repair operatorleri her zaman unassigned'i tam bosaltmali;
@@ -564,15 +567,14 @@ def _rank_spot_types_by_cost(data: ProblemData, hat: tuple, desi: float) -> list
 
 def leg_zaman_cizelgesi(data: ProblemData, legs: list, desi: float, milk_run: bool = False) -> list:
     """Her bacağın GERÇEK (elleçleme dahil) kalkış ve varış anını sırayla döndürür:
-    [(kalkis_0, varis_0), (kalkis_1, varis_1), ...]. Hem SLA/tamamlanma hesabı
-    (_completion_datetime) hem rapor (alns_optimize.py) bu ORTAK hesabı kullanır -
-    iki yerde aynı mantığın ayrı ayrı yazılıp birbirinden sapmasını (bkz. Sorun 2) önlemek için.
+    [(kalkis_0, varis_0), (kalkis_1, varis_1), ...]. Rapor (alns_optimize.py) bu
+    hesabı kullanır.
 
     milk_run=True ise: ara duraklarda (indir+yeniden yükle) hiç elleçleme YAPILMAZ -
     aynı fiziksel araç kargoyu üzerinde taşıyarak anında devam eder (zaman = varış anı,
     hiçbir gecikme eklenmez). İlk bacağın kalkışı (gerçek köken yükleme) ve son bacağın
-    tamamlanması (gerçek nihai indirme, bkz. _completion_datetime) HER ZAMAN gerçek
-    elleçleme süresi içerir - milk_run sadece ARADAKİ durakları etkiler."""
+    tamamlanması (gerçek nihai indirme) HER ZAMAN gerçek elleçleme süresi içerir -
+    milk_run sadece ARADAKİ durakları etkiler."""
     cizelge = []
     zaman = None
     for i, leg in enumerate(legs):
@@ -595,9 +597,48 @@ def leg_zaman_cizelgesi(data: ProblemData, legs: list, desi: float, milk_run: bo
     return cizelge
 
 
-def _completion_datetime(data: ProblemData, legs: list, desi: float, milk_run: bool = False):
-    son_varis = leg_zaman_cizelgesi(data, legs, desi, milk_run=milk_run)[-1][1]
-    return ellecleme_tamamlanma_zamani(son_varis, desi, consolidation=False)
+def _bucket_aware_sla_cost(data, legs, desi, demand_gun, demand_slot, demand_hat,
+                            spot_desi_map, kiralik_desi_map, milk_run=False) -> float:
+    """SLA cezasini, her bacagin desi parametresi olarak KENDI (kucuk olabilen)
+    payi yerine o bacaktaki GUNCEL yukten turetir - araç kapasitesiyle (kap)
+    sinirli, cunku bucket birden fazla araca bolunebiliyor ve her arac sadece
+    KENDI yukunu elleçliyor (bkz. _fresh_sla_cost ve try_insert_path/
+    evaluate_path/cpsat_hat_repair'daki kullanim yerleri)."""
+    zaman = None
+    bucket_desi = desi
+    for i, leg in enumerate(legs):
+        key = (leg.src, leg.dst, leg.gun, leg.slot, leg.arac_turu)
+        mevcut = kiralik_desi_map.get(key, 0.0) if leg.is_kiralik else spot_desi_map.get(key, 0.0)
+        kap = data.arac_parametreleri[leg.arac_turu]["kapasite_desi"]
+        bucket_desi = max(desi, min(mevcut, kap))
+        slot_zamani = slot_datetime(leg.gun, leg.slot)
+
+        if i == 0:
+            kalkis = ellecleme_tamamlanma_zamani(slot_zamani, bucket_desi, consolidation=False)
+        else:
+            kalkis = max(zaman, slot_zamani)
+
+        seyir = data.route_lookup[(leg.src, leg.dst)][leg.arac_turu]
+        varis = varis_zamani(kalkis, seyir)
+
+        if i < len(legs) - 1:
+            zaman = varis if milk_run else ellecleme_tamamlanma_zamani(varis, bucket_desi, consolidation=True)
+        else:
+            zaman = varis
+
+    tamamlanma = ellecleme_tamamlanma_zamani(zaman, bucket_desi, consolidation=False)
+    talep_tamamlanma = slot_datetime(demand_gun, demand_slot)
+    hedef_gun = data.route_lookup[demand_hat]["target_delivery_days"]
+    deadline = sla_deadline(talep_tamamlanma, hedef_gun)
+    gecikme = gecikme_saat(tamamlanma, deadline)
+    return sla_cezasi_tl(desi, gecikme)
+
+
+def _fresh_sla_cost(state: "State", a: Assignment) -> float:
+    return _bucket_aware_sla_cost(
+        state.data, a.legs, a.desi, a.demand_gun, a.demand_slot, a.demand_hat,
+        state.leg_spot_desi, state.leg_kiralik_desi, milk_run=a.milk_run,
+    )
 
 
 def try_insert_path(
@@ -735,12 +776,10 @@ def try_insert_path(
         vehicle_cost += state._commit_leg(leg_src, leg_dst, leg_gun, leg_slot, arac_turu, tasinabilir, is_kiralik)
         legs.append(Leg(leg_src, leg_dst, leg_gun, leg_slot, arac_turu, is_kiralik))
 
-    tamamlanma = _completion_datetime(data, legs, tasinabilir)
-    talep_tamamlanma = slot_datetime(demand_gun, demand_slot)  # GERCEK olusum ani (bkz. docstring)
-    hedef_gun = data.route_lookup[(src, dst)]["target_delivery_days"]
-    deadline = sla_deadline(talep_tamamlanma, hedef_gun)
-    saat_gecikme = gecikme_saat(tamamlanma, deadline)
-    sla_cost = sla_cezasi_tl(tasinabilir, saat_gecikme)
+    sla_cost = _bucket_aware_sla_cost(
+        data, legs, tasinabilir, demand_gun, demand_slot, (src, dst),
+        state.leg_spot_desi, state.leg_kiralik_desi,
+    )
 
     assignment = Assignment(
         demand_hat=hat, demand_gun=demand_gun, demand_slot=demand_slot, desi=tasinabilir,
@@ -1210,12 +1249,10 @@ def evaluate_path(state, hat, gun, slot, desi, path, talep_id="",
         legs.append(Leg(leg_src, leg_dst, leg_gun, leg_slot, arac_turu, is_kiralik))
 
     # 6. SLA maliyeti hesapla
-    tamamlanma = _completion_datetime(data, legs, tasinabilir, milk_run=milk_run)
-    talep_tamamlanma = slot_datetime(demand_gun, demand_slot)
-    hedef_gun = data.route_lookup[(src, dst)]["target_delivery_days"]
-    deadline = sla_deadline(talep_tamamlanma, hedef_gun)
-    saat_gecikme = gecikme_saat(tamamlanma, deadline)
-    sla_cost = sla_cezasi_tl(tasinabilir, saat_gecikme)
+    sla_cost = _bucket_aware_sla_cost(
+        data, legs, tasinabilir, demand_gun, demand_slot, (src, dst),
+        temp_leg_spot, temp_leg_kiralik, milk_run=milk_run,
+    )
 
     return {
         'desi': tasinabilir,
@@ -1816,7 +1853,10 @@ def worst_removal(state: State, rng: rnd.Generator, **kwargs) -> State:
     # KUCULTULDU (0.10 -> 0.04): zamanla buyuyen versiyon denendi, kotulestirdi
     # (bkz. random_removal'daki not) - sabit orana donuldu.
     n = max(1, int(0.04 * len(state.assignments)))
-    ranked = sorted(state.assignments, key=lambda a: -(a.sla_cost + a.vehicle_cost))
+    # DUZELTME: a.sla_cost (donmus) yerine _fresh_sla_cost - aksi halde "en
+    # kotu" siralama, ayni bacaga sonradan binen yukle gecikmesi buyumus
+    # atamalari sistematik olarak KACIRIP sokulmeye aday bile gostermezdi.
+    ranked = sorted(state.assignments, key=lambda a: -(_fresh_sla_cost(state, a) + a.vehicle_cost))
     to_remove = ranked[:n]
     to_remove_id = {id(a) for a in to_remove}
     state.assignments = [a for a in state.assignments if id(a) not in to_remove_id]
@@ -1873,9 +1913,11 @@ def regret_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
         # Araç maliyeti farkı
         delta += deneme_state._arac_maliyeti_toplam - orijinal_state._arac_maliyeti_toplam
         
-        # Yeni eklenen SLA maliyetleri
+        # Yeni eklenen SLA maliyetleri - DUZELTME: a.sla_cost (donmus) yerine
+        # _fresh_sla_cost (deneme_state, insert sonrasi bucket yuklerini zaten
+        # yansitiyor - bkz. o fonksiyonun docstring'i).
         for a in yeni_assignments:
-            delta += a.sla_cost
+            delta += _fresh_sla_cost(deneme_state, a)
         
         # Unassigned'dan kurtulan desi (30 günlük cezayı artık ödemiyoruz)
         if yerlesen_desi > 1e-6:
@@ -2175,9 +2217,10 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
                     state._commit_leg(src, dst, g, s, a, miktar, True)
                     leg = Leg(src, dst, g, s, a, True)
                     for tid, piece_desi, demand_gun, demand_slot in take_from_active_queue(miktar):
-                        piece_tamamlanma = _completion_datetime(data, [leg], piece_desi)
-                        piece_deadline = sla_deadline(slot_datetime(demand_gun, demand_slot), data.route_lookup[target_hat]["target_delivery_days"])
-                        piece_sla_cost = sla_cezasi_tl(piece_desi, gecikme_saat(piece_tamamlanma, piece_deadline))
+                        piece_sla_cost = _bucket_aware_sla_cost(
+                            data, [leg], piece_desi, demand_gun, demand_slot, target_hat,
+                            state.leg_spot_desi, state.leg_kiralik_desi,
+                        )
                         state.assignments.append(
                             Assignment(target_hat, demand_gun, demand_slot, piece_desi, (leg,), piece_sla_cost, 0.0, tid)
                         )
@@ -2193,9 +2236,10 @@ def cpsat_hat_repair(state: State, rng: rnd.Generator, **kwargs) -> State:
                     for tid, piece_desi, demand_gun, demand_slot in take_from_active_queue(miktar):
                         oran = piece_desi / miktar if miktar else 0.0
                         piece_vehicle_cost = vehicle_cost * oran
-                        piece_tamamlanma = _completion_datetime(data, [leg], piece_desi)
-                        piece_deadline = sla_deadline(slot_datetime(demand_gun, demand_slot), data.route_lookup[target_hat]["target_delivery_days"])
-                        piece_sla_cost = sla_cezasi_tl(piece_desi, gecikme_saat(piece_tamamlanma, piece_deadline))
+                        piece_sla_cost = _bucket_aware_sla_cost(
+                            data, [leg], piece_desi, demand_gun, demand_slot, target_hat,
+                            state.leg_spot_desi, state.leg_kiralik_desi,
+                        )
                         state.assignments.append(
                             Assignment(target_hat, demand_gun, demand_slot, piece_desi, (leg,), piece_sla_cost, piece_vehicle_cost, tid)
                         )
