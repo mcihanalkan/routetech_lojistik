@@ -393,7 +393,11 @@ class State:
                 for gun in self.data.gunler:
                     spot_in = self.tir_usage_in.get((tm, gun), 0)
                     spot_out = self.tir_usage_out.get((tm, gun), 0)
-                    spot_kullanim = max(spot_in, spot_out) # İŞTE BÜYÜ BURADA!
+                    # DUZELTME: genel havuzda gelen+giden TOPLANIR (KISITLAR.md madde 21).
+                    # Ayni aracin devam ettigi (milk_run) noktalarda 1 birim indirimi
+                    # zaten _commit_leg/_remove_assignment'ta kaynakta uygulaniyor -
+                    # bu yuzden burada ayrica max() almaya gerek yok/yanlis olur.
+                    spot_kullanim = spot_in + spot_out
                     kullanim = spot_kullanim + self.data.fixed_kiralik_tir_usage.get((tm, gun), 0)
                     asim = kullanim - cap
                     if asim > 0:
@@ -422,7 +426,7 @@ class State:
         fixed = self.data.fixed_kiralik_tir_usage.get((tm, gun), 0)
         spot_in = self.tir_usage_in.get((tm, gun), 0)
         spot_out = self.tir_usage_out.get((tm, gun), 0)
-        return max(0.0, cap - fixed - max(spot_in, spot_out))
+        return max(0.0, cap - fixed - (spot_in + spot_out))
     
     def spot_capacity_left_on_leg(self, src, dst, gun, slot, arac_turu) -> float:
         kap = self.data.arac_parametreleri[arac_turu]["kapasite_desi"]
@@ -520,11 +524,15 @@ class State:
 
             if arac_turu == self.data.tir_arac_turu:
                 delta_adet = yeni_adet - eski_adet
-                # Çıkış TM'sini OUT'a yaz
-                self.tir_usage_out[(src, gun)] = self.tir_usage_out.get((src, gun), 0) + delta_adet
+                # KISITLAR.md madde 22: ayni aracin ayni TM'de hareket etmeden
+                # devam etmesi (milk_run) 1 birim sayilir - bu bacak bir onceki
+                # bacaktan (skip_src_handling) devam ediyorsa, o TM'nin "giden"
+                # tarafi zaten onceki bacagin "gelen"iyle karsilanmis demektir,
+                # burada AYRICA saymiyoruz.
+                if not skip_src_handling:
+                    self.tir_usage_out[(src, gun)] = self.tir_usage_out.get((src, gun), 0) + delta_adet
                 varis_g = arrival_day(self.data.route_lookup, self.data.gunler, (src, dst), gun, slot, arac_turu)
                 if varis_g:
-                    # Varış TM'sini IN'e yaz
                     self.tir_usage_in[(dst, varis_g)] = self.tir_usage_in.get((dst, varis_g), 0) + delta_adet
 
         self._arac_maliyeti_toplam += marjinal_maliyet
@@ -1048,10 +1056,9 @@ def evaluate_path(state, hat, gun, slot, desi, path, talep_id="",
             return float("inf")
         fixed = data.fixed_kiralik_tir_usage.get((tm, gun), 0)
         
-        # YENİ: MAX formülünü geçici hesaplamada da kullan
         spot_in = temp_tir_in.get((tm, gun), 0)
         spot_out = temp_tir_out.get((tm, gun), 0)
-        return max(0.0, cap - fixed - max(spot_in, spot_out))
+        return max(0.0, cap - fixed - (spot_in + spot_out))
 
     def temp_max_addable_on_leg(src, dst, gun, slot, arac_turu, is_kiralik,skip_src_tir = False):
         if is_kiralik:
@@ -1239,13 +1246,12 @@ def evaluate_path(state, hat, gun, slot, desi, path, talep_id="",
             toplam_vehicle_cost += (yeni_maliyet - eski_maliyet)
             if arac_turu == data.tir_arac_turu:
                 delta_adet = yeni_adet - eski_adet
-                
-                # YENİ: Çıkış TM'sini OUT sözlüğüne yaz
-                temp_tir_out[(leg_src, leg_gun)] = temp_tir_out.get((leg_src, leg_gun), 0) + delta_adet
-                
+                # _commit_leg'deki skip_src mantığinin ayni: milk_run devaminda
+                # bu bacagin cikisi ayrica sayilmaz (bkz. KISITLAR.md madde 22).
+                if not skip_src:
+                    temp_tir_out[(leg_src, leg_gun)] = temp_tir_out.get((leg_src, leg_gun), 0) + delta_adet
                 varis_g = arrival_day(data.route_lookup, data.gunler, (leg_src, leg_dst), leg_gun, leg_slot, arac_turu)
                 if varis_g:
-                    # YENİ: Varış TM'sini IN sözlüğüne yaz
                     temp_tir_in[(leg_dst, varis_g)] = temp_tir_in.get((leg_dst, varis_g), 0) + delta_adet
         # if not skip_src:
         #     temp_handling[(leg_src, leg_gun)] = temp_handling.get((leg_src, leg_gun), 0.0) + tasinabilir
@@ -1467,7 +1473,9 @@ def _remove_assignment(state: State, a: Assignment) -> None:
 
             if leg.arac_turu == state.data.tir_arac_turu:
                 delta = yeni_adet - eski_adet # Bu negatiftir
-                state.tir_usage_out[(leg.src, leg.gun)] = state.tir_usage_out.get((leg.src, leg.gun), 0) + delta
+                # _commit_leg'deki skip_src_handling atlamasinin simetrik geri alinisi.
+                if not skip_src_handling:
+                    state.tir_usage_out[(leg.src, leg.gun)] = state.tir_usage_out.get((leg.src, leg.gun), 0) + delta
                 varis_g = arrival_day(state.data.route_lookup, state.data.gunler, (leg.src, leg.dst), leg.gun, leg.slot, leg.arac_turu)
                 if varis_g:
                     state.tir_usage_in[(leg.dst, varis_g)] = state.tir_usage_in.get((leg.dst, varis_g), 0) + delta
