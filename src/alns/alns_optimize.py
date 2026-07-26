@@ -701,7 +701,7 @@ for a in best.assignments:
         arac_tipi = "Kiralik" if leg.is_kiralik else "Spot"
         key = _bucket_key(leg)
         bu_sevkiyatin_paylari = []
-        for (aa, ll, arac_index, pay_desi, ll_i) in bucket_dagilim[key_referans]:
+        for (aa, ll, arac_index, pay_desi, ll_i) in bucket_dagilim[key]:
             # YENİ: pay_desi > 0.01 şartı ile 0 çıkan hayalet satırları engelliyoruz
             if aa is a and pay_desi > 0.01:
                 bu_sevkiyatin_paylari.append((arac_index, pay_desi))

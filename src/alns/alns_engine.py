@@ -1697,7 +1697,7 @@ def enforce_min_spot_occupancy(state: "State", rng) -> "State":
                 if (leg.src, leg.dst, leg.gun, leg.slot, leg.arac_turu) in ihlal_keyleri and not leg.is_kiralik
             )
             zorunlu_idx = min(zorunlu_idx, len(zamanlar) - 1)
-            print(f"DEBUG minspot bump: {a.talep_id} eski=({a.legs[0].gun},{a.legs[0].slot}) yeni_min_idx={zorunlu_idx} ({zamanlar[zorunlu_idx]}) desi={a.desi:.0f}")
+            # print(f"DEBUG minspot bump: {a.talep_id} eski=({a.legs[0].gun},{a.legs[0].slot}) yeni_min_idx={zorunlu_idx} ({zamanlar[zorunlu_idx]}) desi={a.desi:.0f}")
             kalan = _insert_chunk_from(
                 state, a.demand_hat, zorunlu_idx, a.desi, rng, a.talep_id,
                 a.demand_gun, a.demand_slot,
