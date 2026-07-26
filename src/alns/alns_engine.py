@@ -669,153 +669,6 @@ def _fresh_sla_cost(state: "State", a: Assignment) -> float:
     )
 
 
-def try_insert_path(
-    state: State,
-    hat: tuple,
-    gun: str,
-    slot: str,
-    desi: float,
-    talep_id: str = "",
-    path: tuple = (),
-    demand_gun: Optional[str] = None,
-    demand_slot: Optional[str] = None,
-) -> Optional[Assignment]:
-    """Belirli bir yol (direkt ya da 1-2 aktarmalı) için mümkün olan en fazla
-    deseyi yerleştirmeyi dener. Hiç yer yoksa None döner.
-
-    `path`: ara aktarma noktalarının sıralı tuple'ı - boş tuple = direkt,
-    `(r,)` = 1 aktarma, `(r1, r2)` = 2 aktarma. Kaç bacak olursa olsun aynı
-    genel mantıkla işlenir (bkz. altta stops listesi).
-
-    `gun`/`slot`: bu denemedeki FİİLİ kalkış (gün, slot) — ertelenmiş bir
-    denemede bu, orijinal talep zamanından SONRAKİ bir slot olabilir.
-    `demand_gun`/`demand_slot`: talebin GERÇEK oluşum (gün, slot)'u — SLA
-    deadline'ı HER ZAMAN buradan hesaplanır (verilmezse gun/slot ile aynı
-    kabul edilir, yani ertelenmemiş normal çağrı). Bu ayrım olmadan, ertelenmiş
-    bir sevkiyatın SLA deadline'ı yanlışlıkla ertelenmiş kalkış anından
-    hesaplanır — bu da gecikmeyi her zaman "0 saat" gibi gösterir (gerçek bug,
-    bkz. sohbet geçmişi: "SLA cezası çok az" bulgusu)."""
-
-    demand_gun = gun if demand_gun is None else demand_gun
-    demand_slot = slot if demand_slot is None else demand_slot
-    
-    src, dst = hat
-    data = state.data
-
-    stops = [src, *path, dst] # yıldızlı kullanım, path tuple'ı içindeki elemanları tek tek açar.
-    leg_departures = [(gun, slot)]
-    for i in range(len(stops) - 1):
-        if i == len(stops) - 2:
-            break  # son bacagin kalkisi zaten bir onceki adimda belirlendi
-        leg_src, leg_dst = stops[i], stops[i + 1]
-        entry = data.route_lookup.get((leg_src, leg_dst))
-        if entry is None:
-            return None
-        # Zamanlama tahmini icin en ucuz turun seyir suresi kullanilir (gercek
-        # arac turu asagidaki leg_plans dongusunde ayrica/bagimsiz secilir).
-        est_arac_turu = _rank_spot_types_by_cost(data, (leg_src, leg_dst), desi)[0]
-        cur_gun, cur_slot = leg_departures[-1]
-        sonraki = next_dispatch_slot(data.gunler, cur_gun, cur_slot, entry[est_arac_turu])
-        if sonraki is None:
-            return None
-        leg_departures.append(sonraki)
-
-    leg_pairs = [
-        (stops[i], stops[i + 1], leg_departures[i][0], leg_departures[i][1])
-        for i in range(len(stops) - 1)
-    ] # Araç bu TM'den bu TM'ye şu günde şu saatte (09:00 veya 17:00) kalkacak.
-
-    # Her bacak icin once KIRALIK (marjinal maliyet 0, ucretsiz kapasite) denenir;
-    # yoksa SPOT icin en UCUZ (en buyuk kapasiteli degil!) arac turu secilir - bkz.
-    # _rank_spot_types_by_cost docstring: "buyuk arac her zaman daha iyi" varsayimi
-    # kucuk yukler icin maliyeti ciddi sise sisiriyordu (asil bug buradaydi).
-    leg_plans = []
-    for (leg_src, leg_dst, leg_gun, leg_slot) in leg_pairs:
-        best = None  # (miktar, arac_turu, is_kiralik)
-        if leg_slot == KIRALIK_DISPATCH_SLOT:
-            for arac_turu in data.arac_turleri:
-                miktar = state.max_addable_on_leg(leg_src, leg_dst, leg_gun, leg_slot, arac_turu, True)
-                if miktar > 0:
-                    best = (miktar, arac_turu, True)
-                    break
-        if best is None:
-            # ONEMLI DUZELTME: _rank_spot_types_by_cost SADECE 'desi'ye (bu
-            # parcaya) bakiyor, bu bacakta HALIHAZIRDA acik/yari-dolu bir arac
-            # olup olmadigini HIC gormuyor (data alıyor, state degil) - bu
-            # yuzden bacakta %25 dolu bir Kamyon dururken bile sistem, bu
-            # kucuk parca icin sifirdan bir Kamyonet aciyordu (dusuk dolulugun
-            # asil nedeni buydu, bkz. sohbet gecmisi). Duzeltme: her aday arac
-            # turu icin GERCEK MARJINAL maliyeti (_commit_leg'deki AYNI formul)
-            # hesaplayip, mevcut yuke eklemenin birim-desi maliyetine gore
-            # sirala - boylece zaten acik olan bir aracin bos kapasitesine
-            # eklemek (marjinal maliyet ~0'a yakin), yeni bir arac acmaktan
-            # dogal olarak daha ucuz cikip tercih edilir.
-            adaylar = []
-            for arac_turu in data.arac_turleri:
-                miktar = state.max_addable_on_leg(leg_src, leg_dst, leg_gun, leg_slot, arac_turu, False)
-                if miktar <= 0:
-                    continue
-                p = data.arac_parametreleri[arac_turu]
-                kap = p["kapasite_desi"]
-                mevcut = state.leg_spot_desi.get((leg_src, leg_dst, leg_gun, leg_slot, arac_turu), 0.0)
-                onerilen = min(desi, miktar)
-
-                eski_adet = spot_vehicle_count(mevcut, kap, MAX_SPOT)
-                yeni_adet = spot_vehicle_count(mevcut + onerilen, kap, MAX_SPOT)
-                birim = vehicle_leg_cost(data.route_lookup, (leg_src, leg_dst), arac_turu, p["spot_hourly"], p["spot_km"])
-                eski_maliyet = eski_adet * birim + ellecleme_maliyet_hesapla(mevcut, p["spot_hourly"])
-                yeni_maliyet = yeni_adet * birim + ellecleme_maliyet_hesapla(mevcut + onerilen, p["spot_hourly"])
-                marjinal_maliyet = yeni_maliyet - eski_maliyet
-
-                adaylar.append((marjinal_maliyet / onerilen, onerilen, arac_turu))
-
-            if adaylar:
-                adaylar.sort(key=lambda x: x[0])
-                _, onerilen, arac_turu = adaylar[0]
-                best = (onerilen, arac_turu, False)
-        if best is None:
-            return None
-        leg_plans.append((leg_src, leg_dst, leg_gun, leg_slot, *best))
-
-    tasinabilir = min(desi, min(p[4] for p in leg_plans))
-    if tasinabilir <= 0:
-        return None
-
-    # YENİ EKLENECEK GÜVENLİK BLOĞU: Aktarma (Relay) merkezlerindeki çift sayımı engelle
-    path_handling = {}
-    for (leg_src, leg_dst, leg_gun, leg_slot, _miktar, arac_turu, is_kiralik) in leg_plans:
-        # Bu rotanın hangi TM'de, hangi gün ne kadar çarpanla kapasite tükettiğini bul
-        path_handling[(leg_src, leg_gun)] = path_handling.get((leg_src, leg_gun), 0.0) + 1.0
-        varis_g = arrival_day(data.route_lookup, data.gunler, (leg_src, leg_dst), leg_gun, leg_slot, arac_turu)
-        if varis_g:
-             path_handling[(leg_dst, varis_g)] = path_handling.get((leg_dst, varis_g), 0.0) + 1.0
-             
-    # Eğer bir TM aynı gün hem varış hem çıkış alıyorsa (multiplier = 2.0 olur), taşınabilir miktarı tıraşla
-    for (tm, g), multiplier in path_handling.items():
-        avail = state.handling_available(tm, g)
-        if tasinabilir * multiplier > avail:
-            tasinabilir = avail / multiplier
-        if tasinabilir <= 1e-6:
-            return None # Daha fazla bakmaya gerek yok, bu yol zaten kapasiteyi aşıyor!
-
-    legs = []
-    vehicle_cost = 0.0
-    for (leg_src, leg_dst, leg_gun, leg_slot, _miktar, arac_turu, is_kiralik) in leg_plans:
-        vehicle_cost += state._commit_leg(leg_src, leg_dst, leg_gun, leg_slot, arac_turu, tasinabilir, is_kiralik)
-        legs.append(Leg(leg_src, leg_dst, leg_gun, leg_slot, arac_turu, is_kiralik))
-
-    sla_cost = _bucket_aware_sla_cost(
-        data, legs, tasinabilir, demand_gun, demand_slot, (src, dst),
-        state.leg_spot_desi, state.leg_kiralik_desi,
-    )
-
-    assignment = Assignment(
-        demand_hat=hat, demand_gun=demand_gun, demand_slot=demand_slot, desi=tasinabilir,
-        legs=tuple(legs), sla_cost=sla_cost, vehicle_cost=vehicle_cost, talep_id=talep_id,
-    )
-    state.assignments.append(assignment)
-    return assignment
-
 
 def insertion_options(data: ProblemData, hat: tuple, gun: str, slot: str):
     """Aynı slotta denenecek yol seçeneklerini üretir: direkt + tüm 1/2-aktarmalı
@@ -1158,11 +1011,28 @@ def evaluate_path(state, hat, gun, slot, desi, path, talep_id="",
         for idx, (leg_src, leg_dst, leg_gun, leg_slot) in enumerate(leg_pairs):
             best = None
             if leg_slot == KIRALIK_DISPATCH_SLOT:
+                kiralik_adaylar = []
                 for arac_turu in data.arac_turleri:
                     miktar = temp_max_addable_on_leg(leg_src, leg_dst, leg_gun, leg_slot, arac_turu, True)
-                    if miktar > 0:
-                        best = (miktar, arac_turu, True)
-                        break
+                    if miktar <= 0:
+                        continue
+                        
+                    onerilen = min(desi, miktar)
+                    p = data.arac_parametreleri[arac_turu]
+                    
+                    # Geçici (temp) sözlüklerden güncel elleçleme yükünü al
+                    eski_ellec_desi = temp_leg_ellecleme.get((leg_src, leg_dst, leg_gun, leg_slot, arac_turu, 2), 0.0)
+                    eski_maliyet = ellecleme_maliyet_hesapla(eski_ellec_desi, p["rental_hourly"])
+                    yeni_maliyet = ellecleme_maliyet_hesapla(eski_ellec_desi + onerilen, p["rental_hourly"])
+                    marjinal_maliyet = yeni_maliyet - eski_maliyet
+                    
+                    kiralik_adaylar.append((marjinal_maliyet / onerilen, onerilen, arac_turu))
+                    
+                if kiralik_adaylar:
+                    kiralik_adaylar.sort(key=lambda x: x[0])
+                    _, onerilen, arac_turu = kiralik_adaylar[0]
+                    best = (onerilen, arac_turu, True)
+
             if best is None:
                 adaylar = []
                 for arac_turu in data.arac_turleri:
