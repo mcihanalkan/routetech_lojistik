@@ -81,7 +81,10 @@ Toplam Araç Maliyeti = (Saatlik Kiralama Maliyeti × Kullanım Süresi) + (Kat 
 ## 8. %10 Minimum Doluluk Kuralı
 
 - Temel İşlevli Çözüm (MVP/Faz-1) aşamasında vardı.
-- **Gelişmiş Çözüm'de (Faz-2) KALDIRILDI** — böyle bir kural yok. Küçük/verimsiz sevkiyatlar reddedilmez, sadece gecikirse SLA cezası öder.
+- **Gelişmiş Çözüm'de (Faz-2) KALDIRILDI** — böyle bir kural yok. Küçük/verimsiz sevkiyatlar reddedilmez, sadece gecikirse SLA cezası öder. Ancak isteğe göre dinamik alt limitler koyulabilir.
+
+---
+
 
 ## 9. Talep Tahmini
 
