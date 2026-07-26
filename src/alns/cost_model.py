@@ -65,14 +65,15 @@ def ellecleme_maliyet_hesapla(desi: float, kiralık_saat_maliyet: float, dokunus
     (milk-run) senaryosunda ARA duraklarda araç hiç indirilmediği için o ucun payı
     0 (araya giren durak) ya da 1 (zincirin ilk/son bacağı, sadece kendi ucu gerçek)
     olabilir - bkz. alns_engine._commit_leg skip_src_handling/skip_dst_handling.
-
-    time_model.ellecleme_suresi_dakika() ile AYNI yuvarlama sırasını kullanır:
-    önce ham süre dokunus_sayisi ile çarpılır, SONRA tek seferde yukarı yuvarlanır."""
+    """
     if dokunus_sayisi <= 0 or desi <= 0:
         return 0
-    sure = desi * ELLECLEME_DAKIKA_PER_DESI * dokunus_sayisi
-    sure = math.ceil(sure) # dakika biriminde yukarı yuvarla
-    sure_saat = sure / 60 # saat
+    
+    # DÜZELTME: Her bir dokunuş (çıkış ve varış) kendi içinde AYRI AYRI yukarı yuvarlanır.
+    tek_dokunus_suresi = math.ceil(desi * ELLECLEME_DAKIKA_PER_DESI)
+    toplam_sure = tek_dokunus_suresi * dokunus_sayisi
+    
+    sure_saat = toplam_sure / 60 # saat
     maliyet = sure_saat * kiralık_saat_maliyet
     return int(round(maliyet))
 

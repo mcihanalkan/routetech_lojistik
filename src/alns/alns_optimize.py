@@ -692,7 +692,8 @@ def _final_leg_sla_cezasi(varis_dt, pay_desi, demand_gun, demand_slot, hedef_gun
 sla_penalties = [] # talepID -> ceza
 csv_records = []
 
-
+hayalet_kargo_satir_sayisi = 0
+hayalet_kargo_toplam_desi = 0.0
 for a in best.assignments:
     nihai_kaynak, nihai_varis = a.demand_hat
     if len(a.legs) == 1:
@@ -705,7 +706,9 @@ for a in best.assignments:
             # YENİ: pay_desi > 0.01 şartı ile 0 çıkan hayalet satırları engelliyoruz
             if aa is a and pay_desi > 0.01:
                 bu_sevkiyatin_paylari.append((arac_index, pay_desi))
-
+            else: 
+                hayalet_kargo_satir_sayisi += 1
+                hayalet_kargo_toplam_desi += pay_desi
         _base_talep_id = talep_id_goruntu.get(id(a), a.talep_id)
         _coklu_arac = len(bu_sevkiyatin_paylari) > 1
         for _sira, (arac_index, pay_desi) in enumerate(bu_sevkiyatin_paylari, start=1):
@@ -832,6 +835,8 @@ for a in best.assignments:
                     "Talep_Tarihi": a.demand_gun, "Talep_Slotu": a.demand_slot,
                     "Varis_Tarihi": varis_gun, "Varis_Saati": varis_saat,
                 })
+if hayalet_kargo_satir_sayisi > 0:
+    print(f"DEBUG/BİLGİ: Floating-point (ondalıklı sayı) hassasiyetinden kaynaklanan                     {hayalet_kargo_satir_sayisi} adet matematiksel kalıntı (Toplam: {hayalet_kargo_toplam_desi:.5f} desi) tespit edildi ve gerçekçiliği korumak adına Taşıma Planı'ndan filtrelendi.")
 dispatch_records = []
 for (hat, arac_turu), stok in kiralik_stok_gunluk.items():
     if stok <= 0:
