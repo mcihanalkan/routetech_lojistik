@@ -302,6 +302,8 @@ class State:
         self.milk_fwd: dict = {}           # spot_key -> spot_key (bu bacak, HANGI sonraki bacaga elleclenmeden devam ediyor)
         self.milk_bwd: dict = {}           # spot_key -> spot_key (bu bacak, HANGI onceki bacaktan elleclenmeden geldi)
         self.milk_junction_desi: dict = {} # (spot_key, spot_key) -> bu J->K kilidine dayanan toplam desi (0'a inince kilit acilir)
+        self.tir_usage_in: dict = {}    # (tm,gun) -> varış yapan spot tır adet
+        self.tir_usage_out: dict = {}   # (tm,gun) -> çıkış yapan spot tır adet
         self._fixed_kiralik_cost = self._kiralik_bos_seyir_maliyeti()
         # Her bacagin GUNCEL arac maliyetinin (seyir+ellecleme) ARTIMLI takibi -
         # _commit_leg/force_insert eklerken, _remove_assignment cikarirken bunu
@@ -338,6 +340,8 @@ class State:
         new.milk_fwd = dict(self.milk_fwd)
         new.milk_bwd = dict(self.milk_bwd)
         new.milk_junction_desi = dict(self.milk_junction_desi)
+        new.tir_usage_in = dict(self.tir_usage_in)
+        new.tir_usage_out = dict(self.tir_usage_out)
         new._fixed_kiralik_cost = self._fixed_kiralik_cost
         new._arac_maliyeti_toplam = self._arac_maliyeti_toplam
         return new
@@ -387,7 +391,10 @@ class State:
         if self.data.tir_arac_turu is not None:
             for tm, cap in self.data.tir_capacity.items():
                 for gun in self.data.gunler:
-                    kullanim = self.tir_usage.get((tm, gun), 0) + self.data.fixed_kiralik_tir_usage.get((tm, gun), 0)
+                    spot_in = self.tir_usage_in.get((tm, gun), 0)
+                    spot_out = self.tir_usage_out.get((tm, gun), 0)
+                    spot_kullanim = max(spot_in, spot_out) # İŞTE BÜYÜ BURADA!
+                    kullanim = spot_kullanim + self.data.fixed_kiralik_tir_usage.get((tm, gun), 0)
                     asim = kullanim - cap
                     if asim > 0:
                         total += asim * 50000.0
@@ -413,8 +420,10 @@ class State:
         if cap is None:
             return float("inf")
         fixed = self.data.fixed_kiralik_tir_usage.get((tm, gun), 0)
-        return max(0.0, cap - fixed - self.tir_usage.get((tm, gun), 0))
-
+        spot_in = self.tir_usage_in.get((tm, gun), 0)
+        spot_out = self.tir_usage_out.get((tm, gun), 0)
+        return max(0.0, cap - fixed - max(spot_in, spot_out))
+    
     def spot_capacity_left_on_leg(self, src, dst, gun, slot, arac_turu) -> float:
         kap = self.data.arac_parametreleri[arac_turu]["kapasite_desi"]
         mevcut = self.leg_spot_desi.get((src, dst, gun, slot, arac_turu), 0.0)
@@ -511,10 +520,12 @@ class State:
 
             if arac_turu == self.data.tir_arac_turu:
                 delta_adet = yeni_adet - eski_adet
-                self.tir_usage[(src, gun)] = self.tir_usage.get((src, gun), 0) + delta_adet
+                # Çıkış TM'sini OUT'a yaz
+                self.tir_usage_out[(src, gun)] = self.tir_usage_out.get((src, gun), 0) + delta_adet
                 varis_g = arrival_day(self.data.route_lookup, self.data.gunler, (src, dst), gun, slot, arac_turu)
                 if varis_g:
-                    self.tir_usage[(dst, varis_g)] = self.tir_usage.get((dst, varis_g), 0) + delta_adet
+                    # Varış TM'sini IN'e yaz
+                    self.tir_usage_in[(dst, varis_g)] = self.tir_usage_in.get((dst, varis_g), 0) + delta_adet
 
         self._arac_maliyeti_toplam += marjinal_maliyet
 
@@ -1005,7 +1016,9 @@ def evaluate_path(state, hat, gun, slot, desi, path, talep_id="",
     temp_leg_kiralik = dict(state.leg_kiralik_desi)
     temp_leg_ellecleme = dict(state.leg_ellecleme_desi)
     temp_handling = dict(state.handling_usage)
-    temp_tir = dict(state.tir_usage) if data.tir_arac_turu else {}
+    # temp_tir = dict(state.tir_usage) if data.tir_arac_turu else {}
+    temp_tir_in = dict(state.tir_usage_in) if data.tir_arac_turu else {}
+    temp_tir_out = dict(state.tir_usage_out) if data.tir_arac_turu else {}
 
     # Yardımcı fonksiyonlar (geçici dict'leri kullanır)
     def temp_spot_capacity_left(leg_key, arac_turu):
@@ -1034,9 +1047,13 @@ def evaluate_path(state, hat, gun, slot, desi, path, talep_id="",
         if cap is None:
             return float("inf")
         fixed = data.fixed_kiralik_tir_usage.get((tm, gun), 0)
-        return max(0.0, cap - fixed - temp_tir.get((tm, gun), 0))
+        
+        # YENİ: MAX formülünü geçici hesaplamada da kullan
+        spot_in = temp_tir_in.get((tm, gun), 0)
+        spot_out = temp_tir_out.get((tm, gun), 0)
+        return max(0.0, cap - fixed - max(spot_in, spot_out))
 
-    def temp_max_addable_on_leg(src, dst, gun, slot, arac_turu, is_kiralik):
+    def temp_max_addable_on_leg(src, dst, gun, slot, arac_turu, is_kiralik,skip_src_tir = False):
         if is_kiralik:
             limit = temp_kiralik_available((src, dst), gun, arac_turu)
         else:
@@ -1050,7 +1067,9 @@ def evaluate_path(state, hat, gun, slot, desi, path, talep_id="",
             kap = data.arac_parametreleri[arac_turu]["kapasite_desi"]
             mevcut_desi = temp_leg_spot.get((src, dst, gun, slot, arac_turu), 0.0)
             mevcut_adet = spot_vehicle_count(mevcut_desi, kap, MAX_SPOT)
-            departure_room = temp_tir_available(src, gun)
+            
+            # YENİ: skip_src_tir mantığı tamamen temizlendi, doğrudan çağrılıyor
+            departure_room = temp_tir_available(src, gun) 
             arrival_room = temp_tir_available(dst, varis_g)
             adet_limiti = min(departure_room, arrival_room)
             max_adet = mevcut_adet + adet_limiti
@@ -1083,10 +1102,12 @@ def evaluate_path(state, hat, gun, slot, desi, path, talep_id="",
 
         ortak_adaylar = []
         for arac_turu in data.arac_turleri:
+            
             p = data.arac_parametreleri[arac_turu]
             miktarlar = []
             uygun = True
-            for (leg_src, leg_dst, leg_gun, leg_slot) in leg_pairs:
+            for idx, (leg_src, leg_dst, leg_gun, leg_slot) in enumerate(leg_pairs):
+                # skip_src_tir = i > 0
                 miktar = temp_max_addable_on_leg(leg_src, leg_dst, leg_gun, leg_slot, arac_turu, False)
                 if miktar <= 0:
                     uygun = False
@@ -1126,7 +1147,7 @@ def evaluate_path(state, hat, gun, slot, desi, path, talep_id="",
             for (leg_src, leg_dst, leg_gun, leg_slot) in leg_pairs
         ]
     else:
-        for (leg_src, leg_dst, leg_gun, leg_slot) in leg_pairs:
+        for idx,(leg_src, leg_dst, leg_gun, leg_slot) in enumerate(leg_pairs):
             best = None
             if leg_slot == KIRALIK_DISPATCH_SLOT:
                 for arac_turu in data.arac_turleri:
@@ -1218,11 +1239,14 @@ def evaluate_path(state, hat, gun, slot, desi, path, talep_id="",
             toplam_vehicle_cost += (yeni_maliyet - eski_maliyet)
             if arac_turu == data.tir_arac_turu:
                 delta_adet = yeni_adet - eski_adet
-                temp_tir[(leg_src, leg_gun)] = temp_tir.get((leg_src, leg_gun), 0) + delta_adet
+                
+                # YENİ: Çıkış TM'sini OUT sözlüğüne yaz
+                temp_tir_out[(leg_src, leg_gun)] = temp_tir_out.get((leg_src, leg_gun), 0) + delta_adet
+                
                 varis_g = arrival_day(data.route_lookup, data.gunler, (leg_src, leg_dst), leg_gun, leg_slot, arac_turu)
                 if varis_g:
-                    temp_tir[(leg_dst, varis_g)] = temp_tir.get((leg_dst, varis_g), 0) + delta_adet
-
+                    # YENİ: Varış TM'sini IN sözlüğüne yaz
+                    temp_tir_in[(leg_dst, varis_g)] = temp_tir_in.get((leg_dst, varis_g), 0) + delta_adet
         # if not skip_src:
         #     temp_handling[(leg_src, leg_gun)] = temp_handling.get((leg_src, leg_gun), 0.0) + tasinabilir
         # varis_g = arrival_day(data.route_lookup, data.gunler, (leg_src, leg_dst), leg_gun, leg_slot, arac_turu)
@@ -1304,9 +1328,10 @@ def commit_path(state, hat, eval_result, talep_id, demand_gun, demand_slot, sla_
         # mantigi (bkz. o fonksiyonun ve _commit_leg'in docstring'i).
         skip_src_handling = milk_run and i > 0
         skip_dst_handling = milk_run and i < n_legs - 1
+        # skip_src_tir = milk_run and i > 0
         cost = state._commit_leg(
             leg_src, leg_dst, leg_gun, leg_slot, arac_turu, tasinabilir, is_kiralik,
-            skip_src_handling=skip_src_handling, skip_dst_handling=skip_dst_handling,
+            skip_src_handling=skip_src_handling, skip_dst_handling=skip_dst_handling
         )
         vehicle_cost += cost
         legs.append(Leg(leg_src, leg_dst, leg_gun, leg_slot, arac_turu, is_kiralik))
@@ -1441,11 +1466,11 @@ def _remove_assignment(state: State, a: Assignment) -> None:
             state._arac_maliyeti_toplam += delta_cost
 
             if leg.arac_turu == state.data.tir_arac_turu:
-                delta = yeni_adet - eski_adet
-                state.tir_usage[(leg.src, leg.gun)] = state.tir_usage.get((leg.src, leg.gun), 0) + delta
+                delta = yeni_adet - eski_adet # Bu negatiftir
+                state.tir_usage_out[(leg.src, leg.gun)] = state.tir_usage_out.get((leg.src, leg.gun), 0) + delta
                 varis_g = arrival_day(state.data.route_lookup, state.data.gunler, (leg.src, leg.dst), leg.gun, leg.slot, leg.arac_turu)
                 if varis_g:
-                    state.tir_usage[(leg.dst, varis_g)] = state.tir_usage.get((leg.dst, varis_g), 0) + delta
+                    state.tir_usage_in[(leg.dst, varis_g)] = state.tir_usage_in.get((leg.dst, varis_g), 0) + delta
         # if not skip_src_handling:
         #     state.handling_usage[(leg.src, leg.gun)] = state.handling_usage.get((leg.src, leg.gun), 0.0) - a.desi
         # varis_g = arrival_day(state.data.route_lookup, state.data.gunler, (leg.src, leg.dst), leg.gun, leg.slot, leg.arac_turu)
